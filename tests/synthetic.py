@@ -20,13 +20,17 @@ import numpy as np
 
 from spectral_sight.types import Team
 
-# Chosen to land inside the detector's default HSV bands.
+# Sampled from real footage rather than invented: the enemy ring reads as
+# magenta (H~167), not red, and the ally ring sits around H~100.
 TEAM_BGR: dict[Team, tuple[int, int, int]] = {
     Team.BLUE: (235, 165, 40),
-    Team.RED: (40, 50, 240),
+    Team.RED: (120, 40, 230),
 }
 PORTRAIT_BGR = (90, 100, 110)
 """Desaturated grey-brown, standing in for champion portrait art."""
+
+CHAMPION_RADIUS = 13
+"""Marker radius on real footage ranged 11.5-15.0 at a 325px minimap."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,10 +64,20 @@ def _background(size: int, seed: int) -> np.ndarray:
 
 
 def draw_champion(
-    canvas: np.ndarray, x: int, y: int, team: Team, radius: int = 10
+    canvas: np.ndarray,
+    x: int,
+    y: int,
+    team: Team,
+    radius: int = CHAMPION_RADIUS,
+    *,
+    core_bgr: tuple[int, int, int] = PORTRAIT_BGR,
 ) -> None:
-    """A portrait core inside a team-coloured ring -- the thing we detect."""
-    cv2.circle(canvas, (x, y), radius, PORTRAIT_BGR, -1, cv2.LINE_AA)
+    """A portrait core inside a team-coloured ring -- the thing we detect.
+
+    `core_bgr` exists so tests can reproduce the case that killed hole-based
+    detection: portrait art that happens to match the team's own hue.
+    """
+    cv2.circle(canvas, (x, y), radius, core_bgr, -1, cv2.LINE_AA)
     cv2.circle(canvas, (x, y), radius, TEAM_BGR[team], 3, cv2.LINE_AA)
 
 
