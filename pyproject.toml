@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "spectral-sight"
+version = "0.1.0"
+description = "Vision-only real-time game state extraction from League of Legends replays"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy>=2.1",
+    "opencv-python>=4.10",
+]
+
+[project.optional-dependencies]
+capture = ["windows-capture>=2.0"]
+dev = ["pytest>=8.0"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
