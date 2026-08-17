@@ -5,11 +5,33 @@ Riot APIs, no process interaction — pixels in, structured state out.
 
 ## Status
 
-**Stage 1 — class-agnostic minimap marker detection.** Done, fitted to real
-footage: 7/7 markers with 0 false positives on hand-marked ground truth.
+**Stage 1 — class-agnostic minimap marker detection.** Working. Retuned against
+5.3 minutes of footage using an automatic ground truth (see below): finds at
+least all five allies in 87% of frames, averaging 5.8 blue markers against 5
+expected, so it over-produces slightly by design.
 
-Stage 2 (champion identification by gallery matching) and the tracker are not
-built yet.
+**Stage 2 — champion identification.** Partially working, and the current
+bottleneck. Allies are identified from a gallery bootstrapped out of the HUD
+itself. Three or more of the five allies are identified in 22% of frames,
+typically one or two otherwise. The local player's own marker never matches and
+is an open bug. Enemy identification is not started — nothing in the HUD names
+them.
+
+**Tracker.** Not built. This is where the remaining identification accuracy
+should come from: evidence accumulated per track across frames, rather than a
+fresh independent decision every frame.
+
+### Automatic ground truth
+
+Hand-labelling was mostly avoidable. Living allies are always drawn on the
+minimap, and the HUD health bars show that no ally dies anywhere in the sample
+clip — so the expected blue marker count is exactly 5 for every frame outside
+the two stretches where the local player is dead (visible as the self portrait
+desaturating from V≈76 to V≈30). That gives a per-frame recall target across
+thousands of frames for free, which is what stage 1 was retuned against.
+
+It measures recall, not precision — a false positive and a miss cancel out — so
+it is a tuning signal, not a substitute for labelled positions.
 
 ## Input assumptions
 

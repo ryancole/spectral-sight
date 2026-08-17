@@ -102,12 +102,28 @@ class BlipDetectorConfig:
     proposal_channels: tuple[str, ...] = ("gray", "saturation")
     """Channels to run Hough over. See `BlipDetector._propose` for why both."""
 
+    proposal_radius_margin: float = 1.5
+    """Widens the Hough radius band beyond the accepted one.
+
+    Hough's radius estimate is coarse, so a marker whose true radius sits near
+    an edge of the accepted band can be proposed at a radius just outside it and
+    then never proposed at all. Measured: a real marker went from unproposed to
+    found purely by widening the band by one pixel at each end. Radius is refit
+    downstream anyway, so proposing wide costs only a few extra candidates."""
+
     refine_step: float = 0.5
     ring_half_width: float = 1.5
     """Annulus sampled as radius +/- this when measuring colour fill."""
 
-    min_ring_fill: float = 0.55
-    """Fraction of the annulus that must match one team's colour."""
+    min_ring_fill: float = 0.48
+    """Fraction of the annulus that must match one team's colour.
+
+    Tuned for recall rather than precision, because stage 2 is the precision
+    filter: a terrain circle matches no champion in the gallery and falls out
+    for free, whereas a marker this stage drops is gone for good. Measured over
+    46 frames against a known five-ally ground truth, moving from 0.55 to 0.48
+    took "found at least all five allies" from 59% of frames to 87%, at a cost
+    of roughly 0.8 spurious markers per frame."""
 
     blur_sigma: float = 0.7
     edge_blur_sigma: float = 1.0
@@ -221,8 +237,8 @@ class BlipDetector:
                 minDist=cfg.hough_min_dist,
                 param1=cfg.hough_param1,
                 param2=cfg.hough_param2,
-                minRadius=int(cfg.min_radius),
-                maxRadius=int(np.ceil(cfg.max_radius)),
+                minRadius=max(1, int(cfg.min_radius - cfg.proposal_radius_margin)),
+                maxRadius=int(np.ceil(cfg.max_radius + cfg.proposal_radius_margin)),
             )
             if circles is not None:
                 proposals.extend(
