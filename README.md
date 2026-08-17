@@ -10,12 +10,19 @@ Riot APIs, no process interaction — pixels in, structured state out.
 least all five allies in 87% of frames, averaging 5.8 blue markers against 5
 expected, so it over-produces slightly by design.
 
-**Stage 2 — champion identification.** Partially working, and the current
-bottleneck. Allies are identified from a gallery bootstrapped out of the HUD
-itself. Three or more of the five allies are identified in 22% of frames,
-typically one or two otherwise. The local player's own marker never matches and
-is an open bug. Enemy identification is not started — nothing in the HUD names
-them.
+**Stage 2 — champion identification.** Partially working. Teammates are matched
+against a gallery bootstrapped out of the HUD itself; the local player is
+resolved geometrically instead (see below). At least three of the five allies
+are known in 52% of frames and at least four in 22%. Enemy identification is not
+started — nothing in the HUD names them.
+
+The local player is *not* identified by appearance, because it does not work:
+their HUD portrait and their minimap marker are different art, almost certainly
+a skin, while every teammate matches fine. Instead the minimap's camera
+viewport rectangle is located, and since the camera is locked to the player
+they sit at its centre. The nearest marker lands 5–7px from that centre with the
+runner-up 38–88px away, so it is effectively exact — found in 98% of frames and
+resolving the player in 85%.
 
 **Tracker.** Not built. This is where the remaining identification accuracy
 should come from: evidence accumulated per track across frames, rather than a
