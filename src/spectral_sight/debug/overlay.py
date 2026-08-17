@@ -50,6 +50,55 @@ def draw_blips(
     return canvas
 
 
+def draw_tracks(
+    image: np.ndarray,
+    tracks: Iterable,
+    timestamp: float,
+    *,
+    scale: float = 1.0,
+    self_track=None,
+    lost_after: float = 0.5,
+) -> np.ndarray:
+    """Draw tracked champions with their names.
+
+    Champions currently visible are drawn solid; those in fog are drawn hollow
+    at their last known position, which is the state a player actually cares
+    about -- "Yorick was bottom river four seconds ago" is the useful readout.
+    """
+    canvas = image.copy()
+    if scale != 1.0:
+        canvas = cv2.resize(
+            canvas, None, fx=scale, fy=scale, interpolation=cv2.INTER_NEAREST
+        )
+
+    for track in sorted(tracks, key=lambda t: t.age(timestamp), reverse=True):
+        age = track.age(timestamp)
+        visible = age < lost_after
+        color = TEAM_COLORS[track.team]
+        center = (int(round(track.x * scale)), int(round(track.y * scale)))
+        radius = int(round(14 * scale))
+
+        if not visible:
+            color = tuple(int(c * 0.55) for c in color)
+        cv2.circle(canvas, center, radius, color, 2 if visible else 1, cv2.LINE_AA)
+
+        if track is self_track:
+            cv2.circle(canvas, center, radius + 4, (255, 255, 255), 1, cv2.LINE_AA)
+
+        label = track.identity or "?"
+        if track is self_track:
+            label = f"{label} (you)"
+        if not visible:
+            label = f"{label} {age:.0f}s"
+
+        origin = (center[0] - radius, center[1] - radius - 4)
+        cv2.putText(canvas, label, origin, cv2.FONT_HERSHEY_SIMPLEX,
+                    0.40 * scale, (0, 0, 0), 3, cv2.LINE_AA)
+        cv2.putText(canvas, label, origin, cv2.FONT_HERSHEY_SIMPLEX,
+                    0.40 * scale, color, 1, cv2.LINE_AA)
+    return canvas
+
+
 def stack_masks(masks: dict[Team, np.ndarray]) -> np.ndarray:
     """Compose per-team binary masks into one BGR image for eyeballing."""
     if not masks:

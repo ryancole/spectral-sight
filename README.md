@@ -207,21 +207,40 @@ rewrite the pipeline in another language.
 
 ## Usage
 
-Calibrate once per (resolution, minimap scale) — the panel size is driven by an
-in-game slider, so it cannot be derived from resolution:
+One-time setup — fetch the champion icons, and calibrate the minimap region for
+your resolution and minimap-scale slider (the panel size is not derivable from
+resolution alone):
+
+```bash
+.venv/Scripts/python tools/fetch_icons.py
+```
 
 ```bash
 .venv/Scripts/python tools/calibrate_minimap.py --image data/frame.png
 ```
 
-Then run the detector:
+Then watch the whole pipeline run on a clip:
+
+```bash
+.venv/Scripts/python tools/watch.py --input "data/your clip.mp4"
+```
+
+Solid circles are champions currently visible; hollow dimmed circles are
+champions in fog, drawn at their last known position with the seconds since they
+were seen. A white outer ring marks the local player. Q quits, SPACE pauses.
+
+Useful flags: `--start N` to skip into the clip, `--stride 1` to process every
+frame instead of 10 Hz, `--save out.mp4` to write the annotated video, and
+`--quiet` to print the tracked roster per frame instead of opening a window.
+
+For working on stage 1 specifically:
 
 ```bash
 .venv/Scripts/python tools/detect_blips.py --input data/clip.mp4 --masks
 ```
 
-`--masks` shows the colour masks beside the detections, which is how you fit the
-HSV bands. `--benchmark N` times the detector instead of displaying it.
+`--masks` shows the colour masks beside the detections, which is how the HSV
+bands were fitted. `--benchmark N` times the detector instead of displaying it.
 
 ## Layout
 
