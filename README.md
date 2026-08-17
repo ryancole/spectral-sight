@@ -72,15 +72,46 @@ by raw similarity. Similarity alone let popular icons act as a sink: many
 markers weakly prefer the same champion, and three concurrent tracks each
 accumulated enough to claim Galio.
 
+**Roster locking.** The ten champions in the game are discovered from the
+footage, then used as a constraint. Evidence accumulates per team; once a team's
+top five are clearly ahead of the sixth, the gallery restricts to those five and
+the tracker holds the team to five tracks. On the sample clip blue locks at 66s
+and red at 209s, both correct.
+
+Locking is deliberately conservative, because a wrong lock is far worse than a
+late one — it makes the right answer permanently unreachable. Two constraints
+carry that:
+
+- The fifth slot must be both well supported *and* clearly ahead of the sixth.
+- **A champion plays for exactly one team.** Omitting this is not academic: the
+  enemy roster locked with an *ally* in it and permanently displaced the
+  champion who was really there. Names one team has locked are struck from the
+  other's candidate pool.
+
+Track count is capped at five per team from the first frame, which needs no
+roster — a team fields five champions whether or not their names are known yet.
+
+Measured over the whole 5.3-minute clip at 10 Hz, against the blind 173-icon
+gallery:
+
+| | Value |
+|---|---|
+| Mean allies identified (of 5) | 4.79 |
+| Mean enemies identified (of 5) | 4.03 |
+| ≥4 allies known | 100% |
+| All 5 allies known | 79% |
+| ≥3 enemies known | 92% |
+| False identities | **0** |
+| Live tracks | mean 9.3, max **10** |
+
 ### Known limits
 
-- **Track count is not bounded by the roster.** 27 live tracks persisted at the
-  end of a run that can only contain 10 champions. Output is deduplicated by
-  identity so this does not corrupt the headline numbers, but positions
-  attributed to a champion can flip between fragments.
-- **One persistent false identity.** A track held a name outside the true roster
-  for 640 of 1,200 frames. Locking the gallery to a discovered roster should
-  remove this class of error outright.
+- **Identification is not real-time.** Roughly 17 fps of processing at 10 Hz
+  sampling, dominated by the gallery pass. Fine for offline VOD analysis; not
+  yet fast enough to run live alongside a game.
+- **Enemy coverage is bounded by vision, not by the tracker.** All five enemies
+  are known in 36% of frames; the rest of the time some have simply never been
+  seen recently enough to place.
 
 ### Automatic ground truth
 

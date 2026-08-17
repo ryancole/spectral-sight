@@ -79,6 +79,14 @@ class TrackerConfig:
     than the bonus: pulling the wrong champion into an established track
     corrupts it, whereas failing to associate merely starts a new one."""
 
+    max_tracks_per_team: int = 5
+    """Confirmed tracks a team may hold.
+
+    This does not need the roster: a team fields five champions whether or not
+    their names are known yet, so the cap applies from the first frame. Without
+    it, stage 1's surplus markers accumulate into fragments during the discovery
+    period, and a champion's reported position flips between them."""
+
     evidence_per_match: float = 1.0
     """Scales how fast identity evidence accrues.
 
@@ -165,7 +173,55 @@ class Tracker:
             if t.age(timestamp) < self.config.forget_after
         ]
         self._resolve_duplicate_identities()
+        for team in (Team.BLUE, Team.RED):
+            self._cap_team(team, self.config.max_tracks_per_team)
         return self.confirmed
+
+    def enforce_roster(
+        self, team: Team, names: frozenset[str], limit: int
+    ) -> None:
+        """Constrain a team to a known roster.
+
+        Two things per-frame detection cannot do on its own. Identities outside
+        the roster are struck from every track's evidence, making a wrong name
+        unrepresentable rather than merely unlikely. And the team is held to
+        `limit` tracks, since a team has exactly that many champions however
+        many blobs stage 1 produced -- without which fragments accumulate
+        indefinitely and a champion's reported position flips between them.
+
+        Surplus tracks are dropped weakest first: unidentified before
+        identified, then least identity support, then least seen.
+        """
+        for track in [t for t in self.tracks if t.team is team]:
+            for name in [n for n in track.evidence if n not in names]:
+                track.evidence.pop(name, None)
+        self._cap_team(team, limit)
+
+    def _cap_team(self, team: Team, limit: int) -> None:
+        """Hold a team to `limit` confirmed tracks, dropping the weakest.
+
+        Tentative tracks are exempt: they are how a genuine champion that has
+        just reappeared gets back in, and counting them would let a burst of
+        stage 1 noise evict established tracks.
+        """
+        confirmed = [
+            t for t in self.tracks
+            if t.team is team and t.state is not TrackState.TENTATIVE
+        ]
+        if len(confirmed) <= limit:
+            return
+
+        confirmed.sort(
+            key=lambda t: (
+                t.identity is not None,
+                t.identity_support,
+                t.hits,
+                t.last_seen,
+            ),
+            reverse=True,
+        )
+        doomed = {id(t) for t in confirmed[limit:]}
+        self.tracks = [t for t in self.tracks if id(t) not in doomed]
 
     def _resolve_duplicate_identities(self) -> None:
         """Stop two tracks from both claiming the same champion.
