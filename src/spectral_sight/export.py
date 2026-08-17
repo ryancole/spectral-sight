@@ -70,7 +70,7 @@ class Observation:
     """Seen on this frame, rather than carried at a last known position.
     For an enemy, False means fog. For an ally, who is never fogged, it means
     death -- but this module does not make that call, it just records the fact
-    the caller can make it from."""
+    the caller can make it from. See `alive`, which does make it."""
 
     seconds_since_seen: float
     """Zero while visible; grows while a champion is unaccounted for."""
@@ -94,6 +94,28 @@ class Observation:
     """The local player, resolved from the camera viewport rather than by
     appearance."""
 
+    alive: bool | None = None
+    """Corroborated by the HUD, which draws a dead champion's portrait grey.
+
+    None means unknown, and it is the honest answer far more often than not: no
+    HUD panel names an enemy, so every enemy row carries None, and an ally row
+    carries None whenever the portraits and the minimap disagree about how many
+    teammates are missing.
+
+    That disagreement is the reason this is a separate field rather than a
+    rename of `visible`. An ally absent from the minimap is usually dead, but
+    sometimes the tracker simply lost them -- and a consumer reading absence as
+    death has no way to tell those apart. Here, one of them says None."""
+
+    allies_dead: int | None = None
+    """How many of your five teammates were dead on this frame.
+
+    Frame-level rather than per-champion, and repeated on every row of the
+    frame the same way `game_time` is. It is a count the HUD gives directly and
+    reliably, so it stays readable in the frames where `alive` cannot name
+    anyone -- which is what stops "one teammate was down, we cannot say which"
+    from being indistinguishable from "nobody was down"."""
+
     def to_dict(self) -> dict[str, object]:
         """Rounded to the precision the numbers actually carry.
 
@@ -112,6 +134,10 @@ class Observation:
             "visible": bool(self.visible),
             "seconds_since_seen": round(float(self.seconds_since_seen), 2),
             "is_self": bool(self.is_self),
+            "alive": None if self.alive is None else bool(self.alive),
+            "allies_dead": (
+                None if self.allies_dead is None else int(self.allies_dead)
+            ),
         }
         if self.world_x is not None and self.world_y is not None:
             row["world_x"] = round(float(self.world_x), 1)
@@ -134,6 +160,11 @@ class Observation:
             world_x=None if data.get("world_x") is None else float(data["world_x"]),
             world_y=None if data.get("world_y") is None else float(data["world_y"]),
             is_self=bool(data.get("is_self", False)),
+            alive=None if data.get("alive") is None else bool(data["alive"]),
+            allies_dead=(
+                None if data.get("allies_dead") is None
+                else int(data["allies_dead"])
+            ),
         )
 
 
@@ -162,6 +193,11 @@ class TimelineMeta:
     """Whether the clock was calibrated for this run. When False, every row's
     `game_time` is None and the timeline joins to nothing outside itself."""
 
+    has_liveness: bool = False
+    """Whether the HUD portraits were calibrated for this run. When False every
+    row's `alive` is None because nothing was read, which a consumer must not
+    confuse with the None meaning the HUD was read and disagreed."""
+
     world_bounds: dict[str, float] | None = None
     world_units_per_pixel: list[float] | None = None
     """The world calibration in force, or None if positions are crop pixels
@@ -179,6 +215,7 @@ class TimelineMeta:
             "stride": self.stride,
             "created": self.created,
             "has_game_time": self.has_game_time,
+            "has_liveness": self.has_liveness,
             "world_bounds": self.world_bounds,
             "world_units_per_pixel": self.world_units_per_pixel,
         }
@@ -192,6 +229,7 @@ class TimelineMeta:
             stride=int(data["stride"]),
             created=str(data.get("created", "")),
             has_game_time=bool(data.get("has_game_time", False)),
+            has_liveness=bool(data.get("has_liveness", False)),
             world_bounds=data.get("world_bounds"),
             world_units_per_pixel=data.get("world_units_per_pixel"),
             schema=int(data.get("schema", SCHEMA)),
@@ -209,6 +247,7 @@ class TimelineMeta:
             stride=self.stride,
             created=now,
             has_game_time=self.has_game_time,
+            has_liveness=self.has_liveness,
             world_bounds=self.world_bounds,
             world_units_per_pixel=self.world_units_per_pixel,
             schema=self.schema,

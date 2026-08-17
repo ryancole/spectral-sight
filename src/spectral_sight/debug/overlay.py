@@ -58,12 +58,18 @@ def draw_tracks(
     scale: float = 1.0,
     self_track=None,
     lost_after: float = 0.5,
+    dead: frozenset[str] = frozenset(),
 ) -> np.ndarray:
     """Draw tracked champions with their names.
 
     Champions currently visible are drawn solid; those in fog are drawn hollow
     at their last known position, which is the state a player actually cares
     about -- "Yorick was bottom river four seconds ago" is the useful readout.
+
+    A champion in `dead` is crossed out instead of dimmed. Absence and death
+    look identical on the minimap and mean opposite things -- one is a champion
+    who might walk out of the fog at you, the other is a champion who cannot --
+    so they should not be drawn the same way.
     """
     canvas = image.copy()
     if scale != 1.0:
@@ -78,9 +84,18 @@ def draw_tracks(
         center = (int(round(track.x * scale)), int(round(track.y * scale)))
         radius = int(round(14 * scale))
 
+        is_dead = track.identity is not None and track.identity in dead
         if not visible:
             color = tuple(int(c * 0.55) for c in color)
         cv2.circle(canvas, center, radius, color, 2 if visible else 1, cv2.LINE_AA)
+
+        if is_dead:
+            offset = int(round(radius * 0.7))
+            for dx in (offset, -offset):
+                cv2.line(canvas,
+                         (center[0] - offset, center[1] - dx),
+                         (center[0] + offset, center[1] + dx),
+                         color, 1, cv2.LINE_AA)
 
         if track is self_track:
             cv2.circle(canvas, center, radius + 4, (255, 255, 255), 1, cv2.LINE_AA)
@@ -88,7 +103,9 @@ def draw_tracks(
         label = track.identity or "?"
         if track is self_track:
             label = f"{label} (you)"
-        if not visible:
+        if is_dead:
+            label = f"{label} dead"
+        elif not visible:
             label = f"{label} {age:.0f}s"
 
         origin = (center[0] - radius, center[1] - radius - 4)

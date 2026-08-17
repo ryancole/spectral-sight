@@ -218,6 +218,85 @@ Measured on 400 frames of the sample clip: 2,149 rows at 17.2 fps, game time on
 every row and monotonic, world units on every row, a champion named on 97%, and
 20% of rows recording someone in fog.
 
+**Death.** An ally is never hidden by fog, so an ally missing from the minimap
+is dead — that was the reasoning, and the timeline could not act on it, so a
+dead ally read as a champion nobody had seen for twenty-four seconds. The HUD
+portraits now settle it: a dead champion's portrait is drawn grey.
+
+Measured over both long recordings — 4,804 frames, 24,000 ally rows — 97.5% of
+ally rows now carry a verdict, with no false deaths. The portraits found five
+deaths across the two clips, four of them lasting 11.9–12.0s and one cut short
+by the end of its clip; the four the timeline can attribute to a champion match
+those readings exactly.
+
+The interesting number is not the deaths. It is that **20.9% of ally rows are
+champions the tracker had lost who were provably alive.** One ally row in five
+was previously indistinguishable from a death, and the reasoning above would
+have called every one of them a kill.
+
+**Death is read from the portrait, not the health bar.** The bar is the obvious
+place to look and it is a trap. A dead teammate's slot chrome is removed
+entirely — portrait ring, bar box, borders — and the game world shows through
+where the box was. The bar does not go empty, it stops existing, and what gets
+measured is whatever terrain is behind it. Measured: an ally eleven seconds dead
+read as *full health* in the frames where grass sat behind the missing box.
+
+The two slot kinds also fail differently, which rules out fixing that with a
+better bar reader. A teammate's box vanishes; the local player's box stays put
+and reads `0 / 746`. The portrait means the same thing in both places.
+
+Two details are load-bearing:
+
+- **The threshold is relative to the slot's own history.** Portrait saturation
+  is a property of the champion's art — living slots measured anywhere from 52
+  to 161 while dead ones read 1 to 29 — so an absolute floor clearing a dead
+  portrait sits uncomfortably close to a legitimately drab champion. Each slot
+  learns what it looks like alive, the same move as the clock bootstrapping its
+  digits. Against that baseline the tightest living slot sits at 0.78 and the
+  loosest dead one at 0.24, and the threshold is halfway between.
+- **Median saturation, not mean.** A dead portrait is not blank: the respawn
+  countdown is drawn across it in saturated red. On the local player's larger
+  portrait those digits pulled the mean to within **0.02** of the living
+  threshold and the reading flickered as the number changed width. The digits
+  are a small minority of the disc, so the median does not see them.
+
+### Counting the dead does not name them
+
+The HUD knows how many teammates are down but not which, since portrait art is
+skin-specific. The obvious join is to the minimap: one dead portrait should mean
+one ally track missing. **Measured, that names the wrong champion**, and it is
+worth recording why.
+
+The marker really does disappear — blue detections fall from a mean of 5.84 per
+frame to 5.24 when a teammate dies. But stage 1 over-produces by about one
+marker per frame *by design*, so five candidates remain, and the tracker, capped
+at five per team, keeps feeding all five tracks. No track ever goes quiet. What
+the counts then match on is ordinary frame-to-frame blinking, which hands the
+dead champion's name to whichever living ally the detector dropped that instant.
+On the sample clip that turned one twelve-second death into a dozen fragments
+spread across three champions who were never dead at all.
+
+So a death is only attributed to a champion that can be named outright, and
+there is exactly one such route: the local player, resolved from the camera
+viewport rather than by appearance. Their portrait is a known slot, so when it
+greys out the champion at the centre of the camera is the one who died.
+
+That name has to be *accumulated*, not read fresh, for two reasons. The viewport
+finds the player by the marker at the camera centre, and a dead player has no
+marker — measured, it resolves in **none** of the frames where the self portrait
+reads dead. And its answer drifts: over the long clip it named the right
+champion 84.6% of the time but sat on a teammate for seconds at a stretch, and
+taking the latest value attributed the player's second death to two champions
+who were alive throughout. Accumulating instead is the same move the tracker
+makes for a marker's identity, and Zilean beat the runner-up 1,926 to 133.
+
+A frame therefore resolves when every dead portrait is one that can be named,
+which covers two cases and most of the footage: nobody dead, which needs no
+naming at all and is four frames in five; and only the local player dead, which
+names the casualty and so clears everyone else. A teammate down alongside — or
+instead — leaves a death nobody can attribute, and those rows report `alive:
+null` while `allies_dead` still carries the count. That is 2.5% of ally rows.
+
 ### Known limits
 
 - **Identification is not real-time.** Roughly 17 fps of processing at 10 Hz
@@ -237,10 +316,19 @@ every row and monotonic, world units on every row, a champion named on 97%, and
 - **Nothing handles the absence of a clock.** Loading screens and the
   pre-game lobby have no timer, and the reader simply returns nothing there
   rather than knowing why.
-- **A timeline records `visible`, not death.** For an ally, who is never fogged,
-  invisibility means death — but nothing infers that yet, so a dead ally reads
-  as a champion nobody has seen for 24 seconds. The HUD portraits already carry
-  health and are not wired into the pipeline; that is the next thing to fix.
+- **A teammate's death cannot be attributed to a champion.** The HUD says
+  someone is down and the count is reliable; naming them needs a slot-to-champion
+  mapping that does not exist yet. Matching each portrait against just the five
+  locked roster icons is the obvious route — a five-way closed-set assignment
+  rather than the 173-way one, with the local player already pinned by the
+  viewport and skinned slots recoverable by elimination — and it would close the
+  last 2.5% of ally rows. That is the next thing to fix.
+- **Health is read as alive or dead, not as a number.** The bars carry an exact
+  figure and the local player's even carries it as text, but nothing reads it,
+  so "low and retreating" is not expressible.
+- **Nothing reads the respawn countdown**, which is drawn on every dead
+  portrait and would say when a champion is coming back rather than only that
+  they are gone.
 
 ### Automatic ground truth
 
@@ -379,8 +467,8 @@ resolution alone):
 .venv/Scripts/python tools/calibrate_minimap.py --image data/frame.png
 ```
 
-Two optional calibrations add game time and world coordinates. Both are skipped
-quietly if absent, so everything above works without them.
+Three optional calibrations add game time, world coordinates and death. All are
+skipped quietly if absent, so everything above works without them.
 
 Teach the clock its digits — drag a rough box around the match timer and it does
 the rest, including checking itself against video time:
@@ -400,6 +488,21 @@ the ornate frame and not the border band inside it:
 .venv/Scripts/python tools/calibrate_world.py --input "data/your clip.mp4" --validate
 ```
 
+Mark the friendly HUD portraits, which is what makes death readable — three
+boxes: your leftmost teammate, your rightmost teammate, and yourself:
+
+```bash
+.venv/Scripts/python tools/calibrate_hud.py --input "data/your clip.mp4"
+```
+
+```bash
+.venv/Scripts/python tools/calibrate_hud.py --input "data/your clip.mp4" --validate
+```
+
+That check is worth running. A box a few pixels off still reads a portrait and
+still produces a baseline, so a bad calibration does not announce itself — it
+just quietly stops noticing deaths.
+
 Then watch the whole pipeline run on a clip:
 
 ```bash
@@ -408,7 +511,8 @@ Then watch the whole pipeline run on a clip:
 
 Solid circles are champions currently visible; hollow dimmed circles are
 champions in fog, drawn at their last known position with the seconds since they
-were seen. A white outer ring marks the local player. Q quits, SPACE pauses.
+were seen. A champion the HUD confirms is dead is crossed out rather than
+dimmed. A white outer ring marks the local player. Q quits, SPACE pauses.
 
 Useful flags: `--start N` to skip into the clip, `--stride 1` to process every
 frame instead of 10 Hz, `--save out.mp4` to write the annotated video, and
@@ -426,6 +530,10 @@ from spectral_sight.export import read_timeline
 meta, rows = read_timeline("clip.jsonl")
 seen = [r for r in rows if r.champion == "Xerath" and r.visible]
 print(f"{seen[0].game_time}s at {seen[0].world_x:.0f}, {seen[0].world_y:.0f}")
+
+# An ally off the minimap who is not dead: the tracker lost them, and knowing
+# that is the difference between a kill and a blink.
+lost = [r for r in rows if not r.visible and r.alive is True]
 ```
 
 `iter_timeline` streams the same rows without holding them all, which is what a
@@ -453,7 +561,8 @@ src/spectral_sight/
     world.py                  minimap pixels to Summoner's Rift units
   perception/identity/        champion gallery and roster locking
   perception/hud/
-    portraits.py              teammate portraits, health and level
+    portraits.py              where the friendly portraits sit
+    alive.py                  who is dead, from portrait desaturation
     clock.py                  the match timer
   tracking/                   identity accumulated across frames
   pipeline.py                 the stages, wired in order
@@ -464,6 +573,7 @@ tests/synthetic.py            minimaps with known ground truth
 etc/regions/                  calibrated minimap regions per resolution
 etc/clock/                    clock position and learned digits per resolution
 etc/world/                    map area and world bounds per resolution
+etc/hud/                      friendly portrait positions per resolution
 ```
 
 ## Testing
