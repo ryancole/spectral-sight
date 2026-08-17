@@ -11,6 +11,22 @@ footage: 7/7 markers with 0 false positives on hand-marked ground truth.
 Stage 2 (champion identification by gallery matching) and the tracker are not
 built yet.
 
+## Input assumptions
+
+The target input is a **screen-recorded VOD from a player's perspective** — not
+a Riot `.rofl` replay, and not a spectator feed. This is a fixed property of the
+problem, not a limitation of the sample footage, and it drives the design:
+
+- **Fog of war is permanent.** Enemy champions are only on the minimap while your
+  team has vision of them. Measured average is 6.4 markers per frame against a
+  cap of 10.
+- **Allies are not subject to it.** Your own team is always drawn on the minimap
+  regardless of vision, so the five ally identities are continuously observable.
+  An ally leaving the minimap means death, not fog.
+- **Nothing may assume ten visible identities.** Tracking needs track birth and
+  death plus re-identification on reappearance, not a fixed assignment over a
+  closed set.
+
 ## Setup
 
 Python 3.14.6 works; every dependency has a 3.14 wheel.
@@ -77,10 +93,9 @@ Two things about the colour bands were not what they looked like:
 - **Fitted to one clip.** The bands come from a single recording. The client's
   colour-blind setting shifts them, and they have not been checked across
   champion skins or map skins.
-- **Fog of war is not modelled.** The clip is a live player's game, so most
-  enemies are hidden most of the time — 6.4 markers per frame on average against
-  a cap of 10. Only a spectator or replay feed with full vision approaches ten.
-  Stage 2 must not assume a fixed set of ten visible identities.
+- **Detection is per-frame and memoryless.** Stage 1 reports what is on the
+  minimap right now. Persistence across fog — last known position, time since
+  seen — is the tracker's job, not this stage's.
 - **Hough is tuned for recall.** `param2=18` deliberately over-proposes and
   leans on the colour test to filter. Raising it to 30 dropped recall from 7/7
   to 4/7 while only removing candidates the colour test rejects for free.
