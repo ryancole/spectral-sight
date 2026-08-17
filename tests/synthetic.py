@@ -54,6 +54,99 @@ DEFAULT_MARKERS: tuple[Marker, ...] = (
 )
 
 
+# -- nameplates -----------------------------------------------------------
+#
+# Sampled from real footage the same way the marker colours were: the hostile
+# health bar is the same magenta-red as the enemy ring, the resource bar sits
+# near H~100, and the level box is dark enough to read as unlit.
+PLATE_HOSTILE_BGR = (40, 35, 190)
+PLATE_ALLY_BGR = (40, 190, 60)
+PLATE_RESOURCE_BGR = (200, 150, 70)
+PLATE_BOX_BGR = (30, 25, 35)
+PLATE_INK = (238, 238, 238)
+
+PLATE_TICK_EVERY = 15
+PLATE_TICK_WIDTH = 2
+"""Health bars are divided by tick marks, which is why fill measurement has to
+hop short gaps rather than take a connected component."""
+
+
+def draw_nameplate(
+    canvas: np.ndarray,
+    x: int,
+    y: int,
+    *,
+    health: float,
+    resource: float,
+    hostile: bool = True,
+    level: int | None = None,
+    bar_width: int = 100,
+    bar_height: int = 10,
+    resource_dy: int = 13,
+    resource_height: int = 4,
+    box_width: int = 22,
+    ticks: bool = True,
+) -> None:
+    """A champion nameplate: level box, ticked health bar, resource bar.
+
+    `x`, `y` are the health bar's top-left, matching what the reader reports.
+    """
+    box_right = x - 4
+    cv2.rectangle(canvas, (box_right - box_width, y - 3),
+                  (box_right, y + resource_dy + resource_height + 2),
+                  PLATE_BOX_BGR, -1)
+    if level is not None:
+        text = str(level)
+        (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+        cv2.putText(
+            canvas, text,
+            (box_right - box_width // 2 - tw // 2, y + th + 3),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.5, PLATE_INK, 1, cv2.LINE_AA,
+        )
+
+    colour = PLATE_HOSTILE_BGR if hostile else PLATE_ALLY_BGR
+    filled = int(round(bar_width * health))
+    if filled > 0:
+        cv2.rectangle(canvas, (x, y), (x + filled - 1, y + bar_height - 1),
+                      colour, -1)
+    if ticks:
+        for offset in range(PLATE_TICK_EVERY, filled, PLATE_TICK_EVERY):
+            cv2.rectangle(
+                canvas, (x + offset, y),
+                (x + offset + PLATE_TICK_WIDTH - 1, y + bar_height - 1),
+                PLATE_BOX_BGR, -1,
+            )
+
+    top = y + resource_dy
+    filled = int(round(bar_width * resource))
+    if filled > 0:
+        cv2.rectangle(canvas, (x, top), (x + filled - 1, top + resource_height - 1),
+                      PLATE_RESOURCE_BGR, -1)
+
+
+def draw_minion_bar(
+    canvas: np.ndarray, x: int, y: int, *, hostile: bool = True, width: int = 40
+) -> None:
+    """A health bar with no resource bar and no level box.
+
+    The thing the reader has to reject: right colour, bar-shaped, and there are
+    far more of them on screen than there are champions.
+    """
+    colour = PLATE_HOSTILE_BGR if hostile else PLATE_ALLY_BGR
+    cv2.rectangle(canvas, (x, y), (x + width, y + 3), colour, -1)
+
+
+def plate_scene(
+    width: int = 640, height: int = 400, *, seed: int = 11
+) -> np.ndarray:
+    """A world-view background to draw nameplates onto."""
+    rng = np.random.default_rng(seed)
+    base = np.array([60, 68, 58], np.uint8)
+    canvas = np.tile(base, (height, width, 1)).astype(np.int16)
+    canvas += rng.integers(-14, 14, (height, width, 3), dtype=np.int16)
+    return np.clip(canvas, 0, 255).astype(np.uint8)
+
+
 def _background(size: int, seed: int) -> np.ndarray:
     """Dark, low-saturation terrain noise -- nowhere near the team hues."""
     rng = np.random.default_rng(seed)
