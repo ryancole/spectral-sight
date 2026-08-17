@@ -5,14 +5,19 @@ constraints live in one place:
 
 1. detect markers on the minimap crop (stage 1)
 2. locate the camera viewport, which identifies the local player geometrically
-3. match the remaining markers against the champion gallery (stage 2)
-4. fold everything into the tracker, which carries identity across frames
+3. match markers against the champion gallery, per team (stage 2)
+4. accumulate roster evidence, and lock the gallery down once it settles
+5. fold everything into the tracker, which carries identity across frames
 
-Step 2 comes before step 3 deliberately. The local player's minimap marker is
-stock art while their HUD portrait is skin-specific, so matching them by
-appearance fails -- and leaving their marker in the gallery pass also lets it
-steal a teammate's identity. Resolving it geometrically first removes both
-problems.
+Matching is per team rather than global. Before the roster locks that changes
+little; after, it is what lets a blue marker be compared only against blue
+champions.
+
+The local player is identified by the viewport, not by appearance -- their
+minimap art is stock while their HUD portrait is skin-specific. They are still
+put through the gallery, because the stock icon set contains their champion and
+naming them is useful; the viewport's job is to say *which* track is theirs,
+which no amount of matching can establish.
 """
 
 from __future__ import annotations
@@ -23,6 +28,7 @@ from pathlib import Path
 import numpy as np
 
 from spectral_sight.perception.identity import Gallery, Match, load_icon_gallery
+from spectral_sight.perception.identity.roster import Roster
 from spectral_sight.perception.minimap import (
     BlipDetector,
     BlipDetectorConfig,
@@ -66,6 +72,7 @@ class Pipeline:
         *,
         detector: BlipDetector | None = None,
         tracker: Tracker | None = None,
+        roster: Roster | None = None,
     ) -> None:
         self.region = region
         self.gallery = gallery
@@ -73,6 +80,25 @@ class Pipeline:
             scaled_config(BlipDetectorConfig(), minimap_width=region.width)
         )
         self.tracker = tracker or Tracker(TrackerConfig())
+        self.roster = roster or Roster()
+        self._restricted: dict[Team, Gallery] = {}
+
+    def _gallery_for(self, team: Team) -> Gallery:
+        """The full gallery, or just this team's champions once locked."""
+        names = self.roster.locked(team)
+        if names is None:
+            return self.gallery
+        cached = self._restricted.get(team)
+        if cached is None:
+            cached = Gallery(mask=self.gallery.mask)
+            for name in sorted(names):
+                cached.add_descriptor(name, self.gallery.entries[name])
+            self._restricted[team] = cached
+        return cached
+
+    def _apply_roster(self) -> None:
+        for team, names in self.roster.names().items():
+            self.tracker.enforce_roster(team, names, self.roster.team_size)
 
     @classmethod
     def for_resolution(
@@ -92,19 +118,24 @@ class Pipeline:
         viewport = find_viewport(minimap)
         self_blip = self._find_self(blips, viewport)
 
-        others = [b for b in blips if b is not self_blip]
-        matches = self.gallery.assign_regions(
-            minimap, [(b.x, b.y, b.radius) for b in others]
-        )
+        matches: list[Match | None] = [None] * len(blips)
+        for team in (Team.BLUE, Team.RED):
+            indices = [i for i, b in enumerate(blips) if b.team is team]
+            if not indices:
+                continue
+            gallery = self._gallery_for(team)
+            regions = [(blips[i].x, blips[i].y, blips[i].radius) for i in indices]
+            for index, match in zip(indices, gallery.assign_regions(minimap, regions)):
+                matches[index] = match
+                if match is not None and match.confident:
+                    self.roster.observe(team, match.name, match.margin)
 
-        # Re-align matches with the full blip list; the local player is
-        # identified by position, so it deliberately carries no gallery match.
-        aligned: list[Match | None] = []
-        iterator = iter(matches)
-        for blip in blips:
-            aligned.append(None if blip is self_blip else next(iterator))
+        self.tracker.update(blips, timestamp, matches)
+        # Enforcement can drop tracks, so read the surviving set afterwards
+        # rather than trusting the snapshot update() returned.
+        self._apply_roster()
+        tracks = self.tracker.confirmed
 
-        tracks = self.tracker.update(blips, timestamp, aligned)
         self_track = None
         if self_blip is not None:
             self_track = min(
@@ -115,7 +146,7 @@ class Pipeline:
 
         return PipelineResult(
             blips=blips,
-            matches=aligned,
+            matches=matches,
             tracks=tracks,
             viewport=viewport,
             self_blip=self_blip,
