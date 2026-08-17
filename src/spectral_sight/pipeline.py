@@ -4,12 +4,13 @@ One object so callers do not have to rebuild the wiring, and so the ordering
 constraints live in one place:
 
 1. read the match timer, so the frame has a game time and not just a video one
-2. detect markers on the minimap crop (stage 1)
-3. locate the camera viewport, which identifies the local player geometrically
-4. match markers against the champion gallery, per team (stage 2)
-5. accumulate roster evidence, and lock the gallery down once it settles
-6. fold everything into the tracker, which carries identity across frames
-7. flatten the tracked state into observations, which is the output proper
+2. read the friendly HUD portraits, which say how many teammates are dead
+3. detect markers on the minimap crop (stage 1)
+4. locate the camera viewport, which identifies the local player geometrically
+5. match markers against the champion gallery, per team (stage 2)
+6. accumulate roster evidence, and lock the gallery down once it settles
+7. fold everything into the tracker, which carries identity across frames
+8. flatten the tracked state into observations, which is the output proper
 
 Matching is per team rather than global. Before the roster locks that changes
 little; after, it is what lets a blue marker be compared only against blue
@@ -21,12 +22,19 @@ put through the gallery, because the stock icon set contains their champion and
 naming them is useful; the viewport's job is to say *which* track is theirs,
 which no amount of matching can establish.
 
-The clock and the world transform are both optional and both need a calibration
-step of their own, so `for_resolution` loads them if they are there and carries
-on without them if they are not. Everything that worked before they existed
-still works; a caller that wants them checks whether they arrived.
+Steps 2 and 7 are read from opposite ends of the screen and are joined in step
+8. The HUD knows how many teammates are dead but not which champions they are,
+since portrait art is skin-specific; the minimap knows exactly which champions
+are missing but not why. Neither is sufficient alone, and together they settle
+it -- see `_attribute_deaths`.
 
-Step 7 is why they exist. Game time and world units are the two keys that join
+The clock, the world transform and the HUD portraits are all optional and each
+needs a calibration step of its own, so `for_resolution` loads them if they are
+there and carries on without them if they are not. Everything that worked
+before they existed still works; a caller that wants them checks whether they
+arrived.
+
+Step 8 is why they exist. Game time and world units are the two keys that join
 this footage to anything outside it, and a caller that has to remember to apply
 them itself will sometimes not -- so `process` produces observations already
 converted rather than leaving `world_position` as a method to be discovered.
@@ -40,12 +48,14 @@ from pathlib import Path
 import numpy as np
 
 from spectral_sight.export import Observation, TimelineMeta
+from spectral_sight.perception.hud.alive import AliveReader, Liveness
 from spectral_sight.perception.hud.clock import (
     ClockFilter,
     ClockReader,
     GameClock,
     load_clock_reader,
 )
+from spectral_sight.perception.hud.portraits import PortraitLayout
 from spectral_sight.perception.identity import Gallery, Match, load_icon_gallery
 from spectral_sight.perception.identity.roster import Roster
 from spectral_sight.perception.minimap import (
@@ -65,6 +75,20 @@ SELF_RADIUS = 12.0
 The nearest marker measures 5-7px on real footage with the runner-up 38-88px
 away, so this threshold sits comfortably inside a very wide gap."""
 
+SELF_SLOT = "self"
+"""The HUD portrait slot holding the local player's own champion, as named by
+`PortraitLayout.all_crops`."""
+
+SELF_MIN_SIGHTINGS = 10
+SELF_MIN_LEAD = 2.0
+"""How much the viewport must favour one champion before it is called the local
+player: this many resolutions, and this many times the runner-up.
+
+Measured over a 5.3-minute clip the viewport named the player in 2,276 frames
+and got Zilean 84.6% of the time, with the next candidate on 5.8%. The lead is
+enormous, so these are loose thresholds that only exclude the opening frames and
+genuine confusion -- not a fit to that ratio."""
+
 
 @dataclass(slots=True)
 class PipelineResult:
@@ -78,6 +102,11 @@ class PipelineResult:
     self_track: Track | None = None
     clock: GameClock | None = None
     """Match time, when the clock is calibrated and readable."""
+
+    liveness: Liveness | None = None
+    """What the HUD portraits say about which teammates are alive, when they
+    are calibrated. Slot-indexed, so it says how many are dead but not which
+    champions they are -- see `_attribute_deaths` for how that is closed."""
 
     observations: list[Observation] = field(default_factory=list)
     """One flat, serialisable row per confirmed track -- the same content as
@@ -102,6 +131,7 @@ class Pipeline:
         roster: Roster | None = None,
         clock: ClockReader | None = None,
         world: WorldTransform | None = None,
+        portraits: PortraitLayout | None = None,
         resolution: tuple[int, int] | None = None,
     ) -> None:
         self.region = region
@@ -117,8 +147,45 @@ class Pipeline:
         self.roster = roster or Roster()
         self.clock = clock
         self.world = world
+        self.portraits = portraits
+        self.liveness = None if portraits is None else AliveReader(portraits)
         self._clock_filter = ClockFilter()
         self._restricted: dict[Team, Gallery] = {}
+        self._self_evidence: dict[str, int] = {}
+        """How often the viewport has named each champion as the local player.
+
+        Accumulated rather than read fresh, for two reasons. The viewport finds
+        the player by the marker at the camera centre, and a dead player has no
+        marker -- so it is unavailable in exactly the frames where a death needs
+        attributing. And the latest answer is not reliable enough to build on:
+        over a 5.3-minute clip it named the right champion 85% of the time but
+        drifted for seconds at a stretch when the camera sat on a teammate, and
+        taking the most recent value attributed the player's second death to two
+        champions who were alive throughout.
+
+        The player is one champion for the whole game, so this is the same move
+        the tracker makes for a marker's identity: let the evidence pile up and
+        a handful of bad frames cannot outvote it."""
+
+    @property
+    def self_champion(self) -> str | None:
+        """The champion the local player is on, or None while it is unsettled.
+
+        Requires a clear lead rather than a bare majority, since the cost of
+        being wrong is naming the wrong casualty -- and a champion who is merely
+        standing where the camera is pointing can win a handful of frames.
+        """
+        if not self._self_evidence:
+            return None
+        ranked = sorted(self._self_evidence.items(), key=lambda kv: kv[1],
+                        reverse=True)
+        name, sightings = ranked[0]
+        runner_up = ranked[1][1] if len(ranked) > 1 else 0
+        if sightings < SELF_MIN_SIGHTINGS:
+            return None
+        if sightings < runner_up * SELF_MIN_LEAD:
+            return None
+        return name
 
     def world_position(self, x: float, y: float) -> tuple[float, float] | None:
         """Minimap-crop coordinate to world units, if the world is calibrated.
@@ -153,9 +220,10 @@ class Pipeline:
     ) -> Pipeline:
         """Build from the calibrated region for a resolution plus an icon set.
 
-        The minimap region and the icons are required. The clock and the world
-        transform are picked up if they have been calibrated and skipped
-        quietly if not, so adding them to an existing setup is opt-in.
+        The minimap region and the icons are required. The clock, the world
+        transform and the HUD portraits are picked up if they have been
+        calibrated and skipped quietly if not, so adding any of them to an
+        existing setup is opt-in.
         """
         try:
             clock = load_clock_reader(width, height)
@@ -165,11 +233,16 @@ class Pipeline:
             world = WorldTransform.for_resolution(width, height)
         except FileNotFoundError:
             world = None
+        try:
+            portraits = PortraitLayout.for_resolution(width, height)
+        except FileNotFoundError:
+            portraits = None
         return cls(
             region=MinimapRegion.for_resolution(width, height),
             gallery=load_icon_gallery(icons),
             clock=clock,
             world=world,
+            portraits=portraits,
             resolution=(width, height),
         )
 
@@ -178,6 +251,9 @@ class Pipeline:
         clock = None
         if self.clock is not None:
             clock = self._clock_filter.update(self.clock.read(frame), timestamp)
+
+        liveness = (None if self.liveness is None
+                    else self.liveness.read(frame))
 
         minimap = self.region.crop(frame)
         blips = self.detector.detect(minimap)
@@ -210,6 +286,9 @@ class Pipeline:
                 key=lambda t: t.distance_to(self_blip.x, self_blip.y),
                 default=None,
             )
+        if self_track is not None and self_track.identity is not None:
+            name = self_track.identity
+            self._self_evidence[name] = self._self_evidence.get(name, 0) + 1
 
         return PipelineResult(
             blips=blips,
@@ -219,8 +298,92 @@ class Pipeline:
             self_blip=self_blip,
             self_track=self_track,
             clock=clock,
-            observations=self._observe(tracks, timestamp, clock, self_track),
+            liveness=liveness,
+            observations=self._observe(
+                tracks, timestamp, clock, self_track, liveness
+            ),
         )
+
+    def _attribute_deaths(
+        self,
+        tracks: list[Track],
+        liveness: Liveness | None,
+    ) -> dict[int, bool | None]:
+        """Work out which *tracks* the HUD's dead slots refer to.
+
+        The HUD counts dead teammates but does not name them: a portrait slot is
+        skin-specific art, which is the one gallery this project has already
+        established cannot be trusted to identify a champion.
+
+        **The obvious way to close that gap does not work, and it is worth
+        recording why.** An ally is drawn on the minimap only while alive, so
+        one dead portrait ought to mean one ally track missing, and matching the
+        counts ought to name the casualty. Measured, it names the wrong one. The
+        marker really does disappear -- blue detections fall from a mean of 5.84
+        per frame to 5.24 when a teammate dies -- but stage 1 over-produces by
+        about one marker per frame by design, so five candidates remain and the
+        tracker, capped at five per team, keeps feeding all five tracks. No
+        track ever goes quiet. What the counts then match on is ordinary
+        frame-to-frame blinking, which hands the dead champion's name to
+        whichever living ally the detector happened to drop that instant. On the
+        sample clip that turned one twelve-second death into a dozen fragments
+        spread across three champions who were never dead at all.
+
+        So deaths are only attributed to champions that can be named outright,
+        and there is exactly one such route: the local player, who is resolved
+        from the camera viewport rather than by appearance. Their own portrait
+        is a known slot, so when it greys out, the champion at the centre of the
+        camera is the one who died -- no counting involved. It has to be
+        `self_champion`, the accumulated answer, rather than this frame's: the
+        viewport finds the player by the marker at the camera centre, and a dead
+        player has no marker, so `self_track` resolves in none of the frames in
+        which the self portrait reads dead.
+
+        A frame is then resolved when every dead portrait is one that can be
+        named. Two cases qualify and between them they cover most of the
+        footage:
+
+        - **Nobody dead** needs no naming at all: every ally track is alive,
+          whatever the minimap did. Measured, four frames in five. This is where
+          the HUD earns its place, because it is the only thing that can tell a
+          champion the tracker lost from a champion who died, and those rows
+          come out `visible=False, alive=True` -- a state the timeline
+          previously had no way to say.
+        - **Only the local player is dead**, which names the casualty and
+          therefore clears everyone else.
+
+        Anything else -- a teammate down, or the player down alongside one --
+        leaves at least one death unattributable, and the frame reports None for
+        every ally rather than guessing which. `allies_dead` still carries the
+        count, so a consumer knows someone was down even when nobody can say
+        who.
+
+        Enemies are always None. Fog means their absence says nothing, and no
+        HUD panel names them.
+        """
+        verdicts: dict[int, bool | None] = {t.id: None for t in tracks}
+        dead_count = None if liveness is None else liveness.dead_count
+        if dead_count is None:
+            return verdicts
+
+        named_dead = set()
+        me = liveness.slot(SELF_SLOT)
+        if me is not None and me.alive is False and self.self_champion:
+            named_dead.add(self.self_champion)
+        if len(named_dead) != dead_count:
+            return verdicts
+
+        allies = [t for t in tracks if t.team is Team.BLUE]
+        identities = {t.identity for t in allies}
+        if not named_dead <= identities:
+            # The champion known to be dead is not among the tracks that would
+            # be cleared, so one of the tracks about to be called alive could
+            # be them under a name that has not settled yet.
+            return verdicts
+
+        for track in allies:
+            verdicts[track.id] = track.identity not in named_dead
+        return verdicts
 
     def _observe(
         self,
@@ -228,6 +391,7 @@ class Pipeline:
         timestamp: float,
         clock: GameClock | None,
         self_track: Track | None,
+        liveness: Liveness | None = None,
     ) -> list[Observation]:
         """Flatten this frame's tracks into rows.
 
@@ -235,6 +399,7 @@ class Pipeline:
         file, which the tracker's own list does not guarantee.
         """
         lost_after = self.tracker.config.lost_after
+        alive = self._attribute_deaths(tracks, liveness)
         rows = []
         for track in sorted(tracks, key=lambda t: t.id):
             world = self.world_position(track.x, track.y)
@@ -254,6 +419,8 @@ class Pipeline:
                     world_x=None if world is None else world[0],
                     world_y=None if world is None else world[1],
                     is_self=self_track is not None and track.id == self_track.id,
+                    alive=alive.get(track.id),
+                    allies_dead=None if liveness is None else liveness.dead_count,
                 )
             )
         return rows
@@ -288,6 +455,7 @@ class Pipeline:
             height=resolution[1],
             stride=stride,
             has_game_time=self.clock is not None,
+            has_liveness=self.liveness is not None,
             world_bounds=bounds,
             world_units_per_pixel=scale,
         )

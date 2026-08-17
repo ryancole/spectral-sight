@@ -16,7 +16,9 @@ Keys: Q or ESC to quit, SPACE to pause, any key to step while paused.
 
 Champions currently visible are drawn solid; champions in fog are drawn hollow
 at their last known position with the time since they were seen, which is the
-readout that actually matters on player-perspective footage.
+readout that actually matters on player-perspective footage. A champion the HUD
+confirms is dead is crossed out rather than dimmed, since a champion who cannot
+walk out of the fog at you is a different thing from one who can.
 """
 
 from __future__ import annotations
@@ -129,10 +131,18 @@ def main() -> int:
             visible = [t for t in result.tracks
                        if t.age(frame.timestamp) < pipeline.tracker.config.lost_after]
             named = result.named()
+            dead = frozenset(o.champion for o in result.observations
+                             if o.alive is False and o.champion)
 
             clock = f"{result.clock}" if result.clock else "--:--"
             if result.clock is not None and not result.clock.observed:
                 clock += "*"
+
+            down = ""
+            if result.liveness is not None and result.liveness.dead_count:
+                # Named casualties where the pipeline could attribute them, a
+                # bare count where it could not.
+                down = f"  down={','.join(sorted(dead)) or result.liveness.dead_count}"
 
             if args.quiet:
                 allies = sorted(n for n, t in named.items() if t.team is Team.BLUE)
@@ -146,18 +156,19 @@ def main() -> int:
                         where = f"  self=({position[0]:5.0f},{position[1]:5.0f})"
                 print(f"{clock:>7}  t={frame.timestamp:7.2f}s  visible={len(visible):2d}"
                       f"{where}  allies={','.join(allies) or '-':40s} "
-                      f"enemies={','.join(enemies) or '-'}")
+                      f"enemies={','.join(enemies) or '-'}{down}")
             else:
                 minimap = pipeline.region.crop(frame.image)
                 canvas = draw_tracks(
                     minimap, result.tracks, frame.timestamp,
                     scale=args.zoom, self_track=result.self_track,
                     lost_after=pipeline.tracker.config.lost_after,
+                    dead=dead,
                 )
                 cv2.putText(
                     canvas,
                     f"{clock}  ({frame.timestamp:.1f}s)  tracked {len(result.tracks)}  "
-                    f"visible {len(visible)}  named {len(named)}",
+                    f"visible {len(visible)}  named {len(named)}{down}",
                     (8, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1,
                     cv2.LINE_AA,
                 )
