@@ -20,17 +20,22 @@ IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".bmp", ".webp", ".tif", ".tiff"}
 class VideoFileSource(FrameSource):
     """Reads frames from a video file via OpenCV."""
 
-    def __init__(self, path: str | Path, *, stride: int = 1) -> None:
+    def __init__(self, path: str | Path, *, stride: int = 1, start: int = 0) -> None:
         self.path = Path(path)
         if not self.path.exists():
             raise FileNotFoundError(self.path)
         if stride < 1:
             raise ValueError(f"stride must be >= 1, got {stride}")
+        if start < 0:
+            raise ValueError(f"start must be >= 0, got {start}")
 
         self.stride = stride
+        self.start = start
         self._capture = cv2.VideoCapture(str(self.path))
         if not self._capture.isOpened():
             raise RuntimeError(f"could not open video: {self.path}")
+        if start:
+            self._capture.set(cv2.CAP_PROP_POS_FRAMES, start)
 
         self._fps = self._capture.get(cv2.CAP_PROP_FPS) or 30.0
         self._size = (
@@ -47,12 +52,14 @@ class VideoFileSource(FrameSource):
         return self._fps
 
     def frames(self) -> Iterator[Frame]:
-        index = 0
+        # Timestamps stay absolute to the source so seeking does not silently
+        # change what a given moment in the clip is called.
+        index = self.start
         while True:
             ok, image = self._capture.read()
             if not ok:
                 return
-            if index % self.stride == 0:
+            if (index - self.start) % self.stride == 0:
                 yield Frame(image=image, index=index, timestamp=index / self._fps)
             index += 1
 
@@ -82,9 +89,11 @@ class ImageSource(FrameSource):
             yield Frame(image=self._image.copy(), index=index, timestamp=0.0)
 
 
-def open_source(path: str | Path, *, stride: int = 1) -> FrameSource:
+def open_source(
+    path: str | Path, *, stride: int = 1, start: int = 0
+) -> FrameSource:
     """Open a still or a clip, picking the reader from the file suffix."""
     path = Path(path)
     if path.suffix.lower() in IMAGE_SUFFIXES:
         return ImageSource(path)
-    return VideoFileSource(path, stride=stride)
+    return VideoFileSource(path, stride=stride, start=start)
