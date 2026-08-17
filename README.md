@@ -11,18 +11,28 @@ least all five allies in 87% of frames, averaging 5.8 blue markers against 5
 expected, so it over-produces slightly by design.
 
 **Stage 2 — champion identification.** Partially working. Teammates are matched
-against a gallery bootstrapped out of the HUD itself; the local player is
+against a gallery currently bootstrapped from the HUD; the local player is
 resolved geometrically instead (see below). At least three of the five allies
-are known in 52% of frames and at least four in 22%. Enemy identification is not
-started — nothing in the HUD names them.
+are known in 52% of frames and at least four in 22%.
 
-The local player is *not* identified by appearance, because it does not work:
-their HUD portrait and their minimap marker are different art, almost certainly
-a skin, while every teammate matches fine. Instead the minimap's camera
-viewport rectangle is located, and since the camera is locked to the player
-they sit at its centre. The nearest marker lands 5–7px from that centre with the
-runner-up 38–88px away, so it is effectively exact — found in 98% of frames and
-resolving the player in 85%.
+**Minimap icons are always stock champion art, never skin-specific.** This is
+the fact the design should rest on, and getting it backwards costs a lot:
+
+- A complete stock icon set is a closed, known reference for *every* champion,
+  so enemy identification needs no scoreboard frame and no incremental
+  discovery. This is the intended gallery source.
+- The HUD bootstrap is the weaker option, not the clever one. HUD portraits *are*
+  skin-specific, so they only agree with the minimap for a champion on their base
+  skin. It worked here because all four teammates were on base skins.
+- It failed completely for the local player, who was using a skin — their HUD
+  portrait and minimap marker share almost nothing.
+
+So the local player is not identified by appearance at all. The minimap's camera
+viewport rectangle is located instead, and since the camera is locked to the
+player they sit at its centre. The nearest marker lands 5–7px from that centre
+with the runner-up 38–88px away, so it is effectively exact — found in 98% of
+frames and resolving the player in 85%. That route is immune to skins, gallery
+coverage and fog alike.
 
 **Tracker.** Not built. This is where the remaining identification accuracy
 should come from: evidence accumulated per track across frames, rather than a
@@ -120,8 +130,8 @@ Two things about the colour bands were not what they looked like:
 ### Known limits
 
 - **Fitted to one clip.** The bands come from a single recording. The client's
-  colour-blind setting shifts them, and they have not been checked across
-  champion skins or map skins.
+  colour-blind setting shifts them, and they have not been checked against map
+  skins. Champion skins are not a concern here — minimap icons are stock art.
 - **Detection is per-frame and memoryless.** Stage 1 reports what is on the
   minimap right now. Persistence across fog — last known position, time since
   seen — is the tracker's job, not this stage's.

@@ -8,14 +8,24 @@ Two places show them, and between them they cover your whole team:
 
 Positions are fixed by resolution, so reading them is a crop, not a search.
 
-This layout is what makes identification tractable on player-perspective
-footage. The minimap draws each champion using the same circular art shown here,
-so the HUD is a *labelled reference gallery present in every frame* -- no
-external asset download, and automatically correct for whatever skins are in the
-game. See `spectral_sight.perception.identity`.
+The HUD is a *labelled reference gallery present in every frame*, which is why
+identification can get started with no external assets at all. But it is the
+weaker of the two available galleries, and the reason is worth stating plainly
+so nobody rebuilds on it by mistake:
 
-Only your own team is covered. Enemy identities have to come from somewhere else
-(the scoreboard, or a champion icon set), because nothing in the HUD names them.
+**Minimap icons are always stock champion art. HUD portraits are skin-specific.**
+
+So the HUD only agrees with the minimap for a champion on their base skin. It
+agreed for all four teammates in the sample footage and disagreed completely for
+the local player, who was using a skin -- their two images share almost nothing.
+That is a property of the skin, not of the matcher.
+
+A static stock icon set is therefore the correct gallery for identification, and
+covers enemies too, which the HUD never can because nothing here names them.
+This panel remains useful for what it uniquely provides: a *labelled* roster of
+who is on your team, plus per-ally health and level.
+
+See `spectral_sight.perception.identity`.
 """
 
 from __future__ import annotations

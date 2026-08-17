@@ -6,11 +6,12 @@ this project, see the README -- the player sits at screen centre, so the centre
 of that rectangle *is* the local player's position.
 
 That makes identifying your own marker geometric rather than visual, which
-matters because the appearance route does not work: the HUD portrait and the
-minimap marker for the local player are different art. Measured across frames,
-they share almost no similarity, while the same comparison succeeds for every
-teammate. Skins are the likely cause, and it does not matter -- the rectangle
-sidesteps the question entirely.
+matters because matching the local player against their *HUD portrait* does not
+work at all. Minimap icons are stock champion art while HUD portraits are
+skin-specific, so the two disagree completely whenever the player is using a
+skin -- as they did throughout the sample footage, scoring near zero while every
+teammate matched. The rectangle sidesteps the question entirely, and keeps
+working regardless of skins, gallery coverage, or fog.
 
 The separation is not marginal. The nearest marker to the rectangle centre sits
 5-7px away while the runner-up is 38-88px away, so this is effectively exact.

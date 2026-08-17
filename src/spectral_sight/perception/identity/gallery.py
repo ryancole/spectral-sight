@@ -22,7 +22,14 @@ relative colour rather than absolute brightness.
 
 Similarity is cosine distance over the masked, normalised pixels. A learned
 embedding would buy robustness to art the gallery has never seen, which is not
-the situation here: for allies the gallery *is* built from the current game.
+the situation here -- the minimap always draws stock champion icons, so a
+complete stock icon set is a closed, known reference for every champion in the
+game, enemies included.
+
+The gallery is source-agnostic: entries can come from that icon set or, as a
+bootstrap, from the HUD ally panel. Prefer the icon set. HUD portraits are
+skin-specific while minimap icons are not, so the HUD only agrees for champions
+on their base skin.
 """
 
 from __future__ import annotations
