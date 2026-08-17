@@ -79,8 +79,15 @@ def main() -> int:
                   file=sys.stderr)
             return 1
 
+        extras = []
+        if pipeline.clock is not None:
+            extras.append("clock")
+        if pipeline.world is not None:
+            ux, _ = pipeline.world.units_per_pixel
+            extras.append(f"world {ux:.0f}u/px")
         print(f"{width}x{height} | minimap {pipeline.region.width}px | "
-              f"{len(pipeline.gallery)} champion icons | every {args.stride} frames")
+              f"{len(pipeline.gallery)} champion icons | every {args.stride} frames"
+              + (f" | {', '.join(extras)}" if extras else " | uncalibrated: clock, world"))
 
         writer: cv2.VideoWriter | None = None
         paused = False
@@ -95,11 +102,23 @@ def main() -> int:
                        if t.age(frame.timestamp) < pipeline.tracker.config.lost_after]
             named = result.named()
 
+            clock = f"{result.clock}" if result.clock else "--:--"
+            if result.clock is not None and not result.clock.observed:
+                clock += "*"
+
             if args.quiet:
                 allies = sorted(n for n, t in named.items() if t.team is Team.BLUE)
                 enemies = sorted(n for n, t in named.items() if t.team is Team.RED)
-                print(f"t={frame.timestamp:7.2f}s  visible={len(visible):2d}  "
-                      f"allies={','.join(allies) or '-':40s} enemies={','.join(enemies) or '-'}")
+                where = ""
+                if result.self_track is not None:
+                    position = pipeline.world_position(
+                        result.self_track.x, result.self_track.y
+                    )
+                    if position is not None:
+                        where = f"  self=({position[0]:5.0f},{position[1]:5.0f})"
+                print(f"{clock:>7}  t={frame.timestamp:7.2f}s  visible={len(visible):2d}"
+                      f"{where}  allies={','.join(allies) or '-':40s} "
+                      f"enemies={','.join(enemies) or '-'}")
             else:
                 minimap = pipeline.region.crop(frame.image)
                 canvas = draw_tracks(
@@ -109,7 +128,7 @@ def main() -> int:
                 )
                 cv2.putText(
                     canvas,
-                    f"{frame.timestamp:6.1f}s  tracked {len(result.tracks)}  "
+                    f"{clock}  ({frame.timestamp:.1f}s)  tracked {len(result.tracks)}  "
                     f"visible {len(visible)}  named {len(named)}",
                     (8, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1,
                     cv2.LINE_AA,

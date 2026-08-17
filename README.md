@@ -104,6 +104,89 @@ gallery:
 | False identities | **0** |
 | Live tracks | mean 9.3, max **10** |
 
+**Game clock.** Working, and exact everywhere it has been checked: **14,744
+frames across all three recordings, read in 100% of them, with zero
+backwards steps.** Two of those clips were never seen while the digit templates
+were built.
+
+The clock is what turns a video timestamp into a *game* timestamp, which is the
+key that joins anything here to anything outside the footage — objective spawns,
+level and item timings, ward duration, or a second clip of the same match. The
+three sample recordings start at +22.40s, +24.00s and +160.20s of game time, and
+none of that is recoverable from the video alone.
+
+No OCR dependency and no font asset, because **the clock can bootstrap its own
+templates**. The seconds ones-digit counts 0–9 in order once per second, and it
+returns to zero exactly on the frame the tens-digit changes — so watching which
+glyph cells change from frame to frame labels all ten digits with no human
+input. Twenty seconds of footage is enough. It is the same move as the automatic
+ground truth below: the game is already telling us the answer.
+
+Checking it is free for the same reason. The clock advances one second per
+second of video, so `clock − video_time` is constant for a correct reader, and
+its spread across thousands of frames is a real accuracy number nobody had to
+label. Two things are measured and they are not the same:
+
+- **Running backwards is an error.** A single misclassified glyph moves the
+  clock by seconds or minutes, so almost any misread trips it. Zero occurred.
+- **Drifting is not.** A step in the offset means the game stopped and the video
+  did not. The long clip contains one such episode, 59 frames where the offset
+  slides to −3.0s, and it is a real two-second client freeze — the frames are
+  static to within compression noise and then jump. The reader was correctly
+  reporting a frozen screen. An earlier version of this check also required that
+  the clock never *gain* on video time, which charged the catch-up after that
+  freeze as an error; stalls are now reported rather than counted.
+
+**World coordinates.** Minimap positions are now convertible to Summoner's Rift
+world units, which makes them comparable across captures and, more importantly,
+*addressable* — no predicate about lanes, river, jungle quadrants or distance to
+a pit can be written against a number that moves when the user drags a settings
+slider.
+
+**The map area is not the minimap crop.** The panel has an ornate frame and an
+inner border band, so the rendered terrain sits inside the calibrated region.
+Measured on the sample capture the map is **310×310 px at (1791, 1027)** while
+the calibrated crop is 325×322 at (1787, 1020) — treating the crop as the map
+puts a 4.8% scale error and a several-pixel offset into every position.
+
+That rectangle is measured by hand, once per resolution, and deliberately so.
+Three ways to find it automatically were tried and all three returned a
+confident answer; they disagreed with each other by about 5%, which is the size
+of the error the calibration exists to remove:
+
+- *Bounding box of non-black pixels* catches the ornate frame and comes back
+  20px too large.
+- *Bounding box of pixels that change over time* finds where the game happened,
+  not where the map is — 16px short at the top, where the enemy base sits under
+  permanent fog and nothing ever moves.
+- *Rows and columns uniform along their length* looked principled, since the
+  border is uniform and terrain is textured. But the map's outer ring is
+  unwalkable black void, which is also uniform, so it lands 8–9px inside the
+  true edge on every side.
+
+What worked is the brightness profile across the panel edge, averaged along it:
+ornament, then a flat border band, then map. Reading the band's inner edge off
+that gave 310px on each axis *independently*, and nothing forced those to agree.
+
+Scale comes out at **48.0 × 48.3 units/px**. Validating it is a different
+problem from everything else here, because a coordinate scale makes no visible
+prediction — the pixels look identical whether the map is 15,000 units across or
+30,000. What it does predict is *motion*: champions move at a few hundred units
+per second, so tracked positions either convert into that band or they do not.
+
+Measured over 1,200 frames, the p90 speed across one-second windows is **394
+u/s**, with no position landing outside the map bounds. Two caveats are worth
+more than the number:
+
+- **Measure over a second, not between frames.** At 48 units/px and 10 Hz, one
+  pixel of jitter reads as 480 u/s — more than a champion actually moves. The
+  frame-to-frame distribution is mostly noise.
+- **This rules out gross error, not fine error.** On the same footage the
+  untuned whole-crop transform scores 377 u/s against the calibrated 394, and
+  both are plausible, because they differ by under 5%. A pass means the bounds
+  and scale are right to within roughly ten percent. It does not confirm the
+  last few pixels, and should not be quoted as if it did.
+
 ### Known limits
 
 - **Identification is not real-time.** Roughly 17 fps of processing at 10 Hz
@@ -112,6 +195,17 @@ gallery:
 - **Enemy coverage is bounded by vision, not by the tracker.** All five enemies
   are known in 36% of frames; the rest of the time some have simply never been
   seen recently enough to place.
+- **The world bounds are taken on faith.** The Summoner's Rift extent is the
+  figure in wide community use, not one Riot publishes. It is a single scalar
+  applied uniformly, so nothing structural depends on it, but the speed check
+  only pins it to about ten percent.
+- **Both new calibrations are per resolution and hand-made.** The digit
+  templates and the map rectangle each need one pass on new footage at a new
+  resolution. A map skin that redraws the panel border would move the rectangle;
+  a client UI update would move the clock.
+- **Nothing handles the absence of a clock.** Loading screens and the
+  pre-game lobby have no timer, and the reader simply returns nothing there
+  rather than knowing why.
 
 ### Automatic ground truth
 
@@ -250,6 +344,27 @@ resolution alone):
 .venv/Scripts/python tools/calibrate_minimap.py --image data/frame.png
 ```
 
+Two optional calibrations add game time and world coordinates. Both are skipped
+quietly if absent, so everything above works without them.
+
+Teach the clock its digits — drag a rough box around the match timer and it does
+the rest, including checking itself against video time:
+
+```bash
+.venv/Scripts/python tools/calibrate_clock.py --input "data/your clip.mp4"
+```
+
+Mark the rendered map area inside the minimap panel — the terrain square, not
+the ornate frame and not the border band inside it:
+
+```bash
+.venv/Scripts/python tools/calibrate_world.py --input "data/your clip.mp4"
+```
+
+```bash
+.venv/Scripts/python tools/calibrate_world.py --input "data/your clip.mp4" --validate
+```
+
 Then watch the whole pipeline run on a clip:
 
 ```bash
@@ -282,10 +397,20 @@ src/spectral_sight/
   perception/minimap/
     region.py                 where the minimap sits in the frame
     blips.py                  stage 1 detector
+    viewport.py               camera rectangle, and so the local player
+    world.py                  minimap pixels to Summoner's Rift units
+  perception/identity/        champion gallery and roster locking
+  perception/hud/
+    portraits.py              teammate portraits, health and level
+    clock.py                  the match timer
+  tracking/                   identity accumulated across frames
+  pipeline.py                 the stages, wired in order
   debug/overlay.py            visualisation
 tools/                        calibration and inspection CLIs
 tests/synthetic.py            minimaps with known ground truth
-etc/regions/                  calibrated regions per resolution
+etc/regions/                  calibrated minimap regions per resolution
+etc/clock/                    clock position and learned digits per resolution
+etc/world/                    map area and world bounds per resolution
 ```
 
 ## Testing
