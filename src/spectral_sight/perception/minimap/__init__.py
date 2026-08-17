@@ -7,12 +7,20 @@ from spectral_sight.perception.minimap.viewport import (
     ViewportConfig,
     find_viewport,
 )
+from spectral_sight.perception.minimap.world import (
+    SUMMONERS_RIFT,
+    WorldBounds,
+    WorldTransform,
+)
 
 __all__ = [
+    "SUMMONERS_RIFT",
     "BlipDetector",
     "BlipDetectorConfig",
     "MinimapRegion",
     "Viewport",
     "ViewportConfig",
+    "WorldBounds",
+    "WorldTransform",
     "find_viewport",
 ]
