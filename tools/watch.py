@@ -9,6 +9,9 @@
     # print the tracked state instead of showing it
     python tools/watch.py --input clip.mp4 --quiet
 
+    # extract the whole clip to a timeline, as fast as it will go
+    python tools/watch.py --input clip.mp4 --quiet --export clip.jsonl
+
 Keys: Q or ESC to quit, SPACE to pause, any key to step while paused.
 
 Champions currently visible are drawn solid; champions in fog are drawn hollow
@@ -19,6 +22,7 @@ readout that actually matters on player-perspective footage.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import sys
 import time
 from pathlib import Path
@@ -27,6 +31,7 @@ import cv2
 
 from spectral_sight.capture import open_source
 from spectral_sight.debug import draw_tracks
+from spectral_sight.export import TimelineWriter
 from spectral_sight.pipeline import Pipeline
 from spectral_sight.types import Team
 
@@ -56,6 +61,7 @@ def main() -> int:
                         help="process every Nth frame (3 = 10 Hz on 30 fps)")
     parser.add_argument("--zoom", type=float, default=2.5, help="preview upscale")
     parser.add_argument("--save", help="write an annotated video here")
+    parser.add_argument("--export", help="write a JSONL timeline here")
     parser.add_argument("--quiet", action="store_true",
                         help="print state instead of opening a window")
     parser.add_argument("--limit", type=int, help="stop after N processed frames")
@@ -69,7 +75,10 @@ def main() -> int:
         print(exc, file=sys.stderr)
         return 1
 
-    with open_source(args.input, stride=args.stride, start=args.start) as source:
+    with contextlib.ExitStack() as stack:
+        source = stack.enter_context(
+            open_source(args.input, stride=args.stride, start=args.start)
+        )
         width, height = source.size
         try:
             pipeline = Pipeline.for_resolution(width, height, icons)
@@ -89,6 +98,22 @@ def main() -> int:
               f"{len(pipeline.gallery)} champion icons | every {args.stride} frames"
               + (f" | {', '.join(extras)}" if extras else " | uncalibrated: clock, world"))
 
+        timeline: TimelineWriter | None = None
+        if args.export:
+            timeline = stack.enter_context(
+                TimelineWriter(
+                    args.export,
+                    pipeline.timeline_meta(args.input, args.stride, (width, height)),
+                )
+            )
+            missing = [name for name, calibration in (("clock", pipeline.clock),
+                                                      ("world", pipeline.world))
+                       if calibration is None]
+            if missing:
+                print(f"warning: no calibrated {' and '.join(missing)}; the "
+                      "timeline will be missing the keys that join this clip to "
+                      "anything else", file=sys.stderr)
+
         writer: cv2.VideoWriter | None = None
         paused = False
         processed = 0
@@ -97,6 +122,9 @@ def main() -> int:
         for frame in source.frames():
             result = pipeline.process(frame.image, frame.timestamp)
             processed += 1
+
+            if timeline is not None:
+                timeline.write(result.observations)
 
             visible = [t for t in result.tracks
                        if t.age(frame.timestamp) < pipeline.tracker.config.lost_after]
@@ -161,6 +189,8 @@ def main() -> int:
     print(f"\n{processed} frames in {elapsed:.1f}s ({processed / max(elapsed, 1e-9):.1f} fps)")
     if args.save:
         print(f"wrote {args.save}")
+    if timeline is not None:
+        print(f"wrote {timeline.path} ({timeline.rows} observations)")
     return 0
 
 
