@@ -44,9 +44,43 @@ with the runner-up 38–88px away, so it is effectively exact — found in 98% o
 frames and resolving the player in 85%. That route is immune to skins, gallery
 coverage and fog alike.
 
-**Tracker.** Not built. This is where the remaining identification accuracy
-should come from: evidence accumulated per track across frames, rather than a
-fresh independent decision every frame.
+**Tracker.** Working, and it is where most of the identification accuracy
+actually comes from. Champions are followed across frames with a constant
+velocity model, and identity is accumulated over a track's life rather than
+decided fresh each frame — so a champion stays identified through the frames
+where its 26px marker is unreadable or stage 1 blinks.
+
+Measured over 1,200 frames at 10 Hz against the blind 173-icon gallery:
+
+| | Per-frame | Tracked |
+|---|---|---|
+| Mean allies identified (of 5) | 2.52 | **4.55** |
+| Mean enemies identified (of 5) | 1.61 | **3.19** |
+| ≥3 allies known | 50% | **100%** |
+| ≥4 allies known | 24% | **100%** |
+| All 5 allies known | 4% | **56%** |
+
+Fog is handled by one gate that grows with elapsed time,
+`blink_distance + max_speed × seconds_since_seen`. Between frames it is a tight
+leash; after seconds in fog it covers anywhere the champion could have walked
+but still far less than the map. Frame-to-frame association and
+re-identification after fog are therefore the same operation with the same
+parameters, rather than two mechanisms that can disagree.
+
+Identity evidence is weighted by each match's *margin* over its runner-up, not
+by raw similarity. Similarity alone let popular icons act as a sink: many
+markers weakly prefer the same champion, and three concurrent tracks each
+accumulated enough to claim Galio.
+
+### Known limits
+
+- **Track count is not bounded by the roster.** 27 live tracks persisted at the
+  end of a run that can only contain 10 champions. Output is deduplicated by
+  identity so this does not corrupt the headline numbers, but positions
+  attributed to a champion can flip between fragments.
+- **One persistent false identity.** A track held a name outside the true roster
+  for 640 of 1,200 frames. Locking the gallery to a discovered roster should
+  remove this class of error outright.
 
 ### Automatic ground truth
 
