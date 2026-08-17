@@ -11,7 +11,13 @@ import cv2
 import numpy as np
 import pytest
 
-from spectral_sight.perception.identity import Gallery, describe
+from spectral_sight.perception.identity import (
+    HUD_MASK,
+    Gallery,
+    describe,
+    load_icon_gallery,
+)
+from spectral_sight.perception.identity.gallery import build_mask
 
 
 def _art(seed: int, size: int = 64) -> np.ndarray:
@@ -100,3 +106,58 @@ def test_assignment_aligns_with_input_order() -> None:
 def test_rejects_non_bgr_patch() -> None:
     with pytest.raises(ValueError):
         describe(np.zeros((16, 16), np.uint8))
+
+
+# -- masks ------------------------------------------------------------------
+
+
+def test_badge_mask_is_a_subset_of_the_circle() -> None:
+    """The HUD variant only ever removes pixels; it never adds any."""
+    circle, hud = build_mask(), build_mask(exclude_badge=True)
+    assert hud.sum() < circle.sum()
+    assert not (hud & ~circle).any()
+
+
+def test_gallery_applies_its_mask_to_queries_too() -> None:
+    """Every descriptor in a comparison must use the same mask."""
+    gallery = Gallery(mask=HUD_MASK)
+    gallery.add("champ", _art(5))
+
+    match = gallery.match(_art(5))
+    assert match is not None
+    assert match.similarity == pytest.approx(1.0, abs=1e-5)
+
+
+# -- icon set ---------------------------------------------------------------
+
+
+def test_load_icon_gallery_reads_a_directory(tmp_path) -> None:
+    for name in ("Aatrox", "Ahri", "Akali"):
+        cv2.imwrite(str(tmp_path / f"{name}.png"), _art(hash(name) % 100))
+
+    gallery = load_icon_gallery(tmp_path)
+    assert sorted(gallery.names) == ["Aatrox", "Ahri", "Akali"]
+
+
+def test_load_icon_gallery_reports_a_missing_directory(tmp_path) -> None:
+    with pytest.raises(FileNotFoundError, match="fetch_icons"):
+        load_icon_gallery(tmp_path / "nope")
+
+
+def test_assign_regions_finds_markers_in_place() -> None:
+    """The stage 1 entry point: markers given as (x, y, radius) in an image."""
+    gallery = Gallery()
+    for i in range(4):
+        gallery.add(f"champ{i}", _art(i))
+
+    canvas = np.zeros((200, 200, 3), np.uint8)
+    placements = [(50, 60, 2), (140, 130, 0)]
+    for cx, cy, seed in placements:
+        canvas[cy - 20 : cy + 20, cx - 20 : cx + 20] = cv2.resize(
+            _art(seed), (40, 40), interpolation=cv2.INTER_AREA
+        )
+
+    results = gallery.assign_regions(
+        canvas, [(float(cx), float(cy), 20.0) for cx, cy, _ in placements]
+    )
+    assert [m.name if m else None for m in results] == ["champ2", "champ0"]

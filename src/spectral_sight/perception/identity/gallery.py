@@ -1,40 +1,39 @@
 """Matching a minimap marker against a gallery of champion portraits.
 
-Both sides of the comparison show the same circular champion art, so this does
-not need a learned embedding -- it needs the two crops put into a common frame
-and compared. Three things have to be normalised away first, and each one is a
-correctness issue rather than a refinement:
+The minimap always draws *stock* champion art, so the complete icon set is a
+closed, known reference for every champion in the game -- enemies included, from
+the first frame they are visible. That is the intended gallery source; see
+`tools/fetch_icons.py`.
 
-**Scale.** A minimap marker is roughly 26px across; an ally panel portrait is
-about 52px. Both are resampled to a fixed size, and both are blurred to the same
-degree afterwards, so the downsampled portrait does not carry sharper detail than
-anything the minimap could ever produce.
+The HUD ally panel can also seed a gallery, and needs no download, but it is the
+weaker option: HUD portraits are skin-specific, so they only agree with the
+minimap for a champion on their base skin.
 
-**Occlusion.** Panel portraits have a badge covering the top of the circle, and
-minimap markers have a team-coloured ring around the outside. Neither is present
-in the other, so a single shared mask excludes both regions from every
-descriptor regardless of where it came from. Comparing like with like matters
-more here than retaining every pixel.
+Both sides of the comparison show the same art, so this does not need a learned
+embedding -- it needs the two crops put into a common frame and compared. Three
+things have to be normalised away first, and each is a correctness issue rather
+than a refinement:
 
-**Exposure.** Minimap art is drawn dimmer than the panel. Descriptors are
-z-normalised per channel, which makes the comparison depend on structure and
-relative colour rather than absolute brightness.
+**Scale.** A minimap marker is roughly 26px across; a stock icon is 48px and a
+panel portrait about 52px. All are resampled to a fixed size and blurred equally
+afterwards, so a sharper reference cannot carry detail the minimap could never
+produce.
 
-Similarity is cosine distance over the masked, normalised pixels. A learned
-embedding would buy robustness to art the gallery has never seen, which is not
-the situation here -- the minimap always draws stock champion icons, so a
-complete stock icon set is a closed, known reference for every champion in the
-game, enemies included.
+**Framing.** Stage 1 frames the *ring*, not the portrait, and the minimap's
+circular crop of a square icon is not pixel-identical to the icon itself.
+`describe_variants` searches scale and offset rather than trusting one crop.
 
-The gallery is source-agnostic: entries can come from that icon set or, as a
-bootstrap, from the HUD ally panel. Prefer the icon set. HUD portraits are
-skin-specific while minimap icons are not, so the HUD only agrees for champions
-on their base skin.
+**Exposure.** Minimap art is drawn dimmer than the source icons. Descriptors are
+z-normalised per channel, so comparison depends on structure and relative colour
+rather than absolute brightness.
+
+Similarity is cosine distance over the masked, normalised pixels.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -48,35 +47,49 @@ INNER_RADIUS = 0.78
 
 BADGE_CENTER = (0.0, -0.78)
 BADGE_RADIUS = 0.42
-"""Level badge occluding the top of a panel portrait, in patch-local units where
-1.0 is the half-width. Masked out of *both* sides so they stay comparable."""
+"""Level badge occluding the top of a HUD panel portrait, in patch-local units
+where 1.0 is the half-width."""
 
 MATCH_BLUR = 0.8
 
-ALIGN_SCALES: tuple[float, ...] = (0.85, 1.0, 1.15)
+ALIGN_SCALES: tuple[float, ...] = (0.80, 0.90, 1.0, 1.10, 1.20)
 ALIGN_OFFSETS: tuple[float, ...] = (-1.5, 0.0, 1.5)
 """Crop variants tried when matching a marker whose framing is uncertain.
 
 Stage 1 locates a marker to a pixel or two and refits its radius against the
-ring, which is not the same as framing the *portrait* the way the HUD does.
-Comparing a single crop therefore penalises correct identities for being
-slightly mis-framed. Measured on real markers, searching these variants lifted
-true matches from 0.60 to 0.79 and 0.73 to 0.84 while leaving non-champions
-around 0.4 -- so it widens the separation rather than just raising every score.
+ring, which is not the same as framing the *portrait*. Comparing a single crop
+penalises correct identities for being slightly mis-framed. Measured on real
+markers, searching these lifted true matches from 0.60 to 0.79 and 0.73 to 0.84
+while leaving non-champions near 0.4 -- it widens separation rather than raising
+every score.
 """
 
 
-def _shared_mask(size: int = PATCH_SIZE) -> np.ndarray:
-    """The pixels every descriptor is allowed to use."""
+def _circle(size: int, radius: float) -> np.ndarray:
     axis = (np.arange(size) - (size - 1) / 2.0) / ((size - 1) / 2.0)
     yy, xx = np.meshgrid(axis, axis, indexing="ij")
+    return np.hypot(xx, yy) <= radius
 
-    keep = np.hypot(xx, yy) <= INNER_RADIUS
+
+def build_mask(size: int = PATCH_SIZE, *, exclude_badge: bool = False) -> np.ndarray:
+    """Which pixels a descriptor may use.
+
+    `exclude_badge` drops the region a HUD level badge covers. Only enable it
+    when the *gallery* is HUD-sourced: every descriptor in a comparison must use
+    the same mask, and masking the badge out of stock icons that never had one
+    just discards signal.
+    """
+    keep = _circle(size, INNER_RADIUS)
+    if not exclude_badge:
+        return keep
+    axis = (np.arange(size) - (size - 1) / 2.0) / ((size - 1) / 2.0)
+    yy, xx = np.meshgrid(axis, axis, indexing="ij")
     badge = np.hypot(xx - BADGE_CENTER[0], yy - BADGE_CENTER[1]) <= BADGE_RADIUS
     return keep & ~badge
 
 
-_MASK = _shared_mask()
+CIRCLE_MASK = build_mask()
+HUD_MASK = build_mask(exclude_badge=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,19 +103,21 @@ class PatchDescriptor:
         return float(np.dot(self.vector, other.vector))
 
 
-def describe(patch: np.ndarray) -> PatchDescriptor:
+def describe(patch: np.ndarray, mask: np.ndarray | None = None) -> PatchDescriptor:
     """Build a descriptor from a square BGR crop centred on a champion icon."""
     if patch.ndim != 3 or patch.shape[2] != 3:
         raise ValueError(f"expected a BGR patch, got shape {patch.shape}")
     if patch.size == 0:
         raise ValueError("empty patch")
+    if mask is None:
+        mask = CIRCLE_MASK
 
     resized = cv2.resize(patch, (PATCH_SIZE, PATCH_SIZE), interpolation=cv2.INTER_AREA)
     if MATCH_BLUR > 0:
         resized = cv2.GaussianBlur(resized, (0, 0), MATCH_BLUR)
 
     lab = cv2.cvtColor(resized, cv2.COLOR_BGR2LAB).astype(np.float32)
-    selected = lab[_MASK]
+    selected = lab[mask]
 
     # Per-channel z-normalisation: structure and relative colour, not exposure.
     centered = selected - selected.mean(axis=0)
@@ -122,14 +137,11 @@ def describe_variants(
     cy: float,
     radius: float,
     *,
+    mask: np.ndarray | None = None,
     scales: tuple[float, ...] = ALIGN_SCALES,
     offsets: tuple[float, ...] = ALIGN_OFFSETS,
 ) -> list[PatchDescriptor]:
-    """Descriptors for several plausible framings of one marker.
-
-    Callers compare a reference against *all* of these and keep the best, which
-    is what makes matching robust to stage 1's framing being a pixel or two off.
-    """
+    """Descriptors for several plausible framings of one marker."""
     height, width = image.shape[:2]
     variants: list[PatchDescriptor] = []
     for scale in scales:
@@ -145,13 +157,13 @@ def describe_variants(
                 patch = image[y0:y1, x0:x1]
                 if patch.size == 0 or min(patch.shape[:2]) < 6:
                     continue
-                variants.append(describe(patch))
+                variants.append(describe(patch, mask))
     return variants
 
 
 @dataclass(frozen=True, slots=True)
 class Match:
-    """The gallery's answer for one query patch."""
+    """The gallery's answer for one query marker."""
 
     name: str
     similarity: float
@@ -167,9 +179,20 @@ class Match:
 
 @dataclass
 class Gallery:
-    """Named reference descriptors, queried by nearest neighbour."""
+    """Named reference descriptors, queried by nearest neighbour.
+
+    Holds the references as one stacked matrix so a query is a single matmul.
+    That matters at full size: the stock set is 173 champions, and every marker
+    is compared as 15 framing variants.
+    """
 
     entries: dict[str, PatchDescriptor] = field(default_factory=dict)
+    mask: np.ndarray | None = None
+    """Mask used for every descriptor this gallery builds or compares. Set to
+    `HUD_MASK` when seeding from the HUD panel."""
+
+    _names: list[str] = field(default_factory=list, repr=False)
+    _matrix: np.ndarray | None = field(default=None, repr=False)
 
     def __len__(self) -> int:
         return len(self.entries)
@@ -179,58 +202,53 @@ class Gallery:
         return list(self.entries)
 
     def add(self, name: str, patch: np.ndarray) -> None:
-        self.entries[name] = describe(patch)
+        self.add_descriptor(name, describe(patch, self.mask))
 
     def add_descriptor(self, name: str, descriptor: PatchDescriptor) -> None:
         self.entries[name] = descriptor
+        self._matrix = None
+
+    def _stack(self) -> tuple[list[str], np.ndarray]:
+        if self._matrix is None:
+            self._names = list(self.entries)
+            self._matrix = np.stack(
+                [self.entries[n].vector for n in self._names]
+            ) if self._names else np.zeros((0, 1), np.float32)
+        return self._names, self._matrix
 
     def match(self, patch: np.ndarray) -> Match | None:
         """Best gallery entry for `patch`, or None if the gallery is empty."""
-        return self.match_descriptor(describe(patch))
+        return self.match_descriptor(describe(patch, self.mask))
 
     def match_descriptor(self, query: PatchDescriptor) -> Match | None:
         if not self.entries:
             return None
-        scored = sorted(
-            ((query.similarity(ref), name) for name, ref in self.entries.items()),
-            reverse=True,
-        )
-        best_score, best_name = scored[0]
-        runner_up = scored[1][0] if len(scored) > 1 else -1.0
+        names, matrix = self._stack()
+        scores = matrix @ query.vector
+        return self._to_match(names, scores)
+
+    @staticmethod
+    def _to_match(names: list[str], scores: np.ndarray) -> Match:
+        order = np.argsort(scores)[::-1]
+        best = int(order[0])
+        runner_up = float(scores[order[1]]) if len(order) > 1 else -1.0
         return Match(
-            name=best_name,
-            similarity=best_score,
-            margin=best_score - runner_up,
+            name=names[best],
+            similarity=float(scores[best]),
+            margin=float(scores[best]) - runner_up,
         )
 
     def assign(
         self, patches: list[np.ndarray], *, min_similarity: float = 0.35
     ) -> list[Match | None]:
-        """Match patches to gallery entries one-to-one, best pairs first.
-
-        Independent nearest-neighbour lets two markers claim the same champion,
-        which is impossible -- a champion is in exactly one place. Resolving the
-        assignment jointly means a marker that only weakly prefers some ally
-        still lands on the right one once the stronger claims are settled.
-
-        Greedy rather than optimal: with at most five identities the difference
-        is immaterial, and greedy keeps the result explainable.
-
-        Returns a list aligned with `patches`; None means no identity survived,
-        which is the expected answer for an enemy marker or a stage 1 false
-        positive.
-        """
+        """Match patches to gallery entries one-to-one, best pairs first."""
         if not self.entries or not patches:
             return [None] * len(patches)
-
-        descriptors = [describe(p) for p in patches]
-        similarity = {
-            (i, name): descriptor.similarity(reference)
-            for i, descriptor in enumerate(descriptors)
-            for name, reference in self.entries.items()
-        }
-
-        return self._resolve(similarity, len(patches), min_similarity)
+        names, matrix = self._stack()
+        scores = np.stack(
+            [matrix @ describe(p, self.mask).vector for p in patches]
+        )
+        return self._resolve(names, scores, min_similarity)
 
     def assign_regions(
         self,
@@ -243,48 +261,76 @@ class Gallery:
 
         Prefer this over `assign` for stage 1 output: it searches crop framings
         per marker instead of trusting one crop, which is worth a large accuracy
-        gain because stage 1 frames the *ring*, not the portrait. See
-        `ALIGN_SCALES`.
+        gain because stage 1 frames the ring, not the portrait.
         """
         if not self.entries or not regions:
             return [None] * len(regions)
+        names, matrix = self._stack()
 
-        similarity: dict[tuple[int, str], float] = {}
-        for index, (cx, cy, radius) in enumerate(regions):
-            variants = describe_variants(image, cx, cy, radius)
-            for name, reference in self.entries.items():
-                similarity[(index, name)] = max(
-                    (variant.similarity(reference) for variant in variants),
-                    default=-1.0,
-                )
-
-        return self._resolve(similarity, len(regions), min_similarity)
+        rows = []
+        for cx, cy, radius in regions:
+            variants = describe_variants(image, cx, cy, radius, mask=self.mask)
+            if not variants:
+                rows.append(np.full(len(names), -1.0, np.float32))
+                continue
+            stacked = np.stack([v.vector for v in variants])
+            rows.append((stacked @ matrix.T).max(axis=0))
+        return self._resolve(names, np.stack(rows), min_similarity)
 
     def _resolve(
-        self,
-        similarity: dict[tuple[int, str], float],
-        count: int,
-        min_similarity: float,
+        self, names: list[str], scores: np.ndarray, min_similarity: float
     ) -> list[Match | None]:
-        """Greedy one-to-one resolution over a precomputed similarity table."""
+        """Greedy one-to-one resolution over a (marker, entry) score matrix.
+
+        Independent nearest-neighbour lets two markers claim the same champion,
+        which is impossible -- a champion is in exactly one place. Resolving
+        jointly means a marker that only weakly prefers some identity still
+        lands on the right one once stronger claims are settled.
+
+        Greedy rather than optimal: with at most ten identities in play the
+        difference is immaterial, and greedy keeps the result explainable.
+        """
+        count = scores.shape[0]
         results: list[Match | None] = [None] * count
-        claimed: set[str] = set()
-        for (index, name), score in sorted(
-            similarity.items(), key=lambda kv: kv[1], reverse=True
-        ):
+        claimed: set[int] = set()
+
+        order = np.dstack(np.unravel_index(np.argsort(scores, axis=None)[::-1],
+                                           scores.shape))[0]
+        for marker, entry in order:
+            score = float(scores[marker, entry])
             if score < min_similarity:
                 break
-            if results[index] is not None or name in claimed:
+            if results[marker] is not None or int(entry) in claimed:
                 continue
-            # Margin against this marker's best *alternative* identity, which is
-            # what says whether the gallery could really tell them apart.
-            alternatives = [
-                s for (i, other), s in similarity.items()
-                if i == index and other != name
-            ]
-            runner_up = max(alternatives) if alternatives else -1.0
-            results[index] = Match(
-                name=name, similarity=score, margin=score - runner_up
+            alternatives = np.delete(scores[marker], entry)
+            runner_up = float(alternatives.max()) if alternatives.size else -1.0
+            results[int(marker)] = Match(
+                name=names[int(entry)],
+                similarity=score,
+                margin=score - runner_up,
             )
-            claimed.add(name)
+            claimed.add(int(entry))
         return results
+
+
+def load_icon_gallery(directory: str | Path) -> Gallery:
+    """Build a gallery from a directory of stock champion icons.
+
+    Icons are square; the descriptor's circular mask does the cropping, matching
+    how the minimap presents them.
+    """
+    directory = Path(directory)
+    if not directory.exists():
+        raise FileNotFoundError(
+            f"no icon set at {directory}. Run: python tools/fetch_icons.py"
+        )
+
+    gallery = Gallery()
+    for path in sorted(directory.glob("*.png")):
+        image = cv2.imread(str(path), cv2.IMREAD_COLOR)
+        if image is None:
+            continue
+        gallery.add(path.stem, image)
+    if not gallery:
+        raise RuntimeError(f"no readable icons in {directory}")
+    return gallery

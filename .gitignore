@@ -14,3 +14,6 @@ data/
 *.onnx
 *.engine
 *.pt
+
+# Champion icons are redownloadable: python tools/fetch_icons.py
+etc/icons/
