@@ -187,6 +187,37 @@ more than the number:
   and scale are right to within roughly ten percent. It does not confirm the
   last few pixels, and should not be quoted as if it did.
 
+**Timeline output.** The pipeline now writes what it sees: one row per tracked
+champion per frame, as JSONL. Until this existed nothing downstream could be
+built, because every question about five minutes of footage cost minutes of
+vision to ask again. Extracting once turns that into a file read.
+
+A row is flat and self-contained — game time, champion, team, position, whether
+they were visible — rather than a serialised `Track`. Freezing the tracker's
+velocity and per-name evidence into the format would tie every future reader to
+internals that exist to serve the next frame, not the next question.
+
+Three choices are load-bearing:
+
+- **Absence is recorded, not skipped.** A champion in fog still gets a row, at
+  their last known position, carrying `seconds_since_seen`. Writing only what is
+  currently visible would make the file silent about the difference between
+  *elsewhere* and *not looked at*, which is most of what player-perspective
+  footage has to say.
+- **Positions are written in both spaces.** World units are the useful ones and
+  the reason the transform exists, but crop pixels are always present, so an
+  uncalibrated capture still produces a usable timeline instead of rows with no
+  position at all.
+- **The header describes the calibration.** Scale and bounds are not recoverable
+  from the rows, and two timelines extracted under different calibrations are not
+  comparable. It is the first line of the same file rather than a sidecar,
+  because a timeline whose meaning lives in a second file is one careless copy
+  away from being unreadable.
+
+Measured on 400 frames of the sample clip: 2,149 rows at 17.2 fps, game time on
+every row and monotonic, world units on every row, a champion named on 97%, and
+20% of rows recording someone in fog.
+
 ### Known limits
 
 - **Identification is not real-time.** Roughly 17 fps of processing at 10 Hz
@@ -206,6 +237,10 @@ more than the number:
 - **Nothing handles the absence of a clock.** Loading screens and the
   pre-game lobby have no timer, and the reader simply returns nothing there
   rather than knowing why.
+- **A timeline records `visible`, not death.** For an ally, who is never fogged,
+  invisibility means death — but nothing infers that yet, so a dead ally reads
+  as a champion nobody has seen for 24 seconds. The HUD portraits already carry
+  health and are not wired into the pipeline; that is the next thing to fix.
 
 ### Automatic ground truth
 
@@ -379,6 +414,23 @@ Useful flags: `--start N` to skip into the clip, `--stride 1` to process every
 frame instead of 10 Hz, `--save out.mp4` to write the annotated video, and
 `--quiet` to print the tracked roster per frame instead of opening a window.
 
+Or extract the clip to a timeline once and ask questions of the file afterwards:
+
+```bash
+.venv/Scripts/python tools/watch.py --input "data/your clip.mp4" --quiet --export clip.jsonl
+```
+
+```python
+from spectral_sight.export import read_timeline
+
+meta, rows = read_timeline("clip.jsonl")
+seen = [r for r in rows if r.champion == "Xerath" and r.visible]
+print(f"{seen[0].game_time}s at {seen[0].world_x:.0f}, {seen[0].world_y:.0f}")
+```
+
+`iter_timeline` streams the same rows without holding them all, which is what a
+full match wants.
+
 For working on stage 1 specifically:
 
 ```bash
@@ -405,6 +457,7 @@ src/spectral_sight/
     clock.py                  the match timer
   tracking/                   identity accumulated across frames
   pipeline.py                 the stages, wired in order
+  export.py                   the output: observations, and the timeline file
   debug/overlay.py            visualisation
 tools/                        calibration and inspection CLIs
 tests/synthetic.py            minimaps with known ground truth
