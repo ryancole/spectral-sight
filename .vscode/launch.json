@@ -1,0 +1,152 @@
+{
+  "version": "0.2.0",
+
+  // Every tool that reads footage takes a required path, so the configs that
+  // need one prompt for it rather than baking in a clip that only exists on
+  // one machine. Edit the default below to pin a clip you use constantly.
+  "inputs": [
+    {
+      "id": "clip",
+      "type": "promptString",
+      "description": "Clip or screenshot to run against",
+      "default": "data/"
+    }
+  ],
+
+  "configurations": [
+    {
+      "name": "Current file",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${file}",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "presentation": { "group": "1-run", "order": 1 }
+    },
+    {
+      "name": "watch: play a clip",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/tools/watch.py",
+      "args": ["--input", "${input:clip}"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "presentation": { "group": "1-run", "order": 2 }
+    },
+    {
+      "name": "watch: export a timeline",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/tools/watch.py",
+      "args": ["--input", "${input:clip}", "--quiet", "--export", "clip.jsonl"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "presentation": { "group": "1-run", "order": 3 }
+    },
+    {
+      "name": "detect_blips: stage 1 with masks",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/tools/detect_blips.py",
+      "args": ["--input", "${input:clip}", "--masks"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "presentation": { "group": "1-run", "order": 4 }
+    },
+
+    {
+      "name": "calibrate: minimap region",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/tools/calibrate_minimap.py",
+      // This one takes --image, not --input.
+      "args": ["--image", "${input:clip}"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "presentation": { "group": "2-calibrate", "order": 1 }
+    },
+    {
+      "name": "calibrate: clock",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/tools/calibrate_clock.py",
+      "args": ["--input", "${input:clip}"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "presentation": { "group": "2-calibrate", "order": 2 }
+    },
+    {
+      "name": "calibrate: world",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/tools/calibrate_world.py",
+      "args": ["--input", "${input:clip}"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "presentation": { "group": "2-calibrate", "order": 3 }
+    },
+    {
+      "name": "calibrate: HUD",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/tools/calibrate_hud.py",
+      "args": ["--input", "${input:clip}"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "presentation": { "group": "2-calibrate", "order": 4 }
+    },
+    {
+      "name": "calibrate: nameplates (fit)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/tools/calibrate_nameplates.py",
+      "args": ["--input", "${input:clip}", "--fit"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "presentation": { "group": "2-calibrate", "order": 5 }
+    },
+
+    // A calibration a few pixels off still produces plausible output, so the
+    // validate passes are the ones that actually catch a bad box.
+    {
+      "name": "validate: world",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/tools/calibrate_world.py",
+      "args": ["--input", "${input:clip}", "--validate"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "presentation": { "group": "3-validate", "order": 1 }
+    },
+    {
+      "name": "validate: HUD",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/tools/calibrate_hud.py",
+      "args": ["--input", "${input:clip}", "--validate"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "presentation": { "group": "3-validate", "order": 2 }
+    },
+    {
+      "name": "validate: nameplates",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/tools/calibrate_nameplates.py",
+      "args": ["--input", "${input:clip}", "--validate"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "presentation": { "group": "3-validate", "order": 3 }
+    },
+    {
+      "name": "validate: clock",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/tools/calibrate_clock.py",
+      "args": ["--input", "${input:clip}", "--validate-only"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "presentation": { "group": "3-validate", "order": 4 }
+    }
+  ]
+}

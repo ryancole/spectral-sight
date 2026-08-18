@@ -1,0 +1,26 @@
+{
+  // The venv the README tells you to build:
+  //   python -m venv .venv && .venv/Scripts/python -m pip install -e ".[capture,dev]"
+  "python.defaultInterpreterPath": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+
+  // pytest reads testpaths from pyproject.toml; this just turns the panel on.
+  "python.testing.pytestEnabled": true,
+  "python.testing.unittestEnabled": false,
+  "python.testing.pytestArgs": [],
+
+  // The package is installed editable, but this keeps Pylance resolving
+  // spectral_sight even before the install has happened.
+  "python.analysis.extraPaths": ["src"],
+
+  // data/ holds multi-hundred-megabyte clips and etc/icons/ holds 173 PNGs;
+  // neither is worth walking on every search.
+  "search.exclude": {
+    "**/.venv": true,
+    "**/data": true,
+    "**/etc/icons": true
+  },
+  "files.watcherExclude": {
+    "**/.venv/**": true,
+    "**/data/**": true
+  }
+}
