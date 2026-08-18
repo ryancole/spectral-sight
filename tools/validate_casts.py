@@ -163,10 +163,20 @@ def main() -> int:
         used.add(hit)
         matched.append((cast, truth[hit]))
 
+    if not truth and not found:
+        # Not a perfect score -- no score at all. Printing 0/0 as a percentage
+        # invites a clip where nobody cast to be quoted as a result.
+        print("\nnothing to score: the player did not cast in this clip, and "
+              "the detector agreed. That is consistent, not accurate.")
+        return 0
+
     precision = len(matched) / len(found) if found else 0.0
     recall = len(matched) / len(truth) if truth else 0.0
     print(f"\nprecision {len(matched)}/{len(found)} = {precision:.0%}"
           f"     recall {len(matched)}/{len(truth)} = {recall:.0%}")
+    if len(truth) < 10:
+        print(f"  {len(truth)} real casts is a sample, not a rate. Do not "
+              "quote these as accuracy figures.")
 
     if matched:
         print("\nmatched, detector against HUD:")

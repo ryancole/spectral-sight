@@ -392,8 +392,14 @@ a frame where the plate could not be read at all.
 
 **Two casts is not a rate**, and it should not be quoted as one. What this
 establishes is that the machinery works end to end and that nothing is
-systematically wrong; the number itself needs far more footage, and the player
-in this clip barely cast.
+systematically wrong; the number itself needs far more footage.
+
+Getting that footage is the real obstacle, and the second clip shows why. Across
+2.7 minutes the player's mana never moved from 525 except to fall to zero twice,
+which is dying rather than casting -- so it scores nothing at all, and the tool
+says so rather than reporting 0/0 as a percentage. Both clips are coop-vs-AI
+footage of a player who mostly walked around. A clip in which somebody actually
+uses their abilities is worth more here than any further work on the detector.
 
 **The first version of this measurement said 14%, and it was the measurement
 that was broken.** The ground truth reported seven casts, five of them phantoms
