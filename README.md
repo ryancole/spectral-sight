@@ -373,15 +373,67 @@ them confirmed. They cluster the way repeated use of one ability should:
 Xerath's four came in at 9.4%, 10.3%, 22.2% and 28.2% — two abilities, not four
 — with Zilean at 9.4% and Sivir at 16.2%.
 
-**Precision is the half that has been checked.** Six casts in five minutes is a
-thin harvest, and the reason is not only that an enemy is rarely on screen:
-2,840 readable plate readings produced six casts, and six mana champions were
-seen with readable plates without a single detected cast among them. Some of
-that is real — a champion on screen is usually walking, not casting — and some
-of it is recall the threshold and the two guards are throwing away. Nothing here
-measures which, because there is no ground truth for what was actually cast.
-Getting one means reading the local player's own ability icons going on
-cooldown, which is a perception stage in its own right.
+### What the score actually is
+
+Both halves are now measured, because the HUD prints the local player's mana as
+text — `488 / 488` — so their resource is known exactly on every frame and a
+cast is simply a fall in that number. See below for how that is read.
+
+On the sample clip, against the seven real casts the HUD saw:
+
+| | |
+|---|---|
+| Precision | **1/1 — 100%** |
+| Recall | **1/7 — 14%** |
+
+The one it caught it measured almost exactly: the HUD recorded 50 mana of a 525
+pool, and the detector reported 9.4% against a true 9.5%.
+
+**The six misses are not the threshold's fault, and that is the finding.** Every
+missed cast cost 50 mana, 9.5% of the pool — three times the 3% threshold and
+comfortably detectable. What went wrong is upstream: through five casts between
+167.8s and 170.0s the plate attached to the player's own track sat frozen at
+0.923, because it was not the player's plate. Pulled apart frame by frame, the
+plate the reader found nearest screen centre belongs to an ally standing beside
+them, level 3 with a green bar, while the player's own nameplate is not drawn
+there at all.
+
+So the cast detector is about as good as the series it is handed, and the series
+is often somebody else's. Association is not a source of occasional noise in
+this stage — it is the ceiling on it. Fixing that is worth more than any amount
+of tuning here, and `tools/validate_casts.py` is what will say whether a fix
+worked.
+
+### Reading the player's own numbers
+
+The numbers on the player's HUD bars are the timer's face at a smaller size,
+roughly 10px against 15, exactly as the champion level box is — so they are
+grown to a fixed stroke height and matched against the glyph set the clock
+already bootstrapped. The stroke is fitted rather than guessed: swept from 10 to
+16 over 50 frames, mean match score peaks sharply at 13.
+
+The `/` is found by the gaps around it rather than by matching, because a
+diagonal stroke correlates with a digit template about as well as a digit does.
+Measured across frames the flanking gaps run 5–8px against 1–4px between
+digits, with no overlap, and taking the widest pair works whatever the digit
+counts — where splitting at a fixed position would not.
+
+Checking it needs no labels, the same way the clock's check does. The maximum
+only moves when the champion levels or buys an item, so it is near-constant over
+any short window. Measured over the whole clip:
+
+| | Mana | Health |
+|---|---|---|
+| Frames read | **100%** (3,187) | 95.4% |
+| Maximum stepping backwards | **0** | 2.0% |
+
+The four mana maxima it reports across the clip are 452, 488, 525 and 565 —
+Zilean's pool at successive levels, in order. Health is the harder line: it
+changes constantly and shares its strip with the regeneration figure, and its
+2% misread rate is what a filter would have to absorb.
+
+None of this generalises to an enemy. The client never draws their numbers, and
+this is the local player only.
 
 Three things about the bars themselves had to be got right, and each was wrong
 first:
@@ -436,19 +488,33 @@ coherent ones.
 - **Cast attribution inherits the gallery's coverage.** On the sample clip only
   two of five enemies were ever named, so a third track's casts are recorded
   against a track id and no champion.
-- **Plate-to-track association is the dominant source of false casts**, and only
-  its blatant form is handled. When the series jumps to a champion whose bars sit
-  at a *similar* level the co-movement test has nothing to catch, and the
-  structural fix belongs upstream in the association gate rather than here.
+- **Plate-to-track association is the ceiling on this whole stage**, measured
+  rather than suspected: recall against the player's own printed mana is 14%,
+  and every miss was a plate that belonged to somebody else or to nobody. It is
+  also the dominant source of false casts, and only the blatant form is handled
+  — when the series jumps to a champion whose bars sit at a *similar* level the
+  co-movement test has nothing to catch. The fix belongs upstream in the
+  association gate rather than in the detector.
+- **The local player has no nameplate of their own to read.** The client does
+  not draw one over your champion, so the self track is matched to whichever
+  plate is nearest, which is an ally standing beside you. Since the player is at
+  the centre of a camera locked to them, this is the one case with a geometric
+  answer available — and it is the case that has ground truth to check against.
+- **Ability naming is not yet worth attempting.** Drop sizes cluster per
+  champion, and the ratio between two clusters is independent of the pool size,
+  so matching those ratios against published costs would name abilities without
+  needing a denominator. At 14% recall there are not enough clusters to take a
+  ratio of; this waits on association.
 - **A truncated plate is found by the detector, not by the reader.** The reader
   nulls fills for a bar clipped at the frame edge or under a HUD panel, but a bar
   cut by a champion model in the middle of the world is not flagged — the
   detector notices the two fills agreeing and skips the reading. That leaves
   `health` on such a row still carrying the truncated number for anyone else who
   reads it.
-- **Which ability was cast is not named.** Drop sizes cluster per champion —
-  Xerath's four fell into two groups — but nothing maps a cluster to Q, W, E or
-  R, and nothing yet distinguishes two abilities that happen to cost the same.
+- **Health on the player's HUD line misreads about 2% of the time**, against
+  the mana line's zero. It changes constantly and shares its strip with the
+  regeneration figure, and nothing filters it yet — the constraint that would,
+  a maximum that only rises, is the one `LevelFilter` already uses.
 - **All footage so far is against bots.** The coverage figures in particular
   should be expected to move on a real game.
 - **Enemy coverage is bounded by vision, not by the tracker.** All five enemies
@@ -702,6 +768,17 @@ which should be zero. `--min-drop` and `--continuity` re-derive from the raw
 resource series in the file, so retuning costs a read rather than another run of
 the vision.
 
+To score it rather than describe it, against the player's own printed mana:
+
+```bash
+.venv/Scripts/python tools/validate_casts.py --input "data/your clip.mp4" --timeline clip.jsonl
+```
+
+This is the only check here with both halves. It reports precision and recall,
+and for every missed cast it prints what the plate held at that moment — which
+is how the misses were traced to plate association rather than to the
+threshold.
+
 For working on stage 1 specifically:
 
 ```bash
@@ -727,6 +804,7 @@ src/spectral_sight/
     portraits.py              where the friendly portraits sit
     alive.py                  who is dead, from portrait desaturation
     clock.py                  the match timer
+    resources.py              the player's own health and mana, as numbers
   perception/nameplates/
     plates.py                 health, resource and level over a champion
     levels.py                 level held steady across misreads
@@ -743,6 +821,7 @@ etc/clock/                    clock position and learned digits per resolution
 etc/world/                    map area and world bounds per resolution
 etc/hud/                      friendly portrait positions per resolution
 etc/nameplates/               bar geometry and screen projection per resolution
+etc/resources/                player health and mana text boxes per resolution
 ```
 
 ## Testing
