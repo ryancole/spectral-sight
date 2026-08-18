@@ -107,6 +107,30 @@ class Observation:
     sometimes the tracker simply lost them -- and a consumer reading absence as
     death has no way to tell those apart. Here, one of them says None."""
 
+    health: float | None = None
+    resource: float | None = None
+    """Fill fractions from the champion's floating nameplate, in [0, 1].
+
+    Present only while the champion is on screen *and* their plate could be
+    matched to this track, which is a far narrower window than the rest of a
+    row: measured on a coop clip, an enemy is inside the camera view in 29% of
+    frames against 88% having one somewhere on the minimap. So None here means
+    "not looked at", not "unchanged" -- a consumer carrying a value forward must
+    decide for itself how long that stays credible.
+
+    `resource` is the only evidence this project has that an enemy used an
+    ability, since nothing in the game displays enemy cooldowns: a step down
+    that holds is a cast. It is absent for champions on energy, rage or no
+    resource at all, and a step that coincides with `level` changing is a
+    larger mana pool rather than a cast."""
+
+    level: int | None = None
+    """Champion level, filtered across frames rather than read fresh.
+
+    Raw per-frame readings are wrong about one time in ten -- see
+    `LevelFilter` -- so this is the filtered value, and it lags a genuine
+    level-up by a frame or two rather than flickering."""
+
     allies_dead: int | None = None
     """How many of your five teammates were dead on this frame.
 
@@ -142,6 +166,15 @@ class Observation:
         if self.world_x is not None and self.world_y is not None:
             row["world_x"] = round(float(self.world_x), 1)
             row["world_y"] = round(float(self.world_y), 1)
+        # Omitted rather than written as null, because these are absent on most
+        # rows -- an enemy is on screen far less often than on the minimap --
+        # and a null per field per row would be most of the file.
+        if self.health is not None:
+            row["health"] = round(float(self.health), 3)
+        if self.resource is not None:
+            row["resource"] = round(float(self.resource), 3)
+        if self.level is not None:
+            row["level"] = int(self.level)
         return row
 
     @classmethod
@@ -160,6 +193,10 @@ class Observation:
             world_x=None if data.get("world_x") is None else float(data["world_x"]),
             world_y=None if data.get("world_y") is None else float(data["world_y"]),
             is_self=bool(data.get("is_self", False)),
+            health=None if data.get("health") is None else float(data["health"]),
+            resource=None if data.get("resource") is None
+            else float(data["resource"]),
+            level=None if data.get("level") is None else int(data["level"]),
             alive=None if data.get("alive") is None else bool(data["alive"]),
             allies_dead=(
                 None if data.get("allies_dead") is None
@@ -198,6 +235,14 @@ class TimelineMeta:
     row's `alive` is None because nothing was read, which a consumer must not
     confuse with the None meaning the HUD was read and disagreed."""
 
+    has_nameplates: bool = False
+    """Whether nameplates were read for this run, needing both a nameplate
+    calibration and a fitted projection. When False every row is missing
+    `health`, `resource` and `level` because nothing looked -- as against the
+    usual case, where they are missing because the champion was not on screen.
+    The distinction matters: a consumer measuring how often an enemy is
+    observable would otherwise read a missing calibration as a quiet game."""
+
     world_bounds: dict[str, float] | None = None
     world_units_per_pixel: list[float] | None = None
     """The world calibration in force, or None if positions are crop pixels
@@ -216,6 +261,7 @@ class TimelineMeta:
             "created": self.created,
             "has_game_time": self.has_game_time,
             "has_liveness": self.has_liveness,
+            "has_nameplates": self.has_nameplates,
             "world_bounds": self.world_bounds,
             "world_units_per_pixel": self.world_units_per_pixel,
         }
@@ -230,6 +276,7 @@ class TimelineMeta:
             created=str(data.get("created", "")),
             has_game_time=bool(data.get("has_game_time", False)),
             has_liveness=bool(data.get("has_liveness", False)),
+            has_nameplates=bool(data.get("has_nameplates", False)),
             world_bounds=data.get("world_bounds"),
             world_units_per_pixel=data.get("world_units_per_pixel"),
             schema=int(data.get("schema", SCHEMA)),
@@ -248,6 +295,7 @@ class TimelineMeta:
             created=now,
             has_game_time=self.has_game_time,
             has_liveness=self.has_liveness,
+            has_nameplates=self.has_nameplates,
             world_bounds=self.world_bounds,
             world_units_per_pixel=self.world_units_per_pixel,
             schema=self.schema,

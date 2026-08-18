@@ -10,7 +10,16 @@ constraints live in one place:
 5. match markers against the champion gallery, per team (stage 2)
 6. accumulate roster evidence, and lock the gallery down once it settles
 7. fold everything into the tracker, which carries identity across frames
-8. flatten the tracked state into observations, which is the output proper
+8. read the nameplates of champions on screen, and attach them to those tracks
+9. flatten the tracked state into observations, which is the output proper
+
+Step 8 runs after the tracker rather than before because it has nothing to
+attach to until the tracks exist. It is the only step that reads the 3D view
+rather than the minimap or a HUD panel, and the only one whose coverage is set
+by where the camera happens to be pointing -- an enemy is inside the camera view
+in under a third of frames. What it adds is health, resource and level, and the
+resource bar is the sole evidence this project can gather that an enemy used an
+ability, because the client never displays an enemy's cooldowns.
 
 Matching is per team rather than global. Before the roster locks that changes
 little; after, it is what lets a blue marker be compared only against blue
@@ -28,11 +37,11 @@ since portrait art is skin-specific; the minimap knows exactly which champions
 are missing but not why. Neither is sufficient alone, and together they settle
 it -- see `_attribute_deaths`.
 
-The clock, the world transform and the HUD portraits are all optional and each
-needs a calibration step of its own, so `for_resolution` loads them if they are
-there and carries on without them if they are not. Everything that worked
-before they existed still works; a caller that wants them checks whether they
-arrived.
+The clock, the world transform, the HUD portraits and the nameplate layout are
+all optional and each needs a calibration step of its own, so `for_resolution`
+loads them if they are there and carries on without them if they are not.
+Everything that worked before they existed still works; a caller that wants them
+checks whether they arrived.
 
 Step 8 is why they exist. Game time and world units are the two keys that join
 this footage to anything outside it, and a caller that has to remember to apply
@@ -67,6 +76,14 @@ from spectral_sight.perception.minimap import (
     find_viewport,
 )
 from spectral_sight.perception.minimap.blips import scaled_config
+from spectral_sight.perception.nameplates import (
+    LevelBook,
+    Nameplate,
+    NameplateLayout,
+    NameplateReader,
+    ScreenProjection,
+    associate,
+)
 from spectral_sight.tracking import Track, Tracker, TrackerConfig
 from spectral_sight.types import Blip, Team
 
@@ -108,6 +125,16 @@ class PipelineResult:
     are calibrated. Slot-indexed, so it says how many are dead but not which
     champions they are -- see `_attribute_deaths` for how that is closed."""
 
+    plates: list[Nameplate] = field(default_factory=list)
+    """Champion nameplates read from the world view this frame, if calibrated.
+    Both teams, and including any the reader blanked for occlusion."""
+
+    plate_tracks: dict[int, int] = field(default_factory=dict)
+    """Index into `plates` to track id, for the plates geometry could place.
+    Sparse by design: a plate the gate could not resolve is left out rather
+    than attached to a guess, since a plate on the wrong track corrupts that
+    champion's whole series while an unmatched one costs a single frame."""
+
     observations: list[Observation] = field(default_factory=list)
     """One flat, serialisable row per confirmed track -- the same content as
     `tracks`, converted to game time and world units and stripped of the
@@ -132,6 +159,7 @@ class Pipeline:
         clock: ClockReader | None = None,
         world: WorldTransform | None = None,
         portraits: PortraitLayout | None = None,
+        nameplates: NameplateLayout | None = None,
         resolution: tuple[int, int] | None = None,
     ) -> None:
         self.region = region
@@ -149,6 +177,21 @@ class Pipeline:
         self.world = world
         self.portraits = portraits
         self.liveness = None if portraits is None else AliveReader(portraits)
+        self.nameplates = nameplates
+        self.projection = (
+            None if nameplates is None
+            else ScreenProjection.from_layout(nameplates)
+        )
+        self.plate_reader = (
+            None if nameplates is None
+            else NameplateReader(
+                nameplates, None if clock is None else clock.glyphs
+            )
+        )
+        """Levels ride on the clock's glyph set, so a run with no clock
+        calibration reads plates without them rather than not at all."""
+
+        self.levels = LevelBook()
         self._clock_filter = ClockFilter()
         self._restricted: dict[Team, Gallery] = {}
         self._self_evidence: dict[str, int] = {}
@@ -237,12 +280,17 @@ class Pipeline:
             portraits = PortraitLayout.for_resolution(width, height)
         except FileNotFoundError:
             portraits = None
+        try:
+            nameplates = NameplateLayout.for_resolution(width, height)
+        except FileNotFoundError:
+            nameplates = None
         return cls(
             region=MinimapRegion.for_resolution(width, height),
             gallery=load_icon_gallery(icons),
             clock=clock,
             world=world,
             portraits=portraits,
+            nameplates=nameplates,
             resolution=(width, height),
         )
 
@@ -290,6 +338,8 @@ class Pipeline:
             name = self_track.identity
             self._self_evidence[name] = self._self_evidence.get(name, 0) + 1
 
+        plates, pairing = self._read_plates(frame, tracks, viewport)
+
         return PipelineResult(
             blips=blips,
             matches=matches,
@@ -299,10 +349,55 @@ class Pipeline:
             self_track=self_track,
             clock=clock,
             liveness=liveness,
+            plates=plates,
+            plate_tracks=pairing,
             observations=self._observe(
-                tracks, timestamp, clock, self_track, liveness
+                tracks, timestamp, clock, self_track, liveness, plates, pairing
             ),
         )
+
+    def _read_plates(
+        self,
+        frame: np.ndarray,
+        tracks: list[Track],
+        viewport: Viewport | None,
+    ) -> tuple[list[Nameplate], dict[int, int]]:
+        """Read nameplates and attach them to tracks.
+
+        Plates are matched against *both* teams' tracks rather than just the
+        enemy's. An ally plate is less interesting -- the HUD already says how
+        many teammates are alive -- but it is the same read for free, and an
+        ally's resource is the one case where a cast can be checked against
+        something else that was observed.
+        """
+        if self.plate_reader is None:
+            return [], {}
+
+        plates = self.plate_reader.read(frame)
+        height, width = frame.shape[:2]
+        pairing: dict[int, int] = {}
+        for team, hostile in ((Team.RED, True), (Team.BLUE, False)):
+            indices = [i for i, p in enumerate(plates) if p.hostile is hostile]
+            if not indices:
+                continue
+            side = [t for t in tracks if t.team is team]
+            local = associate(
+                [plates[i] for i in indices], side, viewport, self.projection,
+                (width, height),
+            )
+            for local_index, track_id in local.items():
+                pairing[indices[local_index]] = track_id
+
+        # Levels belong to champions, so they accumulate against the track and
+        # have to be dropped when the tracker drops it -- otherwise a reused id
+        # would inherit a stranger's level.
+        live = {t.id for t in self.tracker.tracks}
+        for track_id in [i for i in self.levels.filters if i not in live]:
+            self.levels.forget(track_id)
+        for index, track_id in pairing.items():
+            self.levels.update(track_id, plates[index].level)
+
+        return plates, pairing
 
     def _attribute_deaths(
         self,
@@ -392,6 +487,8 @@ class Pipeline:
         clock: GameClock | None,
         self_track: Track | None,
         liveness: Liveness | None = None,
+        plates: list[Nameplate] | None = None,
+        pairing: dict[int, int] | None = None,
     ) -> list[Observation]:
         """Flatten this frame's tracks into rows.
 
@@ -400,8 +497,13 @@ class Pipeline:
         """
         lost_after = self.tracker.config.lost_after
         alive = self._attribute_deaths(tracks, liveness)
+        by_track = {
+            track_id: plates[index]
+            for index, track_id in (pairing or {}).items()
+        }
         rows = []
         for track in sorted(tracks, key=lambda t: t.id):
+            plate = by_track.get(track.id)
             world = self.world_position(track.x, track.y)
             age = track.age(timestamp)
             rows.append(
@@ -419,6 +521,9 @@ class Pipeline:
                     world_x=None if world is None else world[0],
                     world_y=None if world is None else world[1],
                     is_self=self_track is not None and track.id == self_track.id,
+                    health=None if plate is None else plate.health,
+                    resource=None if plate is None else plate.resource,
+                    level=self.levels.level(track.id),
                     alive=alive.get(track.id),
                     allies_dead=None if liveness is None else liveness.dead_count,
                 )
@@ -456,6 +561,8 @@ class Pipeline:
             stride=stride,
             has_game_time=self.clock is not None,
             has_liveness=self.liveness is not None,
+            has_nameplates=self.plate_reader is not None
+            and self.projection is not None,
             world_bounds=bounds,
             world_units_per_pixel=scale,
         )

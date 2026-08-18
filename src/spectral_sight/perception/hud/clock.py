@@ -144,8 +144,13 @@ class ClockConfig:
     """
 
 
-def _lit_mask(strip: np.ndarray, config: ClockConfig) -> np.ndarray:
-    """Boolean mask of glyph pixels: bright and unsaturated."""
+def lit_mask(strip: np.ndarray, config: ClockConfig) -> np.ndarray:
+    """Boolean mask of glyph pixels: bright and unsaturated.
+
+    Public because the champion level box holds the same face on the same dark
+    ground, so the nameplate reader segments its digits with this rather than
+    growing a second copy that could drift from it.
+    """
     if strip.ndim != 3 or strip.shape[2] != 3:
         raise ValueError(f"expected a BGR image, got shape {strip.shape}")
     hsv = cv2.cvtColor(strip, cv2.COLOR_BGR2HSV)
@@ -173,12 +178,17 @@ def _column_runs(mask: np.ndarray, config: ClockConfig) -> list[tuple[int, int]]
     ]
 
 
-def _centred(patch: np.ndarray, size: tuple[int, int]) -> np.ndarray:
+def centred(patch: np.ndarray, size: tuple[int, int]) -> np.ndarray:
     """Place a tight glyph in the centre of a fixed canvas, as float32 [0, 1].
 
     Glyphs are kept at native size because the HUD font does not change scale
     within a resolution. Anything that does not fit is shrunk to fit, which only
     happens if the calibration is wrong.
+
+    Public for the same reason as `lit_mask`. Note that a caller matching glyphs
+    of a *different* size against this glyph set -- the level box is the case
+    that exists -- has to rescale before centring, since centring alone would
+    compare a small digit against a large template.
     """
     width, height = size
     patch = patch.astype(np.float32) / 255.0
@@ -309,7 +319,7 @@ def glyph_boxes(
     the glyphs are before it can choose the canvas everything is centred into.
     """
     cfg = config or ClockConfig()
-    return _boxes_from_mask(_lit_mask(strip, cfg), cfg)
+    return _boxes_from_mask(lit_mask(strip, cfg), cfg)
 
 
 def segment_glyphs(
@@ -324,10 +334,10 @@ def segment_glyphs(
     calibration box happens to sit.
     """
     cfg = config or ClockConfig()
-    mask = _lit_mask(strip, cfg)
+    mask = lit_mask(strip, cfg)
     grey = np.where(mask, cv2.cvtColor(strip, cv2.COLOR_BGR2GRAY), 0).astype(np.uint8)
     return [
-        _centred(grey[y : y + h, x : x + w], size)
+        centred(grey[y : y + h, x : x + w], size)
         for x, y, w, h in _boxes_from_mask(mask, cfg)
     ]
 
@@ -457,7 +467,7 @@ def tighten(
     is the digits alone even when the drag was generous.
     """
     cfg = config or ClockConfig()
-    mask = _lit_mask(box.crop(frame), cfg)
+    mask = lit_mask(box.crop(frame), cfg)
     runs = _column_runs(mask, cfg)
     if not runs:
         return None

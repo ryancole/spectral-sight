@@ -187,6 +187,18 @@ more than the number:
   and scale are right to within roughly ten percent. It does not confirm the
   last few pixels, and should not be quoted as if it did.
 
+**Champion nameplates.** Working, within the window they exist in. The bars
+floating over a champion give health, resource and level for anyone currently on
+screen — which is 29% of frames for an enemy, against 88% having one somewhere on
+the minimap. The resource bar is the only evidence this project can gather that
+an enemy used an ability, since the client never displays enemy cooldowns, and
+its precision is about one pixel of a 117px bar. Levels reuse the glyph set the
+clock reader already learned, filtered by the fact that a level only ever rises
+by one, which takes bad readings from 20.9% to zero. Plates are matched to tracks
+by a fitted screen-to-minimap projection accurate to ~12px p90 in a ~74px
+viewport — enough to gate on, not enough to decide alone. See *Reading a
+champion's bars* below.
+
 **Timeline output.** The pipeline now writes what it sees: one row per tracked
 champion per frame, as JSONL. Until this existed nothing downstream could be
 built, because every question about five minutes of footage cost minutes of
@@ -297,11 +309,82 @@ names the casualty and so clears everyone else. A teammate down alongside — or
 instead — leaves a death nobody can attribute, and those rows report `alive:
 null` while `allies_dead` still carries the count. That is 2.5% of ally rows.
 
+### Reading a champion's bars, and what that says about abilities
+
+**Nothing in the game displays an enemy's cooldowns.** There is no HUD panel to
+calibrate against, which is what every earlier stage relied on. So ability usage
+has to be inferred, and the only champion-agnostic evidence the client renders is
+the *resource bar* on the nameplate floating over a champion: a step down that
+holds is a cast.
+
+That window is much narrower than the minimap's. Measured on the coop-vs-AI clip
+at 10 Hz, an enemy is somewhere on the minimap in **87.9%** of frames but inside
+the camera view in only **29.4%**, averaging 0.40 readable enemy plates per
+frame. Nameplates of some kind appear in 92% of frames. So the honest output is a
+*cast event log*, not a cooldown state — a consumer that wants "is their ult up"
+has to carry its own uncertainty.
+
+Within that window the measurement is close to exact. On frames where a
+champion's health did not change, **85.8%** of consecutive resource readings are
+identical to within one pixel, and the p05–p95 spread is ±0.85% — one pixel of a
+117px bar. Typical ability costs run 7–25% of a pool, comfortably clear of that
+floor. Detected casts cluster per champion the way repeated use of one ability
+should: Galio's steps came in at 10–14%, Ezreal's at 4–7%.
+
+Three things had to be got right, and each was wrong first:
+
+- **Ticks break the health bar** into a dozen components, so fills are measured
+  by walking from the left edge and hopping short gaps.
+- **A split resource run spawns a phantom plate** measured from the wrong left
+  edge, which linked across frames reads as a large sudden drop. This accounted
+  for *essentially every* false cast above 4%. The fix is structural, not a
+  threshold: a real bar start has a level box beside it, 81–89% dark against 24%
+  partway along a lit bar.
+- **Truncated bars read plausibly.** A plate behind another is cut where the
+  front one begins; a plate at the screen edge is cut by the frame. The latter
+  truncates *both* fills at the same column, so they come back equal — 0.222 and
+  0.222 reads as a wounded champion low on mana. Both cases now report null and
+  say which happened.
+
+Levels come from the same plate, matched against the glyph set the clock reader
+already learned, so no new font asset is needed. Rescaling 7×10 digits against
+9×13 templates costs accuracy: about one reading in ten comes back `1` for a
+champion on 3, 4 or 5, and those are full height rather than clipped, so no size
+check removes them. What removes them is the constraint — a level starts at 1,
+never falls, and rises by one. Over 516 transitions that took readings which
+decrease or skip from **20.9% to zero**.
+
+Matching a plate to a track is geometric and only approximately so. Scaling
+screen position into the viewport rectangle leaves a p90 error of 29 minimap
+pixels in a viewport ~74 wide, with the residual correlating **−0.69** with
+screen height — that is the camera tilt. Fitted cross terms cut p90 to 12px,
+held out at a median of 7.2px. Not enough to assign by geometry alone when two
+enemies stand close, but enough to gate, and the track lineage carries the
+identity. Against a proximity linker this collapsed 20 fragmented series into 3
+coherent ones.
+
 ### Known limits
 
 - **Identification is not real-time.** Roughly 17 fps of processing at 10 Hz
   sampling, dominated by the gallery pass. Fine for offline VOD analysis; not
   yet fast enough to run live alongside a game.
+- **The screen-to-minimap projection is fitted, not derived.** It absorbs the
+  camera tilt, the plate's float above the model, and the viewport rectangle's
+  drawing conventions all at once. The coefficients wobble between fits, and the
+  fit only ever saw plates in the upper half of the screen, so the vertical
+  extrapolation below that is unvalidated. A projection derived from the camera
+  angle would be sturdier.
+- **A champion below about a tenth of their resource is not seen at all.** The
+  reader anchors on the resource bar, and at zero there is no bar to anchor on —
+  which is exactly the champion who just spent everything.
+- **Energy, rage and manaless champions yield no cast evidence** by this route,
+  and shields are invisible to it: a shield renders as a violet segment appended
+  to the health bar, so gaining one shows no change.
+- **Cast attribution inherits the gallery's coverage.** On the sample clip only
+  two of five enemies were ever named, so a third track's casts are recorded
+  against a track id and no champion.
+- **All footage so far is against bots.** The coverage figures in particular
+  should be expected to move on a real game.
 - **Enemy coverage is bounded by vision, not by the tracker.** All five enemies
   are known in 36% of frames; the rest of the time some have simply never been
   seen recently enough to place.
@@ -564,6 +647,10 @@ src/spectral_sight/
     portraits.py              where the friendly portraits sit
     alive.py                  who is dead, from portrait desaturation
     clock.py                  the match timer
+  perception/nameplates/
+    plates.py                 health, resource and level over a champion
+    levels.py                 level held steady across misreads
+    projection.py             screen to minimap, and plate to track
   tracking/                   identity accumulated across frames
   pipeline.py                 the stages, wired in order
   export.py                   the output: observations, and the timeline file
@@ -574,6 +661,7 @@ etc/regions/                  calibrated minimap regions per resolution
 etc/clock/                    clock position and learned digits per resolution
 etc/world/                    map area and world bounds per resolution
 etc/hud/                      friendly portrait positions per resolution
+etc/nameplates/               bar geometry and screen projection per resolution
 ```
 
 ## Testing
