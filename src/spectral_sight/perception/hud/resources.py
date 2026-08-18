@@ -91,6 +91,17 @@ class ResourceConfig:
     rescaled glyph correlates worse than a native one, the same allowance the
     level reader makes."""
 
+    min_margin: float = 0.04
+    """How far the best match must beat the runner-up.
+
+    The load-bearing threshold, and leaving it out was this reader's second bug.
+    Rescaled to 13px a `9` and a `4` correlate almost identically -- measured on
+    one frame the true `9` scored 0.56 and the `4` it was misread as scored
+    0.54, so no floor on score separates them. The margins do: 0.045 against
+    0.008. Without this the tens digit flickers between the two, and since the
+    digits differ by five that invents a fifty-unit fall and a fifty-unit
+    recovery on alternating frames -- which reads exactly like a cast."""
+
     max_digits: int = 5
     """Longest plausible number. Health passes 10,000 late in a game; five
     digits is clear of anything real and rejects a run of noise."""
@@ -264,7 +275,12 @@ class ResourceReader:
                 (max(1, round(gw * scale)), cfg.stroke),
                 interpolation=cv2.INTER_CUBIC,
             )
-            label, score, _ = self.glyphs.match(centred(grown, self.glyphs.size))
+            label, score, margin = self.glyphs.match(centred(grown, self.glyphs.size))
+            # A glyph the templates cannot separate sinks the whole line. A
+            # number with one digit quietly wrong still looks like a number,
+            # and downstream there is nothing to catch it with.
+            if margin < cfg.min_margin and label.isdigit():
+                return [], []
             found.append((label, score))
             kept.append((gx, gy, gw, gh))
         return found, kept

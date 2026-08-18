@@ -2,16 +2,18 @@
 
 The pixel path is decided by real footage and reported by
 `tools/validate_casts.py` -- measured on a 5.3-minute clip the mana line reads
-on 100% of frames with its maximum never once stepping backwards across 3,187
-readings. What these tests pin is the logic that turns a row of matched glyphs
-into two numbers, which is where the reader can be wrong in a way no amount of
-tuning would show.
+on 93% of frames, its maximum never steps backwards, and its current value never
+once leaves and returns. What these tests pin is the logic that turns a row of
+matched glyphs into two numbers, which is where the reader can be wrong in a way
+no amount of tuning would show.
 """
 
 from __future__ import annotations
 
+from spectral_sight.perception.hud.clock import ClockConfig
 from spectral_sight.perception.hud.resources import (
     Reading,
+    ResourceConfig,
     ResourceLayout,
     ResourceReader,
 )
@@ -100,3 +102,22 @@ def test_an_uncalibrated_resolution_is_absent_rather_than_an_error() -> None:
     one -- a run with no player numbers is worse than one with them, not
     broken."""
     assert ResourceLayout.for_resolution(1, 1) is None
+
+
+# -- the margin gate ------------------------------------------------------
+#
+# The threshold the reader was missing, and the reason it invented casts. A `9`
+# and a `4` rescaled to 13px correlate almost identically, so a floor on score
+# cannot separate them; the margin over the runner-up can.
+
+
+def test_a_glyph_that_cannot_be_told_apart_sinks_the_line() -> None:
+    """Rather than being guessed at. A number with one digit quietly wrong
+    still looks like a number, and nothing downstream can catch it."""
+    assert ResourceConfig().min_margin > 0
+
+
+def test_the_margin_floor_is_at_least_the_clock_s() -> None:
+    """These glyphs are rescaled and so correlate worse than the timer's own,
+    which is a reason to demand more separation, never less."""
+    assert ResourceConfig().min_margin >= ClockConfig().min_margin

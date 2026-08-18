@@ -379,30 +379,36 @@ Both halves are now measured, because the HUD prints the local player's mana as
 text — `488 / 488` — so their resource is known exactly on every frame and a
 cast is simply a fall in that number. See below for how that is read.
 
-On the sample clip, against the seven real casts the HUD saw:
+On the sample clip, against the real casts the HUD saw:
 
 | | |
 |---|---|
 | Precision | **1/1 — 100%** |
-| Recall | **1/7 — 14%** |
+| Recall | **1/2 — 50%** |
 
 The one it caught it measured almost exactly: the HUD recorded 50 mana of a 525
-pool, and the detector reported 9.4% against a true 9.5%.
+pool, and the detector reported 9.4% against a true 9.5%. The one it missed was
+a frame where the plate could not be read at all.
 
-**The six misses are not the threshold's fault, and that is the finding.** Every
-missed cast cost 50 mana, 9.5% of the pool — three times the 3% threshold and
-comfortably detectable. What went wrong is upstream: through five casts between
-167.8s and 170.0s the plate attached to the player's own track sat frozen at
-0.923, because it was not the player's plate. Pulled apart frame by frame, the
-plate the reader found nearest screen centre belongs to an ally standing beside
-them, level 3 with a green bar, while the player's own nameplate is not drawn
-there at all.
+**Two casts is not a rate**, and it should not be quoted as one. What this
+establishes is that the machinery works end to end and that nothing is
+systematically wrong; the number itself needs far more footage, and the player
+in this clip barely cast.
 
-So the cast detector is about as good as the series it is handed, and the series
-is often somebody else's. Association is not a source of occasional noise in
-this stage — it is the ceiling on it. Fixing that is worth more than any amount
-of tuning here, and `tools/validate_casts.py` is what will say whether a fix
-worked.
+**The first version of this measurement said 14%, and it was the measurement
+that was broken.** The ground truth reported seven casts, five of them phantoms
+manufactured by the reader below misreading a `9` as a `4` in the tens digit --
+which invents a fifty-unit fall and a fifty-unit recovery on alternating frames
+and looks exactly like a cast. Chasing the resulting "misses" produced a
+confident and wrong conclusion: that plate association was putting other
+champions' bars on the player's track. It is not. Checked directly, the plate on
+the player's track agrees with their printed mana to a median of 0.009 -- one
+pixel -- and within 2% on 88% of 1,966 readings, against 36.5% for every other
+track. Association on the self track is working.
+
+The lesson is the one this project keeps relearning: a check is only as good as
+the thing doing the checking, and a ground truth needs its own error rate
+measured before anything is concluded from what it disagrees with.
 
 ### Reading the player's own numbers
 
@@ -418,19 +424,31 @@ Measured across frames the flanking gaps run 5–8px against 1–4px between
 digits, with no overlap, and taking the widest pair works whatever the digit
 counts — where splitting at a fixed position would not.
 
-Checking it needs no labels, the same way the clock's check does. The maximum
-only moves when the champion levels or buys an item, so it is near-constant over
-any short window. Measured over the whole clip:
+**A glyph is accepted on its margin, not its score.** Rescaled to 13px a `9`
+and a `4` correlate almost identically: on the frame that exposed this the true
+`9` scored 0.56 and the `4` it was read as scored 0.54, so no floor on score
+separates them. Their margins over the runner-up do — 0.045 against 0.008 — and
+a glyph that cannot clear the margin sinks the whole line rather than being
+guessed at. A number with one digit quietly wrong still looks like a number, and
+nothing downstream can catch it.
+
+Checking it needs no labels, the same way the clock's check does. Two free
+signals: the maximum only moves when the champion levels or buys an item, and a
+current value that leaves and returns within a frame is impossible — mana falls
+in steps and recovers by slow regeneration, never both at once. Measured over
+the whole clip:
 
 | | Mana | Health |
 |---|---|---|
-| Frames read | **100%** (3,187) | 95.4% |
-| Maximum stepping backwards | **0** | 2.0% |
+| Frames read | 93.3% | 80.4% |
+| Maximum stepping backwards | **0** | 0 |
+| Value leaving and returning | **0** | 1 (0.04%) |
 
-The four mana maxima it reports across the clip are 452, 488, 525 and 565 —
-Zilean's pool at successive levels, in order. Health is the harder line: it
-changes constantly and shares its strip with the regeneration figure, and its
-2% misread rate is what a filter would have to absorb.
+Before the margin gate the mana line read on 100% of frames and spiked four
+times; the gate trades 6.7% of readings for none. That is the right trade here,
+because the phantom casts those four spikes produced cost far more than a
+missing frame does. The four mana maxima reported across the clip are 452, 488,
+525 and 565 — Zilean's pool at successive levels, in order.
 
 None of this generalises to an enemy. The client never draws their numbers, and
 this is the local player only.
@@ -488,33 +506,34 @@ coherent ones.
 - **Cast attribution inherits the gallery's coverage.** On the sample clip only
   two of five enemies were ever named, so a third track's casts are recorded
   against a track id and no champion.
-- **Plate-to-track association is the ceiling on this whole stage**, measured
-  rather than suspected: recall against the player's own printed mana is 14%,
-  and every miss was a plate that belonged to somebody else or to nobody. It is
-  also the dominant source of false casts, and only the blatant form is handled
-  — when the series jumps to a champion whose bars sit at a *similar* level the
-  co-movement test has nothing to catch. The fix belongs upstream in the
-  association gate rather than in the detector.
-- **The local player has no nameplate of their own to read.** The client does
-  not draw one over your champion, so the self track is matched to whichever
-  plate is nearest, which is an ally standing beside you. Since the player is at
-  the centre of a camera locked to them, this is the one case with a geometric
-  answer available — and it is the case that has ground truth to check against.
+- **Plate-to-track association is still the dominant source of false casts**,
+  and only its blatant form is handled: when the series jumps to a champion
+  whose bars sit at a *similar* level the co-movement test has nothing to catch.
+  Note this is about *other* tracks — checked against printed mana, the plate on
+  the player's own track is right, agreeing to a median of one pixel.
+- **Recall rests on two events and is not a rate.** Both halves of the score can
+  now be measured, but only for the local player and only where they actually
+  cast, and in 5.3 minutes this one cast twice. More footage is the only thing
+  that turns 1/2 into a number worth quoting.
 - **Ability naming is not yet worth attempting.** Drop sizes cluster per
   champion, and the ratio between two clusters is independent of the pool size,
   so matching those ratios against published costs would name abilities without
-  needing a denominator. At 14% recall there are not enough clusters to take a
-  ratio of; this waits on association.
+  ever needing a denominator. Two confirmed casts is not enough to take a ratio
+  of; this waits on footage, not on a new idea.
 - **A truncated plate is found by the detector, not by the reader.** The reader
   nulls fills for a bar clipped at the frame edge or under a HUD panel, but a bar
   cut by a champion model in the middle of the world is not flagged — the
   detector notices the two fills agreeing and skips the reading. That leaves
   `health` on such a row still carrying the truncated number for anyone else who
   reads it.
-- **Health on the player's HUD line misreads about 2% of the time**, against
-  the mana line's zero. It changes constantly and shares its strip with the
-  regeneration figure, and nothing filters it yet — the constraint that would,
-  a maximum that only rises, is the one `LevelFilter` already uses.
+- **The player's HUD health line reads on 80% of frames against mana's 93%.**
+  It changes constantly and shares its strip with the regeneration figure, so
+  more of its glyphs fail the margin gate. Nothing filters what survives; the
+  constraint that would — a maximum that only rises — is the one `LevelFilter`
+  already uses.
+- **The HUD numbers are the local player's only.** The client never draws an
+  enemy's, so nothing about this route generalises, and every other champion's
+  resource remains a fraction with no denominator and no ground truth.
 - **All footage so far is against bots.** The coverage figures in particular
   should be expected to move on a real game.
 - **Enemy coverage is bounded by vision, not by the tracker.** All five enemies
