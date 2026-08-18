@@ -764,7 +764,10 @@ Then watch the whole pipeline run on a clip:
 Solid circles are champions currently visible; hollow dimmed circles are
 champions in fog, drawn at their last known position with the seconds since they
 were seen. A champion the HUD confirms is dead is crossed out rather than
-dimmed. A white outer ring marks the local player. Q quits, SPACE pauses.
+dimmed. A white outer ring marks the local player. A **yellow ring** marks a
+champion who has just cast, fading over two seconds — thick when the cast was
+pinned to consecutive readings, thin when it was measured across a gap and so
+happened somewhere in a window rather than at an instant. Q quits, SPACE pauses.
 
 Useful flags: `--start N` to skip into the clip, `--stride 1` to process every
 frame instead of 10 Hz, `--save out.mp4` to write the annotated video, and
