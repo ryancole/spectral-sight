@@ -80,11 +80,15 @@ class ResourceConfig:
     Fitted by sweeping 10-16 over 50 frames and taking the peak in mean match
     score. The digits themselves stand about 10-11px."""
 
-    min_glyph_width: int = 1
+    min_glyph_width: int = 2
     min_glyph_pixels: int = 4
     min_glyph_height: int = 4
-    """Looser than the clock's, because these glyphs are smaller. The
-    consistency checks downstream are what catch a bad segmentation, not this."""
+    """Looser than the clock's, because these glyphs are smaller -- but not on
+    width. A single-pixel column is never a character: the narrowest digit, a
+    `1`, measures 3-4px across at both resolutions calibrated so far, while the
+    bar draws a one-pixel highlight down its edge that lands inside a generous
+    box. Admitting it prepends a phantom glyph to the number, which then fails
+    the current-within-maximum test and costs the whole line."""
 
     min_score: float = 0.45
     """Floor on the best correlation. Deliberately below the clock's 0.55: a
@@ -264,11 +268,21 @@ class ResourceReader:
         grey = np.where(mask, cv2.cvtColor(strip, cv2.COLOR_BGR2GRAY), 0)
         grey = grey.astype(np.uint8)
 
+        # Height is deliberately *not* used to reject a glyph. Trying it cost
+        # two hours: a `1` stands taller than the digits around it -- 14 or 15
+        # against 11 -- so a rule tight enough to exclude the bar's edge
+        # highlight also drops the leading digit of a three-digit number,
+        # turning 178 into 78 on scattered frames. That reads as a hundred mana
+        # spent and instantly refunded, which is a cast. Width does the job the
+        # height rule was reaching for, and does it without collateral.
+        raw = [
+            box for box in glyph_boxes(strip, self._clock_config)
+            if box[3] >= cfg.min_glyph_height
+        ]
+
         found: list[tuple[str, float]] = []
         kept: list[tuple[int, int, int, int]] = []
-        for gx, gy, gw, gh in glyph_boxes(strip, self._clock_config):
-            if gh < cfg.min_glyph_height:
-                continue
+        for gx, gy, gw, gh in raw:
             scale = cfg.stroke / gh
             grown = cv2.resize(
                 grey[gy : gy + gh, gx : gx + gw],

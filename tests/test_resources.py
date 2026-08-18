@@ -174,3 +174,23 @@ def test_unreadable_frames_leave_the_maximum_alone() -> None:
     for _ in range(3):
         state.update(452)
     assert state.update(None) == 452
+
+
+# -- segmentation guards --------------------------------------------------
+
+
+def test_a_single_pixel_column_is_never_a_character() -> None:
+    """The bar draws a one-pixel highlight down its edge, which lands inside a
+    deliberately generous box. Admitted as a glyph it prepends a digit to the
+    number, and `1167 / 425` then fails the current-within-maximum test and
+    costs the whole line."""
+    assert ResourceConfig().min_glyph_width >= 2
+
+
+def test_nothing_rejects_a_glyph_for_being_tall() -> None:
+    """A `1` stands taller than the digits around it -- 14 or 15 against 11 --
+    so any height rule tight enough to exclude the bar highlight also drops the
+    leading digit of a three-digit number. That turns 178 into 78 on scattered
+    frames, which reads as a hundred mana spent and instantly refunded: a cast.
+    Width does the job without the collateral."""
+    assert not hasattr(ResourceConfig(), "max_height_ratio")
