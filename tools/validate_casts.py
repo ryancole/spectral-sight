@@ -27,7 +27,11 @@ import cv2
 
 from spectral_sight.export import Observation, read_timeline
 from spectral_sight.perception.hud.clock import load_clock_reader
-from spectral_sight.perception.hud.resources import Reading, load_resource_reader
+from spectral_sight.perception.hud.resources import (
+    MaximumFilter,
+    Reading,
+    load_resource_reader,
+)
 from spectral_sight.perception.nameplates import Cast, CastBook, CastConfig
 
 MIN_COST = 20
@@ -38,10 +42,16 @@ DEATH_FRACTION = 0.4
 """A fall of more than this much of the pool in one frame is the champion dying,
 not casting. Real abilities top out well below it."""
 
-MATCH_WINDOW = 0.6
-"""How far apart a detected cast and a real one may sit and still be the same
-event. Generous, because a detected cast is stamped at the reading it was
-measured to and the plate is not read every frame."""
+MATCH_SLACK = 0.6
+"""Slack either side of a detected cast's own interval.
+
+A cast is *not* an instant and must not be matched as one. It is stamped at the
+reading it was measured to and covers `[at - span, at]`, which for a champion
+who walked off screen can be nine seconds wide. Matching within a fixed window
+of `at` scored two correctly-found casts as a miss and a false positive each --
+one at 65.9s reported at 66.8s over a 2.0s span, one at 75.6s reported at 76.9s
+over a 9.1s span, both intervals containing the real event. This is the slack on
+top of that interval, for the reading either side of it."""
 
 
 def hud_series(path: str, stride: int) -> list[tuple[float, Reading]]:
@@ -65,6 +75,7 @@ def hud_series(path: str, stride: int) -> list[tuple[float, Reading]]:
         )
 
     out: list[tuple[float, Reading]] = []
+    maximum = MaximumFilter()
     index = 0
     while True:
         ok, frame = capture.read()
@@ -73,7 +84,11 @@ def hud_series(path: str, stride: int) -> list[tuple[float, Reading]]:
         if index % stride == 0:
             mana = reader.read(frame).mana
             if mana is not None:
-                out.append((index / fps, mana))
+                # Filtered, because an unfiltered maximum flickering by one
+                # digit makes the level-up test below throw away a real cast.
+                settled = maximum.update(mana.maximum)
+                if settled is not None:
+                    out.append((index / fps, Reading(mana.current, settled)))
         index += 1
     capture.release()
     return out
@@ -153,9 +168,13 @@ def main() -> int:
 
     matched, used = [], set()
     for cast in found:
+        # The window a cast actually claims: everything back to the previous
+        # reading it was measured from.
+        start = cast.at - cast.span - MATCH_SLACK
+        end = cast.at + MATCH_SLACK
         hit = next(
             (i for i, (time, _) in enumerate(truth)
-             if i not in used and abs(time - cast.at) <= MATCH_WINDOW),
+             if i not in used and start <= time <= end),
             None,
         )
         if hit is None:
@@ -181,7 +200,10 @@ def main() -> int:
     if matched:
         print("\nmatched, detector against HUD:")
         for cast, (time, fall) in matched:
-            print(f"  {time:7.1f}s  HUD {fall:4d} mana   detector {cast.drop:5.1%}")
+            when = (f"{cast.at:.1f}s" if cast.continuous
+                    else f"{cast.at - cast.span:.1f}-{cast.at:.1f}s")
+            print(f"  {time:7.1f}s  HUD {fall:4d} mana   "
+                  f"detector {cast.drop:5.1%} at {when}")
 
     missed = [truth[i] for i in range(len(truth)) if i not in used]
     if missed:

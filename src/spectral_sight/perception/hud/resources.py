@@ -321,3 +321,44 @@ def load_resource_reader(
     if layout is None or glyphs is None:
         return None
     return ResourceReader(layout, glyphs)
+
+
+@dataclass(slots=True)
+class MaximumFilter:
+    """A pool's maximum, held steady across misreads.
+
+    The maximum is the most constrained quantity on the HUD: it moves only when
+    the champion levels or buys, so across any short window it is a constant
+    being read repeatedly. That makes it the easiest thing here to get right and
+    the most damaging to get wrong, because it is the denominator -- and because
+    anything comparing two readings has to decide whether a change between them
+    was real.
+
+    Leaving it unfiltered cost a real cast. Validating the detector, a genuine
+    fall of 48 mana was discarded because the maximum beside it read 502 on one
+    frame and 501 on the next, and the check that excludes level-ups saw a
+    maximum that had moved. One digit of flicker, and the ground truth quietly
+    dropped an event it existed to catch.
+
+    So a change is adopted only once it has been seen `confirm` times running,
+    the same argument `LevelFilter` makes about a champion's level and
+    `ClockFilter` about the timer.
+    """
+
+    confirm: int = 3
+    maximum: int | None = None
+    _pending: int | None = None
+    _count: int = 0
+
+    def update(self, reading: int | None) -> int | None:
+        """Fold one frame's maximum in and return the value to trust."""
+        if reading is None:
+            return self.maximum
+        if reading == self.maximum:
+            self._pending, self._count = None, 0
+            return self.maximum
+        self._count = self._count + 1 if reading == self._pending else 1
+        self._pending = reading
+        if self._count >= self.confirm:
+            self.maximum, self._pending, self._count = reading, None, 0
+        return self.maximum

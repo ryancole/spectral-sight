@@ -379,42 +379,48 @@ Both halves are now measured, because the HUD prints the local player's mana as
 text — `488 / 488` — so their resource is known exactly on every frame and a
 cast is simply a fall in that number. See below for how that is read.
 
-On the sample clip, against the real casts the HUD saw:
+Across three clips the HUD saw eight real casts:
 
 | | |
 |---|---|
-| Precision | **1/1 — 100%** |
-| Recall | **1/2 — 50%** |
+| Precision | **7/7 — 100%** |
+| Recall | **7/8 — 88%** |
 
-The one it caught it measured almost exactly: the HUD recorded 50 mana of a 525
-pool, and the detector reported 9.4% against a true 9.5%. The one it missed was
-a frame where the plate could not be read at all.
+On the clip recorded specifically to exercise this — 1.6 minutes in which the
+player actually used abilities — it is 6/6 and 6/6. The single miss across all
+footage was a frame where the plate could not be read at all.
 
-**Two casts is not a rate**, and it should not be quoted as one. What this
-establishes is that the machinery works end to end and that nothing is
-systematically wrong; the number itself needs far more footage.
+Where the cast is continuous the size is close: 60 mana of a 452 pool is 13.3%
+and the detector reported 12.8%. Where it spans a gap the size decays exactly as
+designed, because regeneration refills part of what was spent while nobody was
+looking — a 48-mana cast seen across 4.1 seconds came back as 5.1% against a
+true 9.6%. The event is found; the magnitude is a floor, not a measurement.
 
-Getting that footage is the real obstacle, and the second clip shows why. Across
-2.7 minutes the player's mana never moved from 525 except to fall to zero twice,
-which is dying rather than casting -- so it scores nothing at all, and the tool
-says so rather than reporting 0/0 as a percentage. Both clips are coop-vs-AI
-footage of a player who mostly walked around. A clip in which somebody actually
-uses their abilities is worth more here than any further work on the detector.
+Two of the six were located only as intervals, one of them 9.1 seconds wide.
+That is the honest output for a champion who cast and then walked off screen,
+and it is why `span` and `continuous` are on the row rather than a single
+timestamp.
 
-**The first version of this measurement said 14%, and it was the measurement
-that was broken.** The ground truth reported seven casts, five of them phantoms
-manufactured by the reader below misreading a `9` as a `4` in the tens digit --
-which invents a fifty-unit fall and a fifty-unit recovery on alternating frames
-and looks exactly like a cast. Chasing the resulting "misses" produced a
-confident and wrong conclusion: that plate association was putting other
-champions' bars on the player's track. It is not. Checked directly, the plate on
-the player's track agrees with their printed mana to a median of 0.009 -- one
-pixel -- and within 2% on 88% of 1,966 readings, against 36.5% for every other
-track. Association on the self track is working.
+**Eight casts is still a sample**, and it should not be quoted as a rate.
 
-The lesson is the one this project keeps relearning: a check is only as good as
-the thing doing the checking, and a ground truth needs its own error rate
-measured before anything is concluded from what it disagrees with.
+Two earlier versions of this measurement were wrong, both times because the
+check was trusted before its own error rate was known.
+
+- The first reported 14%, because the reader below misread a `9` as a `4` in the
+  tens digit, inventing a fifty-unit fall and recovery on alternating frames.
+  Five of its seven casts were phantoms. Chasing the resulting "misses" produced
+  a confident and wrong conclusion about plate association, which is in fact
+  fine on the player's track — it agrees with printed mana to a median of one
+  pixel, against 36.5% agreement for every other track.
+- The second scored a cast as *both* a miss and a false positive whenever it
+  spanned a gap, by matching against a fixed window around `at` instead of
+  against `[at - span, at]` — the interval this very document says a cast
+  occupies. Two events, counted four times, in opposite directions.
+
+And the ground truth itself dropped a real cast because the maximum beside it
+read 502 on one frame and 501 on the next, which the level-up test read as the
+pool changing. One digit of flicker, and the check quietly discarded an event it
+existed to catch. That is what `MaximumFilter` is for.
 
 ### Reading the player's own numbers
 
@@ -517,15 +523,21 @@ coherent ones.
   whose bars sit at a *similar* level the co-movement test has nothing to catch.
   Note this is about *other* tracks — checked against printed mana, the plate on
   the player's own track is right, agreeing to a median of one pixel.
-- **Recall rests on two events and is not a rate.** Both halves of the score can
-  now be measured, but only for the local player and only where they actually
-  cast, and in 5.3 minutes this one cast twice. More footage is the only thing
-  that turns 1/2 into a number worth quoting.
-- **Ability naming is not yet worth attempting.** Drop sizes cluster per
-  champion, and the ratio between two clusters is independent of the pool size,
-  so matching those ratios against published costs would name abilities without
-  ever needing a denominator. Two confirmed casts is not enough to take a ratio
-  of; this waits on footage, not on a new idea.
+- **Recall rests on eight events and is not a rate.** Both halves of the score
+  can be measured, but only for the local player and only where they actually
+  cast. More footage is the only thing that turns 7/8 into a number worth
+  quoting, and it has to be footage of somebody using their abilities.
+- **A cast that spans a gap is located, not timed.** One of the six on the new
+  clip is pinned only to a 9.1-second window. That is honest rather than wrong,
+  but a consumer that treats `at` as the moment of the cast will be seconds out
+  — `span` is not decoration.
+- **Ability naming is closer than it was.** Five of the six casts on the new
+  clip cost 59-60 mana of the same pool, which is one ability used five times,
+  and the sixth cost 48. The ratio between two such clusters is independent of
+  the pool size, so matching ratios against published costs would name abilities
+  without ever needing a denominator. What blocks it now is that a gap-spanning
+  cast understates its own size, so the clusters smear — the clean readings are
+  the continuous ones, and there are three of those.
 - **A truncated plate is found by the detector, not by the reader.** The reader
   nulls fills for a bar clipped at the frame edge or under a HUD panel, but a bar
   cut by a champion model in the middle of the world is not flagged — the

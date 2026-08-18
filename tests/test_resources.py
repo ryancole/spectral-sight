@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from spectral_sight.perception.hud.clock import ClockConfig
 from spectral_sight.perception.hud.resources import (
+    MaximumFilter,
     Reading,
     ResourceConfig,
     ResourceLayout,
@@ -121,3 +122,55 @@ def test_the_margin_floor_is_at_least_the_clock_s() -> None:
     """These glyphs are rescaled and so correlate worse than the timer's own,
     which is a reason to demand more separation, never less."""
     assert ResourceConfig().min_margin >= ClockConfig().min_margin
+
+
+# -- holding the maximum steady -------------------------------------------
+#
+# The maximum moves only when the champion levels or buys, so across a short
+# window it is a constant being read repeatedly. Leaving it unfiltered cost a
+# real cast: a genuine 48-mana fall was discarded because the maximum beside it
+# read 502 on one frame and 501 on the next.
+
+
+def test_the_maximum_needs_confirming_before_it_is_adopted() -> None:
+    state = MaximumFilter()
+    assert state.update(452) is None
+    assert state.update(452) is None
+    assert state.update(452) == 452
+
+
+def test_a_one_digit_flicker_does_not_move_the_maximum() -> None:
+    """502 and 501 differ by a single glyph, and this is the exact shape of the
+    misread that threw away a cast."""
+    state = MaximumFilter()
+    for _ in range(3):
+        state.update(502)
+    assert state.update(501) == 502
+    assert state.update(502) == 502
+
+
+def test_a_real_purchase_is_adopted_once_it_persists() -> None:
+    """The maximum genuinely does move, several times in a trip to the shop, so
+    holding it forever would be as wrong as believing every reading."""
+    state = MaximumFilter()
+    for _ in range(3):
+        state.update(452)
+    for _ in range(3):
+        state.update(477)
+    assert state.maximum == 477
+
+
+def test_an_absurd_reading_never_takes_hold() -> None:
+    """A dropped digit turned 502 into 5021 once in this footage. It arrives
+    alone, so confirmation is what rejects it."""
+    state = MaximumFilter()
+    for _ in range(3):
+        state.update(502)
+    assert state.update(5021) == 502
+
+
+def test_unreadable_frames_leave_the_maximum_alone() -> None:
+    state = MaximumFilter()
+    for _ in range(3):
+        state.update(452)
+    assert state.update(None) == 452
