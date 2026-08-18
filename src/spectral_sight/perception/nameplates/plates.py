@@ -252,10 +252,13 @@ class Nameplate:
     level: int | None = None
     """Champion level, when the box left of the bar resolves.
 
-    Worth having for itself, and also what keeps a level-up from being mistaken
-    for a cast: levelling raises maximum resource, so the *fraction* falls while
-    nothing was spent. Raw readings are unreliable enough that a consumer should
-    put them through `LevelFilter` rather than trusting one frame."""
+    Worth having for itself, and for reading an ability's cost against the pool
+    it came out of. It is *not* needed to keep a level-up from being read as a
+    cast: levelling grants current resource along with maximum, so the fraction
+    holds or rises rather than falling -- measured across seven level-ups on the
+    sample clip, from -0.9% to +5.2%. Raw readings are unreliable enough that a
+    consumer should put them through `LevelFilter` rather than trusting one
+    frame."""
 
     @property
     def center(self) -> tuple[float, float]:

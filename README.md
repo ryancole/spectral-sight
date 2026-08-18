@@ -317,6 +317,11 @@ has to be inferred, and the only champion-agnostic evidence the client renders i
 the *resource bar* on the nameplate floating over a champion: a step down that
 holds is a cast.
 
+That window is much narrower than the minimap's, and it is the pipeline that
+reads it: `perception/nameplates/casts.py` folds each champion's resource series
+and writes what it finds onto the timeline's `cast_*` fields, with
+`tools/detect_casts.py` reporting over a clip.
+
 That window is much narrower than the minimap's. Measured on the coop-vs-AI clip
 at 10 Hz, an enemy is somewhere on the minimap in **87.9%** of frames but inside
 the camera view in only **29.4%**, averaging 0.40 readable enemy plates per
@@ -328,10 +333,58 @@ Within that window the measurement is close to exact. On frames where a
 champion's health did not change, **85.8%** of consecutive resource readings are
 identical to within one pixel, and the p05–p95 spread is ±0.85% — one pixel of a
 117px bar. Typical ability costs run 7–25% of a pool, comfortably clear of that
-floor. Detected casts cluster per champion the way repeated use of one ability
-should: Galio's steps came in at 10–14%, Ezreal's at 4–7%.
+floor.
 
-Three things had to be got right, and each was wrong first:
+**A step is a fall that holds, not a fall.** A drop past the threshold is held
+as a candidate and the following reading decides it — noise reverts, a cast does
+not — which is the same move the level and clock filters make. A candidate that
+never gets a continuous follow-up is still emitted, flagged `confirmed=False`,
+because the champion walking off screen is not evidence against the cast and
+that is where a large share of them are seen.
+
+**Two things make a convincing fake step, and neither shows up in the resource
+series.** Run over the sample clip before either was handled, the detector found
+ten casts and five were artefacts. Both gave themselves away in what the health
+bar did at the same instant, which is why the detector reads both bars:
+
+- **A truncated plate** — one cut partway along by a champion model or a spell
+  effect, rather than by the frame edge or a HUD panel the reader's own clipping
+  test already catches — truncates both fills at the same column, so they come
+  back equal. Three of the five had fills 0.008–0.009 apart, one pixel of a 117px
+  bar, against 0.07–0.26 for the five that survived. Such a reading is skipped
+  rather than rejected: measured *from* it invents a step down, and measured *to*
+  it invents the step back up that would hide the real cast after it.
+- **A plate on the wrong track** — association is geometric and only
+  approximately so, so the series occasionally jumps to a different champion's
+  bars, and both fills move by nearly the same amount at once. The other two
+  moved health and resource within 0.033 and 0.010 of each other while dropping
+  60%. The test is on the two falls *agreeing*, not on damage happening:
+  champions cast while being hit constantly.
+
+**Levelling cannot fake a cast**, which is the opposite of what this section
+used to claim. It raises maximum resource and grants the same amount to current,
+so the fraction holds or rises. Across seven level-ups straddling consecutive
+readings the change ran −0.9% to +5.2%, mean +1.0% — the one fall being a single
+pixel, three times below the threshold. It can *mask* a cast by cancelling part
+of it, which is the safe direction and is left alone.
+
+What survives on the 5.3-minute clip is six casts, all continuous and five of
+them confirmed. They cluster the way repeated use of one ability should:
+Xerath's four came in at 9.4%, 10.3%, 22.2% and 28.2% — two abilities, not four
+— with Zilean at 9.4% and Sivir at 16.2%.
+
+**Precision is the half that has been checked.** Six casts in five minutes is a
+thin harvest, and the reason is not only that an enemy is rarely on screen:
+2,840 readable plate readings produced six casts, and six mana champions were
+seen with readable plates without a single detected cast among them. Some of
+that is real — a champion on screen is usually walking, not casting — and some
+of it is recall the threshold and the two guards are throwing away. Nothing here
+measures which, because there is no ground truth for what was actually cast.
+Getting one means reading the local player's own ability icons going on
+cooldown, which is a perception stage in its own right.
+
+Three things about the bars themselves had to be got right, and each was wrong
+first:
 
 - **Ticks break the health bar** into a dozen components, so fills are measured
   by walking from the left edge and hopping short gaps.
@@ -383,6 +436,19 @@ coherent ones.
 - **Cast attribution inherits the gallery's coverage.** On the sample clip only
   two of five enemies were ever named, so a third track's casts are recorded
   against a track id and no champion.
+- **Plate-to-track association is the dominant source of false casts**, and only
+  its blatant form is handled. When the series jumps to a champion whose bars sit
+  at a *similar* level the co-movement test has nothing to catch, and the
+  structural fix belongs upstream in the association gate rather than here.
+- **A truncated plate is found by the detector, not by the reader.** The reader
+  nulls fills for a bar clipped at the frame edge or under a HUD panel, but a bar
+  cut by a champion model in the middle of the world is not flagged — the
+  detector notices the two fills agreeing and skips the reading. That leaves
+  `health` on such a row still carrying the truncated number for anyone else who
+  reads it.
+- **Which ability was cast is not named.** Drop sizes cluster per champion —
+  Xerath's four fell into two groups — but nothing maps a cluster to Q, W, E or
+  R, and nothing yet distinguishes two abilities that happen to cost the same.
 - **All footage so far is against bots.** The coverage figures in particular
   should be expected to move on a real game.
 - **Enemy coverage is bounded by vision, not by the tracker.** All five enemies
@@ -622,6 +688,20 @@ lost = [r for r in rows if not r.visible and r.alive is True]
 `iter_timeline` streams the same rows without holding them all, which is what a
 full match wants.
 
+Casts are already on those rows, but the report is what says whether to believe
+them:
+
+```bash
+.venv/Scripts/python tools/detect_casts.py --timeline clip.jsonl --list
+```
+
+It prints the drop sizes per champion — the clustering is the whole claim — how
+much of the evidence survived a continuous follow-up, which champions were seen
+but never cast, and how many casts landed on a champion the HUD said was dead,
+which should be zero. `--min-drop` and `--continuity` re-derive from the raw
+resource series in the file, so retuning costs a read rather than another run of
+the vision.
+
 For working on stage 1 specifically:
 
 ```bash
@@ -650,6 +730,7 @@ src/spectral_sight/
   perception/nameplates/
     plates.py                 health, resource and level over a champion
     levels.py                 level held steady across misreads
+    casts.py                  resource steps read as abilities used
     projection.py             screen to minimap, and plate to track
   tracking/                   identity accumulated across frames
   pipeline.py                 the stages, wired in order

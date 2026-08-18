@@ -120,6 +120,9 @@ def main() -> int:
         paused = False
         processed = 0
         started = time.perf_counter()
+        # When each track last cast, so the overlay can mark it for a moment
+        # rather than for the single frame the cast settles on.
+        last_cast: dict[int, float] = {}
 
         for frame in source.frames():
             result = pipeline.process(frame.image, frame.timestamp)
@@ -127,6 +130,10 @@ def main() -> int:
 
             if timeline is not None:
                 timeline.write(result.observations)
+
+            for observation in result.observations:
+                if observation.cast_drop is not None:
+                    last_cast[observation.track_id] = frame.timestamp
 
             visible = [t for t in result.tracks
                        if t.age(frame.timestamp) < pipeline.tracker.config.lost_after]
@@ -164,6 +171,8 @@ def main() -> int:
                     scale=args.zoom, self_track=result.self_track,
                     lost_after=pipeline.tracker.config.lost_after,
                     dead=dead,
+                    casts={track_id: frame.timestamp - when
+                           for track_id, when in last_cast.items()},
                 )
                 cv2.putText(
                     canvas,
