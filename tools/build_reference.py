@@ -15,6 +15,11 @@ against a clip you have calibrated by hand, or against a live window after
 `watch.py` has calibrated it, and the reference then works at every other
 resolution and window shape.
 
+It also records which frame size the source was, because that size's
+calibrations are the ones every other size is derived from -- see
+`spectral_sight/calibration.py`. So the source should be the one setup that has
+been calibrated properly and completely.
+
 Rebuild it when the map art changes -- a new season, a new map. The locator
 degrades into asking a human rather than into a wrong answer, so the symptom is
 `watch.py` starting to ask for a drag it used to skip.
@@ -29,6 +34,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from spectral_sight.calibration import Reference
 from spectral_sight.capture import open_source
 from spectral_sight.perception.minimap.locate import REFERENCE_PATH
 from spectral_sight.perception.minimap.region import MinimapRegion
@@ -99,6 +105,13 @@ def main() -> int:
         return 1
 
     print(f"averaged {seen} frames of {region.width}x{region.height} -> {out}")
+
+    # The same source is the reference layout: its calibrations are the ones
+    # every other frame size is derived from, and recording which size that is
+    # here keeps the two from ever disagreeing about it.
+    if args.out is None:
+        profile = Reference(width=width, height=height).save()
+        print(f"reference layout is {width}x{height} -> {profile}")
     return 0
 
 

@@ -792,8 +792,43 @@ changes, which shows up as `watch.py` starting to ask for a drag it used to skip
 .venv/Scripts/python tools/build_reference.py --input "data/your clip.mp4"
 ```
 
-Three optional calibrations add game time, world coordinates and death. All are
-skipped quietly if absent, so everything above works without them.
+### The other five
+
+Five more calibrations add game time, world coordinates, deaths, nameplates and
+the player's own bars. None of them need calibrating either, and for the same
+reason the minimap does not: **they are all the same HUD at one scale.** The
+receiver stretches a fixed game layout to fill its window, so a frame of any
+size is that layout under a scale and a shift, and finding the minimap fixes
+every other rectangle with it.
+
+Recovering that transform needs care about which numbers to trust. The
+horizontal scale is the frame width over the reference width, exactly — taking
+it from the panel's width instead costs a pixel of measurement error on a 325px
+panel, and 0.3% over the thousand pixels to the far side of the HUD is a 15px
+miss. That is not hypothetical; it is what the first version did. The vertical
+scale does come from the panel, because a window's title bar is not game and
+does not scale with it, and the vertical offset then absorbs that title bar
+without ever measuring it — 31 pixels of chrome, 45, or none all work out.
+
+Worst error over every HUD element at seven window sizes and three chrome
+heights: 3.4 pixels, and that at the far corner. Deaths agreed with the native
+calibration on every frame sampled at every size; the world transform landed
+within 0.3%.
+
+The clock is the exception, and it is the one that guards the rest. It has a
+legibility floor as well as a position — shrink the window enough and the timer
+is a smudge no calibration can read — so the derived reader is tried before it
+is kept, on several frames rather than the one it came from. If it fails, the
+run says so and continues without game time. That same check is what would catch
+the assumption underneath all of this being wrong: if the streamed game's own
+HUD scale changed, every derived rectangle would be misplaced by an amount no
+fit could detect, and the timer not being where it was predicted is the cheapest
+place to notice.
+
+So the whole set is skipped quietly if absent, and derived automatically if it
+can be. `--no-calibrate` runs with whatever exists and derives nothing.
+
+Reach for the tools below to redo one by hand, or when the derivation declines.
 
 Teach the clock its digits — drag a rough box around the match timer and it does
 the rest, including checking itself against video time:
@@ -839,10 +874,9 @@ is found whatever else it has put in its title bar. `--fps` sets the rate to ask
 the window for, defaulting to 10 to match the offline `--stride 3`. Ctrl+C ends
 the session and closes the timeline properly rather than leaving half a file.
 
-The startup line names whichever optional calibrations are missing and prints
-the command for each, since without them there is no game time, no world
-coordinates, no deaths and no casts — and the run would otherwise say nothing
-about it. All of them take `window:kilrogg` too, so none of this needs footage.
+The startup line names whichever calibrations are missing and prints the command
+for each, for the case where derivation declined and you want to supply one by
+hand. All of them take `window:kilrogg` too, so none of this needs footage.
 
 One catch on a live source: the passes that *sample* rather than ask — the
 nameplate `--fit`, and the `--validate` reports — walk until the source ends,
@@ -952,12 +986,13 @@ src/spectral_sight/
     casts.py                  resource steps read as abilities used
     projection.py             screen to minimap, and plate to track
   tracking/                   identity accumulated across frames
+  calibration.py              deriving the whole calibration set from one fit
   pipeline.py                 the stages, wired in order
   export.py                   the output: observations, and the timeline file
   debug/overlay.py            visualisation
 tools/                        calibration and inspection CLIs
 tests/synthetic.py            minimaps with known ground truth
-etc/map/                      averaged map art, for locating the panel
+etc/map/                      averaged map art, and the reference layout size
 etc/regions/                  calibrated minimap regions per resolution
 etc/clock/                    clock position and learned digits per resolution
 etc/world/                    map area and world bounds per resolution

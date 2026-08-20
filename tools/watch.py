@@ -57,6 +57,13 @@ from spectral_sight.capture import (
 from spectral_sight.debug import draw_tracks
 from spectral_sight.debug.overlay import CastMark
 from spectral_sight.export import TimelineWriter
+from spectral_sight.calibration import (
+    MISSING_CLOCK,
+    Reference,
+    derive,
+    fit_layout,
+    missing,
+)
 from spectral_sight.perception.minimap.locate import locate_panel
 from spectral_sight.perception.minimap.region import REGION_DIR, MinimapRegion
 from spectral_sight.pipeline import Pipeline
@@ -109,6 +116,41 @@ def open_target(args: argparse.Namespace) -> FrameSource:
     return open_source(args.input, stride=args.stride, start=args.start)
 
 
+SAMPLE_FRAMES = 8
+"""Frames pulled for calibration. Geometry needs one; the clock check wants
+several, since a reader that lands on the single frame it was derived from is
+not yet a reader that works."""
+
+
+def _derive_everything(frames, width: int, height: int) -> bool:
+    """Derive the whole calibration set from the reference layout.
+
+    Everything under `etc/` is the same HUD at one scale, so finding the minimap
+    panel fixes all of it -- see `spectral_sight/calibration.py`. This is the
+    path that makes starting the tool the only step: no drags, and the optional
+    calibrations arrive with the required one instead of being a list of four
+    more commands to go and run.
+    """
+    try:
+        reference = Reference.load()
+    except FileNotFoundError as exc:
+        print(exc, file=sys.stderr)
+        return False
+
+    fit = fit_layout(frames[0], reference)
+    if fit is None:
+        return False
+
+    written = derive(frames, fit, reference)
+    if "minimap" not in written:
+        return False
+    print(f"derived {', '.join(sorted(written))} from the {reference.width}x"
+          f"{reference.height} layout, match {fit.score:.2f}")
+    if "game time" not in written:
+        print(MISSING_CLOCK, file=sys.stderr)
+    return True
+
+
 def _locate(image) -> MinimapRegion | None:
     """The panel by recognition, or None to fall back to a human.
 
@@ -132,34 +174,45 @@ def _locate(image) -> MinimapRegion | None:
     return match.region
 
 
-def calibrate_region(source: FrameSource, width: int, height: int) -> bool:
-    """Mark the minimap panel using a frame from the source about to be read.
+def calibrate(source: FrameSource, width: int, height: int) -> bool:
+    """Complete the calibration set for this frame size, however it can.
 
-    Tried by recognising the map art first, and only then by asking. The
-    locator is accurate to a pixel where it is confident at all and declines
-    with a wide margin where it is not, so the drag is the fallback rather than
-    the route -- see `perception/minimap/locate.py` for the measurements.
+    Derivation first, since it settles all six at once from the map art. The
+    drag is what is left when that declines -- on a frame with no panel in it,
+    or a window shaped so oddly the search cannot express the panel's aspect --
+    and it can only produce the minimap region, so a run that reaches it is a
+    run with no game time, world units, deaths or casts.
+
+    Runs whenever *anything* is absent, not only the required region. A setup
+    calibrated before any of this existed has a minimap region and nothing else,
+    and it should end up with the rest rather than being left alone for having
+    the one file that stops the pipeline erroring.
 
     Calibration used to mean going and finding a screenshot first, which for a
     live tool is a recording step in the middle of the workflow whose whole
-    point is that there is no recording. The frame is already here.
-
-    Only the minimap region is settled here. It is the one calibration that is
-    required; the optional ones each need their own conversation and are better
-    as a deliberate visit to their own tool.
+    point is that there is no recording. The frames are already here.
     """
-    frame = next(iter(source.frames()), None)
-    if frame is None:
+    absent = missing(width, height)
+    if not absent:
+        return True
+
+    frames = [f.image for _, f in zip(range(SAMPLE_FRAMES), source.frames())]
+    if not frames:
         print("the source ended before it produced a frame to calibrate against",
               file=sys.stderr)
         return False
 
-    print(f"No minimap calibration for {width}x{height} yet.")
-    region = _locate(frame.image)
+    print(f"{width}x{height} has no {', '.join(absent)} calibration yet.")
+    if _derive_everything(frames, width, height):
+        return True
+    if "minimap" not in absent:
+        return True   # the optional pieces could not be derived; the run stands
+
+    region = _locate(frames[0])
     if region is None:
         print("Drag a box around the minimap panel, then ENTER to accept, C to "
               "cancel.")
-        region = MinimapRegion.select(frame.image)
+        region = MinimapRegion.select(frames[0])
         if region is None:
             print("cancelled; there is nothing to run without a minimap region",
                   file=sys.stderr)
@@ -200,8 +253,8 @@ def main() -> int:
     parser.add_argument("--start", type=int, default=0,
                         help="skip to this source frame before starting; --input only")
     parser.add_argument("--no-calibrate", action="store_true",
-                        help="fail on a missing minimap calibration instead of "
-                             "asking for one, for runs with nobody watching")
+                        help="run with whatever calibration already exists instead "
+                             "of deriving what is missing")
     args = parser.parse_args()
 
     if args.window and args.start:
@@ -223,18 +276,29 @@ def main() -> int:
         except (RuntimeError, TimeoutError) as exc:
             print(exc, file=sys.stderr)
             return 1
-        try:
-            pipeline = Pipeline.for_resolution(width, height, icons)
-        except FileNotFoundError as exc:
-            if args.no_calibrate:
-                print(exc, file=sys.stderr)
-                return 1
+        # Calibration comes before the pipeline rather than after it fails to
+        # build, because the pipeline only objects to the *minimap* being
+        # absent -- it starts quite happily with no clock, no world units and no
+        # deaths, which is not what anyone asked for.
+        if not args.no_calibrate and missing(width, height):
             if args.window:
                 print(f"The window is {width}x{height}, and that size is part of "
                       "the calibration -- leave it there once this is done.")
-            if not calibrate_region(source, width, height):
+                calibrated = calibrate(source, width, height)
+            else:
+                # A file gets a throwaway reader of its own. Calibrating costs
+                # several frames, and taking them from the run would quietly
+                # skip the start of the clip -- a live window has no such
+                # problem, since those frames are seconds that really passed.
+                with open_target(args) as scratch:
+                    calibrated = calibrate(scratch, width, height)
+            if not calibrated:
                 return 1
+        try:
             pipeline = Pipeline.for_resolution(width, height, icons)
+        except FileNotFoundError as exc:
+            print(exc, file=sys.stderr)
+            return 1
 
         extras = []
         if pipeline.clock is not None:
@@ -281,11 +345,11 @@ def main() -> int:
                     pipeline.timeline_meta(origin, stride, (width, height)),
                 )
             )
-            missing = [name for name, calibration in (("clock", pipeline.clock),
+            unkeyed = [name for name, calibration in (("clock", pipeline.clock),
                                                       ("world", pipeline.world))
                        if calibration is None]
-            if missing:
-                print(f"warning: no calibrated {' and '.join(missing)}; the "
+            if unkeyed:
+                print(f"warning: no calibrated {' and '.join(unkeyed)}; the "
                       "timeline will be missing the keys that join this clip to "
                       "anything else", file=sys.stderr)
 
