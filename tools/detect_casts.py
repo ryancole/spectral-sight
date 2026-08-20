@@ -41,11 +41,12 @@ DEFAULT_ICONS = Path(__file__).resolve().parents[1] / "etc" / "icons"
 
 NO_RESOURCE = {"", "None", "Rage", "Fury", "Energy", "Ferocity", "Heat",
                "Shield", "Blood Well", "Grit", "Flow", "Crimson Rush", "Courage"}
-"""Checked against patch 16.16.1, where 145 of 173 champions are on Mana and the
-other 28 are spread across these thirteen names."""
 """Resource types that draw no blue bar, so a champion on one is *expected* to
-produce no casts. Held as a set of names rather than a rule because Data Dragon
-spells these however it likes."""
+produce no casts.
+
+Held as a set of names rather than a rule because Data Dragon spells these
+however it likes. Checked against patch 16.16.1, where 145 of 173 champions are
+on Mana and the other 28 are spread across these thirteen names."""
 
 
 def resource_types() -> dict[str, str]:
