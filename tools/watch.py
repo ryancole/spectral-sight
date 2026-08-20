@@ -57,6 +57,7 @@ from spectral_sight.capture import (
 from spectral_sight.debug import draw_tracks
 from spectral_sight.debug.overlay import CastMark
 from spectral_sight.export import TimelineWriter
+from spectral_sight.perception.minimap.region import REGION_DIR, MinimapRegion
 from spectral_sight.pipeline import Pipeline
 from spectral_sight.types import Frame, Team
 
@@ -107,6 +108,42 @@ def open_target(args: argparse.Namespace) -> FrameSource:
     return open_source(args.input, stride=args.stride, start=args.start)
 
 
+def calibrate_region(source: FrameSource, width: int, height: int) -> bool:
+    """Mark the minimap panel using a frame from the source about to be read.
+
+    Calibration used to mean going and finding a screenshot first, which for a
+    live tool is a recording step in the middle of the workflow whose whole
+    point is that there is no recording. The frame is already here -- so ask for
+    the one thing that cannot be derived, save it, and carry on into the session
+    rather than exiting with instructions.
+
+    Only the minimap region is asked for. It is the one calibration that is
+    required, and it is a single drag; the optional ones each need their own
+    conversation and are better as a deliberate visit to their own tool.
+    """
+    frame = next(iter(source.frames()), None)
+    if frame is None:
+        print("the source ended before it produced a frame to calibrate against",
+              file=sys.stderr)
+        return False
+
+    print(f"No minimap calibration for {width}x{height} yet.")
+    print("Drag a box around the minimap panel, then ENTER to accept, C to cancel.")
+    region = MinimapRegion.select(frame.image)
+    if region is None:
+        print("cancelled; there is nothing to run without a minimap region",
+              file=sys.stderr)
+        return False
+    if not region.looks_square:
+        print(f"warning: {region.width}x{region.height} is not square, and the "
+              "minimap panel should be roughly square", file=sys.stderr)
+
+    path = REGION_DIR / f"{width}x{height}.json"
+    region.save(path)
+    print(f"saved {region} -> {path}")
+    return True
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -128,6 +165,9 @@ def main() -> int:
     parser.add_argument("--limit", type=int, help="stop after N processed frames")
     parser.add_argument("--start", type=int, default=0,
                         help="skip to this source frame before starting; --input only")
+    parser.add_argument("--no-calibrate", action="store_true",
+                        help="fail on a missing minimap calibration instead of "
+                             "asking for one, for runs with nobody watching")
     args = parser.parse_args()
 
     if args.window and args.start:
@@ -152,14 +192,15 @@ def main() -> int:
         try:
             pipeline = Pipeline.for_resolution(width, height, icons)
         except FileNotFoundError as exc:
-            print(exc, file=sys.stderr)
-            print("Calibrate first: python tools/calibrate_minimap.py --image <frame>",
-                  file=sys.stderr)
+            if args.no_calibrate:
+                print(exc, file=sys.stderr)
+                return 1
             if args.window:
-                print(f"The window is currently {width}x{height}. Its size is part "
-                      "of the calibration, so pin it there before calibrating and "
-                      "leave it there afterwards.", file=sys.stderr)
-            return 1
+                print(f"The window is {width}x{height}, and that size is part of "
+                      "the calibration -- leave it there once this is done.")
+            if not calibrate_region(source, width, height):
+                return 1
+            pipeline = Pipeline.for_resolution(width, height, icons)
 
         extras = []
         if pipeline.clock is not None:
@@ -171,7 +212,25 @@ def main() -> int:
                 else f"every {args.stride} frames")
         print(f"{width}x{height} | minimap {pipeline.region.width}px | "
               f"{len(pipeline.gallery)} champion icons | {rate}"
-              + (f" | {', '.join(extras)}" if extras else " | uncalibrated: clock, world"))
+              + (f" | {', '.join(extras)}" if extras else ""))
+
+        # The optional calibrations are skipped quietly, which is right for the
+        # run and wrong for the person watching it: without them there is no
+        # game time, no world coordinates, no deaths and no casts, and nothing
+        # would say so. Naming the command that fixes each is only useful now
+        # that these tools can be pointed at a live window -- before the
+        # `window:` scheme the answer was still "go and find a screenshot".
+        spec = f"window:{args.window}" if args.window else args.input
+        absent = [(what, tool) for what, got, tool in (
+            ("game time", pipeline.clock, "calibrate_clock.py"),
+            ("world units", pipeline.world, "calibrate_world.py"),
+            ("deaths", pipeline.liveness, "calibrate_hud.py"),
+            ("nameplates", pipeline.plate_reader, "calibrate_nameplates.py"),
+        ) if got is None]
+        if absent:
+            print(f"no {', '.join(what for what, _ in absent)}. Add with:")
+            for _, tool in absent:
+                print(f"  python tools/{tool} --input \"{spec}\"")
 
         # A live run has no stride -- it takes whichever frames it can keep up
         # with -- so the timeline records 1, meaning "no frames deliberately

@@ -748,16 +748,26 @@ rewrite the pipeline in another language.
 
 ## Usage
 
-One-time setup — fetch the champion icons, and calibrate the minimap region for
-your resolution and minimap-scale slider (the panel size is not derivable from
-resolution alone):
+One-time setup — fetch the champion icons:
 
 ```bash
 .venv/Scripts/python tools/fetch_icons.py
 ```
 
+The minimap region also has to be calibrated per (resolution, minimap-scale
+slider), since the panel size is not derivable from resolution alone. That
+happens on its own: `watch.py` asks for it the first time it sees a size it has
+no calibration for, using a frame from the source it is about to read, and then
+carries straight on into the session. Drag a box around the panel, press ENTER,
+done. `--no-calibrate` turns that back into a hard failure for runs with nobody
+watching.
+
+Reach for the tool directly only to recalibrate, or for a second minimap scale
+via `--profile`. Every tool here takes a source the same way, and `window:name`
+is a source, so none of them need a screenshot on disk:
+
 ```bash
-.venv/Scripts/python tools/calibrate_minimap.py --image data/frame.png
+.venv/Scripts/python tools/calibrate_minimap.py --image window:kilrogg
 ```
 
 Three optional calibrations add game time, world coordinates and death. All are
@@ -796,14 +806,6 @@ That check is worth running. A box a few pixels off still reads a portrait and
 still produces a baseline, so a bad calibration does not announce itself — it
 just quietly stops noticing deaths.
 
-Calibrating against a live window needs a still from it, which is what
-`grab.py` is for. `--delay` is there because the frame worth calibrating against
-has a game in it, and the moment you press enter is not that moment:
-
-```bash
-.venv/Scripts/python tools/grab.py --window kilrogg --out data/frame.png --delay 5
-```
-
 Then watch the whole pipeline run — live, against the receiver as it plays:
 
 ```bash
@@ -814,6 +816,19 @@ Then watch the whole pipeline run — live, against the receiver as it plays:
 is found whatever else it has put in its title bar. `--fps` sets the rate to ask
 the window for, defaulting to 10 to match the offline `--stride 3`. Ctrl+C ends
 the session and closes the timeline properly rather than leaving half a file.
+
+The startup line names whichever optional calibrations are missing and prints
+the command for each, since without them there is no game time, no world
+coordinates, no deaths and no casts — and the run would otherwise say nothing
+about it. All of them take `window:kilrogg` too, so none of this needs footage.
+
+One catch on a live source: the passes that *sample* rather than ask — the
+nameplate `--fit`, and the `--validate` reports — walk until the source ends,
+and a window never does. They take `--limit N` for that. It defaults to 0,
+meaning walk the whole thing, which is still right for a clip.
+
+`tools/grab.py` saves a still from a window if you want one to keep, to look at,
+or to hand to something else; nothing in this workflow needs it.
 
 Or against a recorded clip, which behaves identically in every respect except
 that it waits for the pipeline instead of dropping frames past it:

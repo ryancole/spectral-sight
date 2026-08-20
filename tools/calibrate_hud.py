@@ -48,13 +48,20 @@ def mark(image, prompt: str) -> tuple[float, float, int] | None:
     return circle_from_box(box)
 
 
-def validate(path: str, layout: PortraitLayout, stride: int) -> int:
-    """Run the reader over a clip and report what it learned and found."""
+def validate(path: str, layout: PortraitLayout, stride: int,
+             limit: int = 0) -> int:
+    """Run the reader over a clip and report what it learned and found.
+
+    `limit` of 0 walks the whole source, which is right for a clip and never
+    returns for a live window -- so a window has to be given a budget.
+    """
     reader = AliveReader(layout)
     history: dict[str, list[tuple[float, bool | None]]] = {}
 
     with open_source(path, stride=stride) as source:
-        for frame in source.frames():
+        for sampled, frame in enumerate(source.frames()):
+            if limit and sampled >= limit:
+                break
             for state in reader.read(frame.image).slots:
                 history.setdefault(state.slot, []).append(
                     (frame.timestamp, state.alive)
@@ -108,6 +115,8 @@ def main() -> int:
                         help="check the saved layout against this clip")
     parser.add_argument("--stride", type=int, default=15,
                         help="frames per sample when validating")
+    parser.add_argument("--limit", type=int, default=0,
+                        help="stop after N sampled frames; 0 walks the whole source, which a live window never finishes")
     parser.add_argument("--out", help="override the output path")
     args = parser.parse_args()
 
@@ -126,7 +135,7 @@ def main() -> int:
             print(f"no layout at {path}; run without --validate first",
                   file=sys.stderr)
             return 1
-        return validate(args.input, layout, args.stride)
+        return validate(args.input, layout, args.stride, args.limit)
 
     print(f"frame is {width}x{height}. Drag each portrait, ENTER to accept.")
     first = mark(frame.image, "1/3: the LEFTMOST teammate portrait")

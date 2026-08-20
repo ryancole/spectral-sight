@@ -1,17 +1,14 @@
-"""Save one frame from a live window, to calibrate against.
+"""Save one frame from a live window as a PNG.
 
     python tools/grab.py --window kilrogg --out etc/grabs/kilrogg.png
 
-Every calibration tool takes a still, and the live path has no recording to take
-one from -- that was the whole point of moving off video files. So this is the
-first step of setting up a new window:
+Nothing in the workflow needs this: every tool here accepts `window:kilrogg` as
+a source directly, and `watch.py` calibrates itself from a live frame. This is
+for when you want the still itself -- to look at, to diff against, to keep as
+the reference frame for a size, or to hand to something outside this project.
 
-    python tools/grab.py --window kilrogg --out frame.png --delay 5
-    python tools/calibrate_minimap.py --image frame.png
-    python tools/watch.py --window kilrogg
-
-`--delay` is there because the frame worth calibrating against is one with a
-game in it, and the moment this is run from a terminal is not that moment.
+`--delay` is there because the frame worth keeping is one with a game in it, and
+the moment this is run from a terminal is not that moment.
 
 The size printed is the one that matters: it is the key every calibration is
 filed under, and the window has to stay at it. The receiver stretches its stream

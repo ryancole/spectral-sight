@@ -6,7 +6,8 @@ module is, and the offline path keeps working on a machine without it.
 """
 
 from spectral_sight.capture.base import FrameSource
-from spectral_sight.capture.video import ImageSource, VideoFileSource, open_source
+from spectral_sight.capture.open import WINDOW_SCHEME, open_source
+from spectral_sight.capture.video import ImageSource, VideoFileSource
 from spectral_sight.capture.window import (
     FrameSizeChanged,
     MonitorSource,
@@ -15,6 +16,7 @@ from spectral_sight.capture.window import (
 )
 
 __all__ = [
+    "WINDOW_SCHEME",
     "FrameSizeChanged",
     "FrameSource",
     "ImageSource",

@@ -69,6 +69,20 @@ class TestMailbox:
             box.take(1.0)
 
 
+class ScriptedMailbox:
+    """Hands out a fixed sequence and then closes. No threads, no timing."""
+
+    def __init__(self, images: list[np.ndarray]) -> None:
+        self._images = list(images)
+        self.dropped = 0
+
+    def take(self, timeout: float | None = None) -> np.ndarray | None:
+        return self._images.pop(0) if self._images else None
+
+    def close(self) -> None:
+        self._images.clear()
+
+
 class TestWindowSource:
     """Driven through its mailbox, with no capture session behind it.
 
@@ -80,6 +94,7 @@ class TestWindowSource:
     def build(self) -> WindowSource:
         source = WindowSource.__new__(WindowSource)
         source.title = "test"
+        source.stride = 1
         source.startup_timeout = 1.0
         source._mailbox = Mailbox()
         source._size = None
@@ -134,6 +149,19 @@ class TestWindowSource:
         stream = source.frames()
         assert next(stream).image[0, 0, 0] == 1
         assert next(stream).image[0, 0, 0] == 2
+
+    def test_stride_skips_arrivals(self) -> None:
+        """A skip is a decision the caller asked for; a drop is falling behind.
+
+        Scripted rather than driven through a real mailbox: one `next()` pulls
+        `stride` arrivals, and a single-slot mailbox cannot be loaded with them
+        ahead of time without a producer thread and the timing that comes with
+        it.
+        """
+        source = self.build()
+        source.stride = 2
+        source._mailbox = ScriptedMailbox([image(v) for v in (1, 2, 3, 4, 5)])
+        assert [f.image[0, 0, 0] for f in source.frames()] == [1, 3, 5]
 
     def test_a_closed_window_ends_iteration(self) -> None:
         source = self.build()

@@ -148,16 +148,22 @@ def measure(box: np.ndarray, config: NameplateConfig) -> NameplateLayout | None:
 
 
 def fit_projection(
-    path: str, layout: NameplateLayout, stride: int
+    path: str, layout: NameplateLayout, stride: int, limit: int = 0
 ) -> NameplateLayout | None:
-    """Fit the screen-to-minimap coefficients from unambiguous frames."""
+    """Fit the screen-to-minimap coefficients from unambiguous frames.
+
+    `limit` of 0 walks the whole source, which is right for a clip and never
+    returns for a live window -- so a window has to be given a budget.
+    """
     reader = NameplateReader(layout)
     region: MinimapRegion | None = None
     detector: BlipDetector | None = None
     samples: list[tuple[float, float, float, float]] = []
 
     with open_source(path, stride=stride) as source:
-        for frame in source.frames():
+        for sampled, frame in enumerate(source.frames()):
+            if limit and sampled >= limit:
+                break
             width, height = frame.size
             if region is None:
                 region = MinimapRegion.for_resolution(width, height)
@@ -228,7 +234,9 @@ def _report_fit(samples, layout: NameplateLayout) -> None:
               file=sys.stderr)
 
 
-def validate(path: str, layout: NameplateLayout, stride: int, size) -> int:
+def validate(
+    path: str, layout: NameplateLayout, stride: int, size, limit: int = 0
+) -> int:
     """Run the reader over a clip and report what it finds."""
     try:
         glyphs = load_clock_reader(*size).glyphs
@@ -242,6 +250,8 @@ def validate(path: str, layout: NameplateLayout, stride: int, size) -> int:
 
     with open_source(path, stride=stride) as source:
         for frame in source.frames():
+            if limit and frames >= limit:
+                break
             frames += 1
             plates = reader.read(frame.image)
             with_plate += bool(plates)
@@ -289,6 +299,8 @@ def main() -> int:
                         help="check the saved layout against this clip")
     parser.add_argument("--stride", type=int, default=3,
                         help="frames per sample when fitting or validating")
+    parser.add_argument("--limit", type=int, default=0,
+                        help="stop after N sampled frames; 0 walks the whole source, which a live window never finishes")
     parser.add_argument("--out", help="override the output path")
     args = parser.parse_args()
 
@@ -308,8 +320,9 @@ def main() -> int:
                   file=sys.stderr)
             return 1
         if args.validate:
-            return validate(args.input, layout, args.stride, (width, height))
-        fitted = fit_projection(args.input, layout, args.stride)
+            return validate(args.input, layout, args.stride, (width, height),
+                            args.limit)
+        fitted = fit_projection(args.input, layout, args.stride, args.limit)
         if fitted is None:
             return 1
         fitted.save(path)

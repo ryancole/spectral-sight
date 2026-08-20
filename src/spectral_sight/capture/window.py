@@ -135,11 +135,14 @@ class WindowSource(FrameSource):
         *,
         hwnd: int | None = None,
         target_fps: float | None = None,
+        stride: int = 1,
         startup_timeout: float = 5.0,
         cursor: bool = False,
     ) -> None:
         if (title is None) == (hwnd is None):
             raise ValueError("pass exactly one of title or hwnd")
+        if stride < 1:
+            raise ValueError(f"stride must be >= 1, got {stride}")
         try:
             from windows_capture import WindowsCapture
         except ImportError as exc:  # pragma: no cover - platform dependent
@@ -148,6 +151,16 @@ class WindowSource(FrameSource):
             ) from exc
 
         self.title = title
+        self.stride = stride
+        """Take every Nth frame that arrives, as `VideoFileSource` does.
+
+        Kept so that a tool written against clips runs unchanged against a
+        window -- three of the calibration tools default to a stride above one
+        to space their samples out in time, and that intent carries over.
+        Unrelated to dropping: a skip here is deliberate, a drop is the pipeline
+        failing to keep up.
+        """
+
         self.startup_timeout = startup_timeout
         """How long to give the window to draw its first frame.
 
@@ -250,9 +263,10 @@ class WindowSource(FrameSource):
                     pending = self._await_frame()
                 except WindowClosed:
                     return
-            yield Frame(
-                image=pending, index=index, timestamp=time.perf_counter() - start
-            )
+            if index % self.stride == 0:
+                yield Frame(
+                    image=pending, index=index, timestamp=time.perf_counter() - start
+                )
             pending = None
             index += 1
 

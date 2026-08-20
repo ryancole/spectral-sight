@@ -51,6 +51,38 @@ class MinimapRegion:
         """
         return x / self.width, y / self.height
 
+    @property
+    def looks_square(self) -> bool:
+        """Whether this is the shape a minimap panel actually is.
+
+        The panel is square in the game. It is not quite square here, because
+        the receiver fills its window by stretching without preserving aspect --
+        the calibrated 2118x1354 panel is 325x322 -- so this is a loose check
+        for a misdrag, not a claim about the aspect.
+        """
+        return abs(self.width - self.height) <= max(self.width, self.height) * 0.08
+
+    @classmethod
+    def select(
+        cls, image: np.ndarray, *, window: str = "calibrate minimap"
+    ) -> MinimapRegion | None:
+        """Drag a box around the panel. None if the drag was cancelled.
+
+        A person points rather than a detector finding it, and that is a
+        deliberate choice: a region that is merely close is not a slightly worse
+        read, it is a confident read of the wrong pixels, and nothing downstream
+        is in a position to notice. One drag per (resolution, scale) buys
+        certainty about the one input every other stage is measured against.
+        """
+        import cv2
+
+        box = cv2.selectROI(window, image, showCrosshair=False)
+        cv2.destroyWindow(window)
+        x, y, width, height = (int(v) for v in box)
+        if width == 0 or height == 0:
+            return None
+        return cls(x=x, y=y, width=width, height=height)
+
     # -- persistence ------------------------------------------------------
 
     def to_dict(self) -> dict[str, int]:
@@ -91,7 +123,7 @@ class MinimapRegion:
         path = REGION_DIR / f"{name}.json"
         if not path.exists():
             raise FileNotFoundError(
-                f"no calibrated minimap region at {path}. "
-                f"Run: python tools/calibrate_minimap.py --image <screenshot>"
+                f"no calibrated minimap region at {path}. Run: python "
+                f"tools/calibrate_minimap.py --image <clip, still or window:name>"
             )
         return cls.load(path)
