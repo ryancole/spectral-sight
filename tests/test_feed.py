@@ -17,7 +17,14 @@ from pathlib import Path
 import pytest
 
 from spectral_sight.export import Observation, TimelineMeta, TimelineWriter
-from spectral_sight.feed import FanOut, FrameState, JsonlSink, RateMeter, StdoutSink
+from spectral_sight.feed import (
+    FanOut,
+    FrameState,
+    JsonlSink,
+    RateMeter,
+    StdoutSink,
+    read_frames,
+)
 from spectral_sight.perception.hud.alive import Liveness, SlotState
 from spectral_sight.perception.hud.clock import GameClock
 from spectral_sight.pipeline import PipelineResult
@@ -201,6 +208,32 @@ class TestJsonlSink:
         assert sink.rows == 4
 
 
+class TestReadFrames:
+    def test_rows_regroup_into_the_frames_that_wrote_them(
+        self, tmp_path: Path
+    ) -> None:
+        """The file is rows; the feed was frames. Rows sharing a video_time
+        were one frame, and the frame-level facts lift back off any row."""
+        path = tmp_path / "run.jsonl"
+        with TimelineWriter(path, META) as writer:
+            writer.write([observation(1), observation(2)])
+            writer.write([
+                observation(1, video_time=12.4, game_time=201),
+                observation(2, video_time=12.4, game_time=201),
+                observation(3, video_time=12.4, game_time=201),
+            ])
+
+        frames = list(read_frames(path))
+        assert [f.seq for f in frames] == [0, 1]
+        assert [len(f.champions) for f in frames] == [2, 3]
+        assert [f.video_time for f in frames] == [12.3, 12.4]
+        assert [f.game_time for f in frames] == [200, 201]
+        # A file read at leisure has no feed health to report.
+        assert frames[0].captured_at is None
+        assert frames[0].fps is None
+        assert frames[0].lag is None
+
+
 class RecordingSink:
     """Remembers what happened to it, for the fan-out tests."""
 
@@ -219,6 +252,9 @@ class RecordingSink:
 
     def publish(self, state: FrameState) -> None:
         self.events.append(state.seq)
+
+    def publish_event(self, event: object) -> None:
+        self.events.append(("event", event))
 
 
 class TestFanOut:

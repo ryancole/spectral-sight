@@ -41,14 +41,16 @@ import json
 import sys
 import time
 from collections import deque
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import IO, TYPE_CHECKING, Protocol
 
-from spectral_sight.export import Observation, TimelineMeta, TimelineWriter
+from spectral_sight.export import Observation, TimelineMeta, TimelineWriter, iter_timeline
 
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from spectral_sight.events import Event
     from spectral_sight.pipeline import PipelineResult
     from spectral_sight.types import Frame
 
@@ -199,9 +201,15 @@ class RateMeter:
 class Sink(Protocol):
     """Anything that accepts the live stream.
 
-    A context manager plus `publish`, and nothing else: a sink that needs the
-    pipeline's internals is a sink that will break when they change, which is
-    the coupling the envelope exists to prevent.
+    A context manager plus the two publishes, and nothing else: a sink that
+    needs the pipeline's internals is a sink that will break when they change,
+    which is the coupling the envelope exists to prevent.
+
+    `publish_event` is separate from `publish` rather than events riding
+    inside the frame envelope, because the two have different audiences: every
+    consumer wants frames, only some want changes, and a sink like the
+    timeline file wants frames only -- events are derivable from its rows, so
+    recording them would store one fact twice and let the copies disagree.
     """
 
     def __enter__(self) -> Sink: ...
@@ -209,6 +217,8 @@ class Sink(Protocol):
     def __exit__(self, *exc: object) -> None: ...
 
     def publish(self, state: FrameState) -> None: ...
+
+    def publish_event(self, event: Event) -> None: ...
 
 
 class JsonlSink:
@@ -242,6 +252,12 @@ class JsonlSink:
     def publish(self, state: FrameState) -> None:
         self._writer.write(state.champions)
 
+    def publish_event(self, event: Event) -> None:
+        """Nothing to do: the rows already carry what the event was derived
+        from, and `EventDeriver` over `read_frames` recovers it. Writing the
+        event as well would store one fact twice and let the copies disagree.
+        """
+
 
 class StdoutSink:
     """Envelopes as JSON lines on stdout, for `--export - | your-tool`.
@@ -266,6 +282,9 @@ class StdoutSink:
 
     def publish(self, state: FrameState) -> None:
         self._write(state.to_dict())
+
+    def publish_event(self, event: Event) -> None:
+        self._write(event.to_dict())
 
     def _write(self, message: dict[str, object]) -> None:
         # Flush per message for the same reason TimelineWriter flushes per
@@ -317,5 +336,54 @@ class FanOut:
         for sink in self.sinks:
             sink.publish(state)
 
+    def publish_event(self, event: Event) -> None:
+        for sink in self.sinks:
+            sink.publish_event(event)
+
     def __len__(self) -> int:
         return len(self.sinks)
+
+
+def read_frames(path: str | Path) -> Iterator[FrameState]:
+    """The envelope stream a written timeline came from, reconstructed.
+
+    This is what makes events a checkable claim: `EventDeriver` fed from here
+    must produce what the live run produced, so the event logic can be
+    developed and measured against the clips in `data/` with no game running.
+
+    The reconstruction is honest about what a timeline does not keep. A live
+    frame that produced no rows wrote nothing, so it cannot be counted here
+    and `seq` numbers the *written* frames -- which is why events carry
+    `video_time` and `game_time` as their durable keys and treat `seq` as
+    transport. The feed-health fields (`captured_at`, `fps`, `dropped`,
+    `lag`) come back as their "nothing measured" values, because a file read
+    at leisure has no latency worth inventing.
+    """
+    batch: list[Observation] = []
+    seq = 0
+
+    def flush() -> FrameState:
+        nonlocal seq
+        first = batch[0]
+        state = FrameState(
+            seq=seq,
+            video_time=first.video_time,
+            captured_at=None,
+            game_time=first.game_time,
+            game_time_observed=first.game_time_observed,
+            allies_dead=first.allies_dead,
+            champions=list(batch),
+            fps=None,
+            dropped=0,
+            lag=None,
+        )
+        seq += 1
+        batch.clear()
+        return state
+
+    for row in iter_timeline(path):
+        if batch and row.video_time != batch[0].video_time:
+            yield flush()
+        batch.append(row)
+    if batch:
+        yield flush()

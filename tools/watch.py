@@ -59,6 +59,7 @@ from spectral_sight.capture import (
 )
 from spectral_sight.debug import draw_tracks
 from spectral_sight.debug.overlay import CastMark
+from spectral_sight.events import EventDeriver
 from spectral_sight.feed import FanOut, FrameState, JsonlSink, RateMeter, StdoutSink
 from spectral_sight.calibration import (
     MISSING_CLOCK,
@@ -370,6 +371,7 @@ def main() -> int:
         paused = False
         processed = 0
         meter = RateMeter()
+        deriver = EventDeriver()
         started = time.perf_counter()
         # When each track last cast, so the overlay can mark it for a moment
         # rather than for the single frame the cast settles on.
@@ -381,12 +383,17 @@ def main() -> int:
             processed += 1
 
             if len(feed):
-                feed.publish(FrameState.of(
+                state = FrameState.of(
                     result, frame,
                     seq=processed - 1,
                     fps=meter.tick(),
                     dropped=getattr(source, "dropped", 0),
-                ))
+                )
+                feed.publish(state)
+                # After the frame, so a consumer holds the state an event
+                # describes before being told about the change.
+                for event in deriver.update(state):
+                    feed.publish_event(event)
 
             for observation in result.observations:
                 if observation.cast_drop is not None:

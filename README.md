@@ -264,6 +264,56 @@ that accepts envelopes — so `--export session.jsonl` keeps writing the
 identical timeline while other sinks listen, rather than the file and the
 feed being rival outputs.
 
+**Events.** A frame envelope says what is true; an event says what changed,
+and a consumer reacting in real time mostly wants the changes — a death, a
+cast, a champion slipping into fog — without diffing ten rows against their
+predecessors itself, badly, in every downstream tool at once. So the feed
+interleaves `{"t": "event", "kind": ...}` messages with the frames: `cast`,
+`death`/`respawn`, `vanished`/`reappeared`, `level_up`, `identified` and
+`roster`, each carrying the same `video_time`/`game_time` keys as everything
+else.
+
+These are *perceptual* events, deliberately: things the vision concluded, not
+what they might mean. "Gank incoming" is the analysis tool's job, and holding
+that line is what keeps this schema stable while downstream opinions change.
+
+The constraint that carries the design is that **events are a pure function of
+the rows.** The deriver's whole world is the envelope stream — never the
+tracker, the filters or a pixel — which makes replay a checkable claim rather
+than a hope: extracting a clip to a timeline and re-deriving events from the
+file must reproduce what the live run published. Measured on the sample clip,
+it does — byte-identical apart from `seq`, which numbers envelopes on the wire
+and cannot count the frames that produced no rows (the file is silent about
+them; `video_time` and `game_time` are the durable keys, and the divergence is
+two frames at the very start of the run, before anything was confirmed).
+
+Two transition rules are worth recording because they are where a
+change-detector quietly goes wrong:
+
+- **`alive: null` never transitions anything.** It means the HUD and the
+  minimap disagreed, and a None between two Falses is one death, not two. A
+  deriver that treated unknown as alive would resurrect a corpse every time
+  the portraits blinked, just to kill it again.
+- **Liveness is keyed by champion, everything else by track.** A corpse's
+  track is often dropped before the respawn arrives on a fresh one, so the
+  name is the identity that survives being dead. And a death *suppresses* the
+  vanish it explains: "the corpse left the minimap" is not fog, and a consumer
+  told `vanished` would treat it as a champion who might walk out at them —
+  the one thing a corpse cannot do.
+
+`tools/derive_events.py` prints the event log of any timeline — prose by
+default, `--json` for the wire form — so five minutes of footage answers
+"what happened" without re-running any vision.
+
+Measured on the 5.3-minute clip: 917 events over 3,185 frames, and the ones
+with ground truth elsewhere in this document all land on it. The six casts
+come out with the same six percentages the cast section records — Xerath's
+four, Zilean's 9.4%, Sivir's 16.2% — with Sivir's correctly the unconfirmed
+one. The two deaths are both Zilean's, each respawning 12.1s later against the
+portrait-measured 11.9–12.0s. The rest is fog traffic, 444 vanishes and 437
+reappearances, which is what player-perspective footage mostly *is*, and why a
+consumer that wants quiet subscribes to kinds rather than to everything.
+
 **Death.** An ally is never hidden by fog, so an ally missing from the minimap
 is dead — that was the reasoning, and the timeline could not act on it, so a
 dead ally read as a champion nobody had seen for twenty-four seconds. The HUD
