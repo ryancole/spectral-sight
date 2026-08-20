@@ -35,14 +35,23 @@ def latest_version() -> str:
     return _get_json(f"{CDN}/api/versions.json")[0]
 
 
-def champion_index(version: str) -> dict[str, str]:
-    """Map champion key -> icon filename for a patch."""
+def champion_index(version: str) -> tuple[dict[str, str], dict[str, str]]:
+    """Map champion key -> icon filename, and champion key -> resource type.
+
+    Both come out of the same request. The resource type is not needed to find
+    a champion on the minimap, but it is what separates "no casts because this
+    champion has no mana" from "no casts because we never saw them" -- see
+    `perception.nameplates.casts`. Reading it from the same payload keeps the
+    two from ever describing different patches.
+    """
     data = _get_json(f"{CDN}/cdn/{version}/data/en_US/champion.json")["data"]
-    return {key: entry["image"]["full"] for key, entry in data.items()}
+    icons = {key: entry["image"]["full"] for key, entry in data.items()}
+    resources = {key: entry.get("partype", "") for key, entry in data.items()}
+    return icons, resources
 
 
 def download(version: str, *, force: bool = False) -> Path:
-    champions = champion_index(version)
+    champions, resources = champion_index(version)
     target = ICON_DIR / version
     target.mkdir(parents=True, exist_ok=True)
 
@@ -66,7 +75,12 @@ def download(version: str, *, force: bool = False) -> Path:
     manifest = target / "manifest.json"
     manifest.write_text(
         json.dumps(
-            {"version": version, "champions": sorted(champions)}, indent=2
+            {
+                "version": version,
+                "champions": sorted(champions),
+                "resources": dict(sorted(resources.items())),
+            },
+            indent=2,
         )
         + "\n",
         encoding="utf-8",

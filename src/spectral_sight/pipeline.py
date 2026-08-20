@@ -77,6 +77,8 @@ from spectral_sight.perception.minimap import (
 )
 from spectral_sight.perception.minimap.blips import scaled_config
 from spectral_sight.perception.nameplates import (
+    Cast,
+    CastBook,
     LevelBook,
     Nameplate,
     NameplateLayout,
@@ -192,6 +194,7 @@ class Pipeline:
         calibration reads plates without them rather than not at all."""
 
         self.levels = LevelBook()
+        self.casts = CastBook()
         self._clock_filter = ClockFilter()
         self._restricted: dict[Team, Gallery] = {}
         self._self_evidence: dict[str, int] = {}
@@ -338,7 +341,9 @@ class Pipeline:
             name = self_track.identity
             self._self_evidence[name] = self._self_evidence.get(name, 0) + 1
 
-        plates, pairing = self._read_plates(frame, tracks, viewport)
+        plates, pairing, casts = self._read_plates(
+            frame, tracks, viewport, timestamp
+        )
 
         return PipelineResult(
             blips=blips,
@@ -352,7 +357,8 @@ class Pipeline:
             plates=plates,
             plate_tracks=pairing,
             observations=self._observe(
-                tracks, timestamp, clock, self_track, liveness, plates, pairing
+                tracks, timestamp, clock, self_track, liveness, plates,
+                pairing, casts,
             ),
         )
 
@@ -361,8 +367,9 @@ class Pipeline:
         frame: np.ndarray,
         tracks: list[Track],
         viewport: Viewport | None,
-    ) -> tuple[list[Nameplate], dict[int, int]]:
-        """Read nameplates and attach them to tracks.
+        timestamp: float,
+    ) -> tuple[list[Nameplate], dict[int, int], dict[int, Cast]]:
+        """Read nameplates, attach them to tracks, and call any casts.
 
         Plates are matched against *both* teams' tracks rather than just the
         enemy's. An ally plate is less interesting -- the HUD already says how
@@ -371,7 +378,7 @@ class Pipeline:
         something else that was observed.
         """
         if self.plate_reader is None:
-            return [], {}
+            return [], {}, {}
 
         plates = self.plate_reader.read(frame)
         height, width = frame.shape[:2]
@@ -388,16 +395,33 @@ class Pipeline:
             for local_index, track_id in local.items():
                 pairing[indices[local_index]] = track_id
 
-        # Levels belong to champions, so they accumulate against the track and
-        # have to be dropped when the tracker drops it -- otherwise a reused id
-        # would inherit a stranger's level.
+        # Levels and resource series belong to champions, so they accumulate
+        # against the track and have to be dropped when the tracker drops it --
+        # otherwise a reused id would inherit a stranger's level, or read a
+        # stranger's mana as one enormous step the first time it sees a plate.
         live = {t.id for t in self.tracker.tracks}
         for track_id in [i for i in self.levels.filters if i not in live]:
             self.levels.forget(track_id)
+        for track_id in [i for i in self.casts.detectors if i not in live]:
+            # Whatever candidate it was holding dies with it. That is at most
+            # one unconfirmed cast on a track the tracker has already given up
+            # on, which is not worth a row with no champion attached to it.
+            self.casts.forget(track_id)
+
+        # Levels first: a cast records the level it was cast at, and reading it
+        # before this frame's digit is folded in would stamp a stale one.
+        casts: dict[int, Cast] = {}
         for index, track_id in pairing.items():
             self.levels.update(track_id, plates[index].level)
+        for index, track_id in pairing.items():
+            cast = self.casts.update(
+                track_id, timestamp, plates[index].resource,
+                plates[index].health, self.levels.level(track_id),
+            )
+            if cast is not None:
+                casts[track_id] = cast
 
-        return plates, pairing
+        return plates, pairing, casts
 
     def _attribute_deaths(
         self,
@@ -489,6 +513,7 @@ class Pipeline:
         liveness: Liveness | None = None,
         plates: list[Nameplate] | None = None,
         pairing: dict[int, int] | None = None,
+        casts: dict[int, Cast] | None = None,
     ) -> list[Observation]:
         """Flatten this frame's tracks into rows.
 
@@ -504,6 +529,7 @@ class Pipeline:
         rows = []
         for track in sorted(tracks, key=lambda t: t.id):
             plate = by_track.get(track.id)
+            cast = (casts or {}).get(track.id)
             world = self.world_position(track.x, track.y)
             age = track.age(timestamp)
             rows.append(
@@ -524,6 +550,11 @@ class Pipeline:
                     health=None if plate is None else plate.health,
                     resource=None if plate is None else plate.resource,
                     level=self.levels.level(track.id),
+                    cast_drop=None if cast is None else cast.drop,
+                    cast_at=None if cast is None else cast.at,
+                    cast_span=None if cast is None else cast.span,
+                    cast_continuous=None if cast is None else cast.continuous,
+                    cast_confirmed=None if cast is None else cast.confirmed,
                     alive=alive.get(track.id),
                     allies_dead=None if liveness is None else liveness.dead_count,
                 )

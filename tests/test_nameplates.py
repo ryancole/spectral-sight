@@ -120,13 +120,13 @@ def test_a_champion_on_empty_resource_is_not_found() -> None:
 
 def test_hops_the_tick_marks() -> None:
     """Without gap tolerance this reports the health at the first tick."""
-    plate = reader().read(scene(x=180, y=100, health=0.9, resource=0.9))[0]
+    plate = reader().read(scene(x=180, y=100, health=0.9, resource=0.7))[0]
     assert plate.health == pytest.approx(0.9, abs=TOLERANCE)
 
 
 def test_tells_an_ally_from_an_enemy() -> None:
     plates = reader().read(
-        scene(x=180, y=100, health=0.9, resource=0.9, hostile=False)
+        scene(x=180, y=100, health=0.9, resource=0.7, hostile=False)
     )
     assert len(plates) == 1
     assert not plates[0].hostile
@@ -155,7 +155,7 @@ def test_ignores_a_bar_with_no_level_box() -> None:
 def test_a_split_resource_bar_stays_one_plate() -> None:
     """A model or an effect cutting the bar must not spawn a second plate,
     measured from the wrong left edge."""
-    canvas = scene(x=200, y=120, health=0.9, resource=0.9)
+    canvas = scene(x=200, y=120, health=0.9, resource=0.7)
     top = 120 + RESOURCE_DY
     cv2.rectangle(canvas, (240, top), (248, top + RESOURCE_HEIGHT),
                   (60, 68, 58), -1)
@@ -218,8 +218,8 @@ def test_blanks_the_plate_behind_an_overlapping_one() -> None:
     canvas = plate_scene()
     common = dict(bar_width=BAR_WIDTH, bar_height=BAR_HEIGHT,
                   resource_dy=RESOURCE_DY, resource_height=RESOURCE_HEIGHT)
-    draw_nameplate(canvas, x=200, y=120, health=0.9, resource=0.9, **common)
-    draw_nameplate(canvas, x=250, y=128, health=0.5, resource=0.5, **common)
+    draw_nameplate(canvas, x=200, y=120, health=0.9, resource=0.7, **common)
+    draw_nameplate(canvas, x=250, y=128, health=0.5, resource=0.35, **common)
 
     plates = sorted(reader().read(canvas), key=lambda p: p.x)
     assert len(plates) == 2
@@ -228,6 +228,45 @@ def test_blanks_the_plate_behind_an_overlapping_one() -> None:
     assert behind.health is None and behind.resource is None
     assert not front.occluded
     assert front.health is not None
+
+
+# -- obstruction ----------------------------------------------------------
+#
+# The other way a bar gets cut, and the one nothing can be assumed about: a
+# champion model or a spell effect drawn across it. `_clipped` knows where the
+# frame edge and the HUD panels are; nothing knows where a champion is standing,
+# so this reads the symptom -- both fills stopping at the same column.
+
+
+def test_bars_cut_at_the_same_column_are_not_believed() -> None:
+    """Whatever covers the plate covers both bars, so they report that column
+    twice. Measured on a clip, readings like this fell into runs of up to 23
+    consecutive frames -- an obstruction sitting there, not a coincidence."""
+    plate = reader().read(scene(x=200, y=120, health=0.5, resource=0.5))[0]
+    assert plate.obstructed
+    assert plate.health is None and plate.resource is None
+
+
+def test_a_champion_at_full_on_both_bars_is_believed() -> None:
+    """Full health and full mana is the commonest state in the game, and it
+    reads equal without anything being wrong."""
+    plate = reader().read(scene(x=200, y=120, health=1.0, resource=1.0))[0]
+    assert not plate.obstructed
+    assert plate.health is not None and plate.resource is not None
+
+
+def test_bars_that_merely_run_close_are_believed() -> None:
+    """The test is on agreeing to within a pixel, not on being similar."""
+    plate = reader().read(scene(x=200, y=120, health=0.60, resource=0.52))[0]
+    assert not plate.obstructed
+    assert plate.resource is not None
+
+
+def test_obstruction_is_kept_apart_from_the_other_two_causes() -> None:
+    """All three blank the fills, and which one happened is the difference
+    between a champion somewhere unreadable and one behind a wall of minions."""
+    plate = reader().read(scene(x=200, y=120, health=0.5, resource=0.5))[0]
+    assert plate.obstructed and not plate.clipped and not plate.occluded
 
 
 def test_separate_plates_are_both_read() -> None:
@@ -273,9 +312,9 @@ def test_level_survives_occlusion(glyphs: GlyphSet) -> None:
     canvas = plate_scene()
     common = dict(bar_width=BAR_WIDTH, bar_height=BAR_HEIGHT,
                   resource_dy=RESOURCE_DY, resource_height=RESOURCE_HEIGHT)
-    draw_nameplate(canvas, x=200, y=120, health=0.9, resource=0.9, level=7,
+    draw_nameplate(canvas, x=200, y=120, health=0.9, resource=0.7, level=7,
                    **common)
-    draw_nameplate(canvas, x=250, y=128, health=0.5, resource=0.5, level=3,
+    draw_nameplate(canvas, x=250, y=128, health=0.5, resource=0.35, level=3,
                    **common)
 
     behind = min(reader(glyphs).read(canvas), key=lambda p: p.x)

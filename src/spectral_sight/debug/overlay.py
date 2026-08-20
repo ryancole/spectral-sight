@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 
 import cv2
 import numpy as np
@@ -14,6 +15,36 @@ TEAM_COLORS: dict[Team, tuple[int, int, int]] = {
     Team.RED: (0, 80, 255),
     Team.UNKNOWN: (160, 160, 160),
 }
+
+CAST_COLOR = (0, 255, 255)
+"""Yellow, and specifically not white.
+
+White marks the local player, and a cast ring two pixels outside that one in the
+same colour is invisible on the champion who casts most and is watched hardest.
+Nothing else in this palette is yellow: the teams are cyan and red-orange, fog
+is a dimmed team colour, and death is a cross."""
+
+CAST_FLASH = 2.0
+"""Seconds a cast stays marked, fading out over that window.
+
+Long enough to catch at 10 Hz, short enough that a champion trading
+abilities does not simply stay marked the whole fight."""
+
+
+@dataclass(frozen=True, slots=True)
+class CastMark:
+    """A recent cast, as the overlay needs to draw it."""
+
+    since: float
+    """Seconds since it was reported."""
+
+    continuous: bool
+    """Whether the cast was measured across consecutive readings.
+
+    When False the champion was away and the cast happened somewhere in a window
+    that can be seconds wide, so the ring is drawn thin: it says a cast happened
+    recently, not that it happened now. Drawing the two the same way would put a
+    precise claim and a vague one on screen in identical ink."""
 
 
 def draw_blips(
@@ -59,6 +90,7 @@ def draw_tracks(
     self_track=None,
     lost_after: float = 0.5,
     dead: frozenset[str] = frozenset(),
+    casts: Mapping[int, CastMark] | None = None,
 ) -> np.ndarray:
     """Draw tracked champions with their names.
 
@@ -70,6 +102,11 @@ def draw_tracks(
     look identical on the minimap and mean opposite things -- one is a champion
     who might walk out of the fog at you, the other is a champion who cannot --
     so they should not be drawn the same way.
+
+    `casts` maps a track id to its most recent `CastMark`, marking that champion
+    for `CAST_FLASH` seconds. Held as an age rather than a flag because a cast is
+    instantaneous: drawn on the one frame it settles it is unreadable at 10 Hz,
+    and drawn permanently it stops meaning anything.
     """
     canvas = image.copy()
     if scale != 1.0:
@@ -96,6 +133,16 @@ def draw_tracks(
                          (center[0] - offset, center[1] - dx),
                          (center[0] + offset, center[1] + dx),
                          color, 1, cv2.LINE_AA)
+
+        mark = (casts or {}).get(track.id)
+        if mark is not None and mark.since <= CAST_FLASH:
+            # Outside the team ring rather than inside it, so it reads as a
+            # thing that just happened to the champion rather than as part
+            # of how the champion is drawn.
+            fade = 1.0 - mark.since / CAST_FLASH
+            cv2.circle(canvas, center, radius + 2,
+                       tuple(int(c * fade) for c in CAST_COLOR),
+                       2 if mark.continuous else 1, cv2.LINE_AA)
 
         if track is self_track:
             cv2.circle(canvas, center, radius + 4, (255, 255, 255), 1, cv2.LINE_AA)

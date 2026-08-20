@@ -317,6 +317,11 @@ has to be inferred, and the only champion-agnostic evidence the client renders i
 the *resource bar* on the nameplate floating over a champion: a step down that
 holds is a cast.
 
+That window is much narrower than the minimap's, and it is the pipeline that
+reads it: `perception/nameplates/casts.py` folds each champion's resource series
+and writes what it finds onto the timeline's `cast_*` fields, with
+`tools/detect_casts.py` reporting over a clip.
+
 That window is much narrower than the minimap's. Measured on the coop-vs-AI clip
 at 10 Hz, an enemy is somewhere on the minimap in **87.9%** of frames but inside
 the camera view in only **29.4%**, averaging 0.40 readable enemy plates per
@@ -328,10 +333,140 @@ Within that window the measurement is close to exact. On frames where a
 champion's health did not change, **85.8%** of consecutive resource readings are
 identical to within one pixel, and the p05–p95 spread is ±0.85% — one pixel of a
 117px bar. Typical ability costs run 7–25% of a pool, comfortably clear of that
-floor. Detected casts cluster per champion the way repeated use of one ability
-should: Galio's steps came in at 10–14%, Ezreal's at 4–7%.
+floor.
 
-Three things had to be got right, and each was wrong first:
+**A step is a fall that holds, not a fall.** A drop past the threshold is held
+as a candidate and the following reading decides it — noise reverts, a cast does
+not — which is the same move the level and clock filters make. A candidate that
+never gets a continuous follow-up is still emitted, flagged `confirmed=False`,
+because the champion walking off screen is not evidence against the cast and
+that is where a large share of them are seen.
+
+**Two things make a convincing fake step, and neither shows up in the resource
+series.** Run over the sample clip before either was handled, the detector found
+ten casts and five were artefacts. Both gave themselves away in what the health
+bar did at the same instant, which is why the detector reads both bars:
+
+- **A truncated plate** — one cut partway along by a champion model or a spell
+  effect, rather than by the frame edge or a HUD panel the reader's own clipping
+  test already catches — truncates both fills at the same column, so they come
+  back equal. Three of the five had fills 0.008–0.009 apart, one pixel of a 117px
+  bar, against 0.07–0.26 for the five that survived. Such a reading is skipped
+  rather than rejected: measured *from* it invents a step down, and measured *to*
+  it invents the step back up that would hide the real cast after it.
+- **A plate on the wrong track** — association is geometric and only
+  approximately so, so the series occasionally jumps to a different champion's
+  bars, and both fills move by nearly the same amount at once. The other two
+  moved health and resource within 0.033 and 0.010 of each other while dropping
+  60%. The test is on the two falls *agreeing*, not on damage happening:
+  champions cast while being hit constantly.
+
+**Levelling cannot fake a cast**, which is the opposite of what this section
+used to claim. It raises maximum resource and grants the same amount to current,
+so the fraction holds or rises. Across seven level-ups straddling consecutive
+readings the change ran −0.9% to +5.2%, mean +1.0% — the one fall being a single
+pixel, three times below the threshold. It can *mask* a cast by cancelling part
+of it, which is the safe direction and is left alone.
+
+What survives on the 5.3-minute clip is six casts, all continuous and five of
+them confirmed. They cluster the way repeated use of one ability should:
+Xerath's four came in at 9.4%, 10.3%, 22.2% and 28.2% — two abilities, not four
+— with Zilean at 9.4% and Sivir at 16.2%.
+
+### What the score actually is
+
+Both halves are now measured, because the HUD prints the local player's mana as
+text — `488 / 488` — so their resource is known exactly on every frame and a
+cast is simply a fall in that number. See below for how that is read.
+
+Across three clips the HUD saw eight real casts:
+
+| | |
+|---|---|
+| Precision | **7/7 — 100%** |
+| Recall | **7/8 — 88%** |
+
+On the clip recorded specifically to exercise this — 1.6 minutes in which the
+player actually used abilities — it is 6/6 and 6/6. The single miss across all
+footage was a frame where the plate could not be read at all.
+
+Where the cast is continuous the size is close: 60 mana of a 452 pool is 13.3%
+and the detector reported 12.8%. Where it spans a gap the size decays exactly as
+designed, because regeneration refills part of what was spent while nobody was
+looking — a 48-mana cast seen across 4.1 seconds came back as 5.1% against a
+true 9.6%. The event is found; the magnitude is a floor, not a measurement.
+
+Two of the six were located only as intervals, one of them 9.1 seconds wide.
+That is the honest output for a champion who cast and then walked off screen,
+and it is why `span` and `continuous` are on the row rather than a single
+timestamp.
+
+**Eight casts is still a sample**, and it should not be quoted as a rate.
+
+Two earlier versions of this measurement were wrong, both times because the
+check was trusted before its own error rate was known.
+
+- The first reported 14%, because the reader below misread a `9` as a `4` in the
+  tens digit, inventing a fifty-unit fall and recovery on alternating frames.
+  Five of its seven casts were phantoms. Chasing the resulting "misses" produced
+  a confident and wrong conclusion about plate association, which is in fact
+  fine on the player's track — it agrees with printed mana to a median of one
+  pixel, against 36.5% agreement for every other track.
+- The second scored a cast as *both* a miss and a false positive whenever it
+  spanned a gap, by matching against a fixed window around `at` instead of
+  against `[at - span, at]` — the interval this very document says a cast
+  occupies. Two events, counted four times, in opposite directions.
+
+And the ground truth itself dropped a real cast because the maximum beside it
+read 502 on one frame and 501 on the next, which the level-up test read as the
+pool changing. One digit of flicker, and the check quietly discarded an event it
+existed to catch. That is what `MaximumFilter` is for.
+
+### Reading the player's own numbers
+
+The numbers on the player's HUD bars are the timer's face at a smaller size,
+roughly 10px against 15, exactly as the champion level box is — so they are
+grown to a fixed stroke height and matched against the glyph set the clock
+already bootstrapped. The stroke is fitted rather than guessed: swept from 10 to
+16 over 50 frames, mean match score peaks sharply at 13.
+
+The `/` is found by the gaps around it rather than by matching, because a
+diagonal stroke correlates with a digit template about as well as a digit does.
+Measured across frames the flanking gaps run 5–8px against 1–4px between
+digits, with no overlap, and taking the widest pair works whatever the digit
+counts — where splitting at a fixed position would not.
+
+**A glyph is accepted on its margin, not its score.** Rescaled to 13px a `9`
+and a `4` correlate almost identically: on the frame that exposed this the true
+`9` scored 0.56 and the `4` it was read as scored 0.54, so no floor on score
+separates them. Their margins over the runner-up do — 0.045 against 0.008 — and
+a glyph that cannot clear the margin sinks the whole line rather than being
+guessed at. A number with one digit quietly wrong still looks like a number, and
+nothing downstream can catch it.
+
+Checking it needs no labels, the same way the clock's check does. Two free
+signals: the maximum only moves when the champion levels or buys an item, and a
+current value that leaves and returns within a frame is impossible — mana falls
+in steps and recovers by slow regeneration, never both at once. Measured over
+the whole clip:
+
+| | Mana | Health |
+|---|---|---|
+| Frames read | 93.3% | 80.4% |
+| Maximum stepping backwards | **0** | 0 |
+| Value leaving and returning | **0** | 1 (0.04%) |
+
+Before the margin gate the mana line read on 100% of frames and spiked four
+times; the gate trades 6.7% of readings for none. That is the right trade here,
+because the phantom casts those four spikes produced cost far more than a
+missing frame does. The four mana maxima reported across the clip are 452, 488,
+525 and 565 — Zilean's pool at successive levels, in order.
+
+None of this generalises to an enemy. The client never draws their numbers, and
+this is the local player only.
+
+Three things about the bars themselves had to be got right, and each was wrong
+first:
 
 - **Ticks break the health bar** into a dozen components, so fills are measured
   by walking from the left edge and hopping short gaps.
@@ -383,6 +518,40 @@ coherent ones.
 - **Cast attribution inherits the gallery's coverage.** On the sample clip only
   two of five enemies were ever named, so a third track's casts are recorded
   against a track id and no champion.
+- **Plate-to-track association is still the dominant source of false casts**,
+  and only its blatant form is handled: when the series jumps to a champion
+  whose bars sit at a *similar* level the co-movement test has nothing to catch.
+  Note this is about *other* tracks — checked against printed mana, the plate on
+  the player's own track is right, agreeing to a median of one pixel.
+- **Recall rests on eight events and is not a rate.** Both halves of the score
+  can be measured, but only for the local player and only where they actually
+  cast. More footage is the only thing that turns 7/8 into a number worth
+  quoting, and it has to be footage of somebody using their abilities.
+- **A cast that spans a gap is located, not timed.** One of the six on the new
+  clip is pinned only to a 9.1-second window. That is honest rather than wrong,
+  but a consumer that treats `at` as the moment of the cast will be seconds out
+  — `span` is not decoration.
+- **Ability naming is closer than it was.** Five of the six casts on the new
+  clip cost 59-60 mana of the same pool, which is one ability used five times,
+  and the sixth cost 48. The ratio between two such clusters is independent of
+  the pool size, so matching ratios against published costs would name abilities
+  without ever needing a denominator. What blocks it now is that a gap-spanning
+  cast understates its own size, so the clusters smear — the clean readings are
+  the continuous ones, and there are three of those.
+- **A truncated plate is found by the detector, not by the reader.** The reader
+  nulls fills for a bar clipped at the frame edge or under a HUD panel, but a bar
+  cut by a champion model in the middle of the world is not flagged — the
+  detector notices the two fills agreeing and skips the reading. That leaves
+  `health` on such a row still carrying the truncated number for anyone else who
+  reads it.
+- **The player's HUD health line reads on 80% of frames against mana's 93%.**
+  It changes constantly and shares its strip with the regeneration figure, so
+  more of its glyphs fail the margin gate. Nothing filters what survives; the
+  constraint that would — a maximum that only rises — is the one `LevelFilter`
+  already uses.
+- **The HUD numbers are the local player's only.** The client never draws an
+  enemy's, so nothing about this route generalises, and every other champion's
+  resource remains a fraction with no denominator and no ground truth.
 - **All footage so far is against bots.** The coverage figures in particular
   should be expected to move on a real game.
 - **Enemy coverage is bounded by vision, not by the tracker.** All five enemies
@@ -595,7 +764,10 @@ Then watch the whole pipeline run on a clip:
 Solid circles are champions currently visible; hollow dimmed circles are
 champions in fog, drawn at their last known position with the seconds since they
 were seen. A champion the HUD confirms is dead is crossed out rather than
-dimmed. A white outer ring marks the local player. Q quits, SPACE pauses.
+dimmed. A white outer ring marks the local player. A **yellow ring** marks a
+champion who has just cast, fading over two seconds — thick when the cast was
+pinned to consecutive readings, thin when it was measured across a gap and so
+happened somewhere in a window rather than at an instant. Q quits, SPACE pauses.
 
 Useful flags: `--start N` to skip into the clip, `--stride 1` to process every
 frame instead of 10 Hz, `--save out.mp4` to write the annotated video, and
@@ -622,6 +794,31 @@ lost = [r for r in rows if not r.visible and r.alive is True]
 `iter_timeline` streams the same rows without holding them all, which is what a
 full match wants.
 
+Casts are already on those rows, but the report is what says whether to believe
+them:
+
+```bash
+.venv/Scripts/python tools/detect_casts.py --timeline clip.jsonl --list
+```
+
+It prints the drop sizes per champion — the clustering is the whole claim — how
+much of the evidence survived a continuous follow-up, which champions were seen
+but never cast, and how many casts landed on a champion the HUD said was dead,
+which should be zero. `--min-drop` and `--continuity` re-derive from the raw
+resource series in the file, so retuning costs a read rather than another run of
+the vision.
+
+To score it rather than describe it, against the player's own printed mana:
+
+```bash
+.venv/Scripts/python tools/validate_casts.py --input "data/your clip.mp4" --timeline clip.jsonl
+```
+
+This is the only check here with both halves. It reports precision and recall,
+and for every missed cast it prints what the plate held at that moment — which
+is how the misses were traced to plate association rather than to the
+threshold.
+
 For working on stage 1 specifically:
 
 ```bash
@@ -647,9 +844,11 @@ src/spectral_sight/
     portraits.py              where the friendly portraits sit
     alive.py                  who is dead, from portrait desaturation
     clock.py                  the match timer
+    resources.py              the player's own health and mana, as numbers
   perception/nameplates/
     plates.py                 health, resource and level over a champion
     levels.py                 level held steady across misreads
+    casts.py                  resource steps read as abilities used
     projection.py             screen to minimap, and plate to track
   tracking/                   identity accumulated across frames
   pipeline.py                 the stages, wired in order
@@ -662,6 +861,7 @@ etc/clock/                    clock position and learned digits per resolution
 etc/world/                    map area and world bounds per resolution
 etc/hud/                      friendly portrait positions per resolution
 etc/nameplates/               bar geometry and screen projection per resolution
+etc/resources/                player health and mana text boxes per resolution
 ```
 
 ## Testing

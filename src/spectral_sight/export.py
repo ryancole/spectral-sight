@@ -121,8 +121,9 @@ class Observation:
     `resource` is the only evidence this project has that an enemy used an
     ability, since nothing in the game displays enemy cooldowns: a step down
     that holds is a cast. It is absent for champions on energy, rage or no
-    resource at all, and a step that coincides with `level` changing is a
-    larger mana pool rather than a cast."""
+    resource at all. The series is kept here raw as well as read, so a consumer
+    can call casts differently without re-running the vision -- see the `cast_*`
+    fields, and `perception.nameplates.casts` for how one is called."""
 
     level: int | None = None
     """Champion level, filtered across frames rather than read fresh.
@@ -130,6 +131,38 @@ class Observation:
     Raw per-frame readings are wrong about one time in ten -- see
     `LevelFilter` -- so this is the filtered value, and it lags a genuine
     level-up by a frame or two rather than flickering."""
+
+    cast_drop: float | None = None
+    """A fall in `resource` judged to be a cast, as a fraction of the pool.
+
+    Present on the row where the cast *settled*, which is a frame or more after
+    the fall itself: a step is only a cast once it has held, so the following
+    reading is what decides it. `cast_at` says when the fall actually happened,
+    and the other three fields say how far the evidence goes."""
+
+    cast_at: float | None = None
+    """`video_time` of the reading the fall was measured to. The cast lies
+    somewhere in `[cast_at - cast_span, cast_at]`."""
+
+    cast_span: float | None = None
+    """Seconds between the two readings the fall was measured across."""
+
+    cast_continuous: bool | None = None
+    """Whether that interval was tight enough for this to be a single cast.
+
+    False means the champion was away in between, so the row records the *net*
+    spend over `cast_span` -- possibly several abilities, and reduced by
+    whatever regenerated. At 0.40 readable enemy plates per frame most evidence
+    arrives this way, so these are the bulk of the rows rather than the
+    exception."""
+
+    cast_confirmed: bool | None = None
+    """Whether the post-drop level held on a continuous follow-up reading.
+
+    False means no such reading arrived -- the champion left view -- not that
+    the fall was contradicted. A fall that was contradicted never becomes a cast
+    at all, so this never marks one the detector doubts, only one it could not
+    finish checking."""
 
     allies_dead: int | None = None
     """How many of your five teammates were dead on this frame.
@@ -175,6 +208,14 @@ class Observation:
             row["resource"] = round(float(self.resource), 3)
         if self.level is not None:
             row["level"] = int(self.level)
+        # A cast lands on a handful of rows in a clip, so the whole group is
+        # omitted rather than written as five nulls on every other one.
+        if self.cast_drop is not None:
+            row["cast_drop"] = round(float(self.cast_drop), 3)
+            row["cast_at"] = round(float(self.cast_at or 0.0), 3)
+            row["cast_span"] = round(float(self.cast_span or 0.0), 3)
+            row["cast_continuous"] = bool(self.cast_continuous)
+            row["cast_confirmed"] = bool(self.cast_confirmed)
         return row
 
     @classmethod
@@ -198,6 +239,21 @@ class Observation:
             else float(data["resource"]),
             level=None if data.get("level") is None else int(data["level"]),
             alive=None if data.get("alive") is None else bool(data["alive"]),
+            cast_drop=(
+                None if data.get("cast_drop") is None else float(data["cast_drop"])
+            ),
+            cast_at=None if data.get("cast_at") is None else float(data["cast_at"]),
+            cast_span=(
+                None if data.get("cast_span") is None else float(data["cast_span"])
+            ),
+            cast_continuous=(
+                None if data.get("cast_continuous") is None
+                else bool(data["cast_continuous"])
+            ),
+            cast_confirmed=(
+                None if data.get("cast_confirmed") is None
+                else bool(data["cast_confirmed"])
+            ),
             allies_dead=(
                 None if data.get("allies_dead") is None
                 else int(data["allies_dead"])

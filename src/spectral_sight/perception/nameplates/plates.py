@@ -111,6 +111,18 @@ class NameplateConfig:
     than this and the plate behind is almost entirely covered anyway, so nothing
     readable is lost by collapsing the pair."""
 
+    obstruction_slack: int = 2
+    """How close the two fills may sit, in pixels, before the bar is read as cut
+    rather than believed. Two independent quantities do not agree to a pixel by
+    accident; a bar cut at one column reports that column twice."""
+
+    obstructed_below: float = 0.95
+    """Fraction of the bar below which the obstruction test applies.
+
+    A champion at full health and full mana genuinely reads equal on both bars,
+    and that is the commonest state in the game. A cut this near the right end
+    is also nearly harmless, since what it reports is close to the truth."""
+
     level_stroke: int = 13
     level_min_score: float = 0.45
     level_min_margin: float = 0.02
@@ -249,13 +261,38 @@ class Nameplate:
     screen edge, which reads as a wounded champion low on mana rather than as
     an artefact. It was worth a field to be able to say which happened."""
 
+    obstructed: bool = False
+    """The bar is cut partway along by something drawn in the world.
+
+    A champion model, a spell effect, a jungle camp -- anything that is neither
+    another plate nor the frame edge, and so is caught by neither `occluded` nor
+    `clipped`. It gives itself away because whatever covers the bar covers both
+    of them at the same column, so the two fills come back equal: on a sample
+    clip the readings that produced false casts had fills 0.008-0.009 apart, one
+    pixel of a 117px bar, against 0.07-0.26 for readings that held up.
+
+    A champion genuinely at equal health and mana is blanked too, and the clip
+    says how often that costs anything: 90 of 2,840 readings are caught, 3.2%,
+    and they fall into 18 runs of which the longest are 23, 21 and 11
+    consecutive frames. 87% sit inside a run of three or more. A coincidence
+    breaks the moment either bar moves, so a 2.3-second run of exact one-pixel
+    agreement is an obstruction; the eight isolated frames are the real cost,
+    0.3% of readings, against a third of the false casts this removes.
+
+    Kept as its own flag for the same reason `clipped` is: all three blank the
+    fills, and which one happened is the difference between a champion who is
+    somewhere unreadable and one who is behind a wall of minions."""
+
     level: int | None = None
     """Champion level, when the box left of the bar resolves.
 
-    Worth having for itself, and also what keeps a level-up from being mistaken
-    for a cast: levelling raises maximum resource, so the *fraction* falls while
-    nothing was spent. Raw readings are unreliable enough that a consumer should
-    put them through `LevelFilter` rather than trusting one frame."""
+    Worth having for itself, and for reading an ability's cost against the pool
+    it came out of. It is *not* needed to keep a level-up from being read as a
+    cast: levelling grants current resource along with maximum, so the fraction
+    holds or rises rather than falling -- measured across seven level-ups on the
+    sample clip, from -0.9% to +5.2%. Raw readings are unreliable enough that a
+    consumer should put them through `LevelFilter` rather than trusting one
+    frame."""
 
     @property
     def center(self) -> tuple[float, float]:
@@ -318,6 +355,20 @@ class NameplateReader:
         if x < 0 or right > width:
             return True
         return self._excluded(right, y, width, height)
+
+    def _obstructed(self, health: int, resource: int) -> bool:
+        """Do both fills stop at the same column, short of the end of the bar?
+
+        Then something in the world is drawn across the plate and cut them both
+        there. `_clipped` catches the frame edge and the HUD panels because it
+        can reason about where those are; nothing can be assumed about where a
+        champion model is, so this reads the symptom instead.
+        """
+        limit = self.layout.bar_width * self.config.obstructed_below
+        return (
+            abs(health - resource) <= self.config.obstruction_slack
+            and max(health, resource) < limit
+        )
 
     def _fill(self, band: np.ndarray) -> int:
         """Filled width in pixels, walking from the left and hopping ticks."""
@@ -438,17 +489,21 @@ class NameplateReader:
                 blue[slice(by, by + bh), slice(bx, bx + layout.bar_width)]
             )
             clipped = self._clipped(bx, top, width, height)
+            health_fill = max(red_fill, green_fill)
+            obstructed = self._obstructed(health_fill, resource)
+            unreadable = clipped or obstructed
             plates.append(
                 Nameplate(
                     x=bx,
                     y=top,
                     width=layout.bar_width,
-                    health=None if clipped
-                    else min(max(red_fill, green_fill) / layout.bar_width, 1.0),
-                    resource=None if clipped
+                    health=None if unreadable
+                    else min(health_fill / layout.bar_width, 1.0),
+                    resource=None if unreadable
                     else min(resource / layout.bar_width, 1.0),
                     hostile=red_fill >= green_fill,
                     clipped=clipped,
+                    obstructed=obstructed,
                     level=self.read_level(frame, bx, by),
                 )
             )
@@ -557,7 +612,8 @@ class NameplateReader:
                 plate if not hidden else Nameplate(
                     x=plate.x, y=plate.y, width=plate.width,
                     health=None, resource=None, hostile=plate.hostile,
-                    occluded=True, clipped=plate.clipped, level=plate.level,
+                    occluded=True, clipped=plate.clipped,
+                    obstructed=plate.obstructed, level=plate.level,
                 )
             )
         return out
