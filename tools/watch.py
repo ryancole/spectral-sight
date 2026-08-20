@@ -8,6 +8,9 @@ Live, against a window -- this is the real-time path:
     # ...and keep the timeline while you watch
     python tools/watch.py --window kilrogg --export session.jsonl
 
+    # ...or stream frame envelopes to another program as they happen
+    python tools/watch.py --window kilrogg --quiet --export - | your-tool
+
 Or offline, against a recorded clip -- the development path:
 
     # play a clip in a window
@@ -56,7 +59,7 @@ from spectral_sight.capture import (
 )
 from spectral_sight.debug import draw_tracks
 from spectral_sight.debug.overlay import CastMark
-from spectral_sight.export import TimelineWriter
+from spectral_sight.feed import FanOut, FrameState, JsonlSink, RateMeter, StdoutSink
 from spectral_sight.calibration import (
     MISSING_CLOCK,
     Reference,
@@ -246,7 +249,9 @@ def main() -> int:
                         help="frames per second to ask the window for; --window only")
     parser.add_argument("--zoom", type=float, default=2.5, help="preview upscale")
     parser.add_argument("--save", help="write an annotated video here")
-    parser.add_argument("--export", help="write a JSONL timeline here")
+    parser.add_argument("--export",
+                        help="write a JSONL timeline here, or '-' to stream "
+                             "frame envelopes to stdout for another program")
     parser.add_argument("--quiet", action="store_true",
                         help="print state instead of opening a window")
     parser.add_argument("--limit", type=int, help="stop after N processed frames")
@@ -259,6 +264,10 @@ def main() -> int:
 
     if args.window and args.start:
         parser.error("--start is a seek into a file; a live window has no past")
+
+    # When stdout is the data channel, everything said *about* the run moves to
+    # stderr, or the consumer's JSON parser meets a status line.
+    console = sys.stderr if args.export == "-" else sys.stdout
 
     try:
         icons = Path(args.icons) if args.icons else newest_icon_set()
@@ -283,7 +292,8 @@ def main() -> int:
         if not args.no_calibrate and missing(width, height):
             if args.window:
                 print(f"The window is {width}x{height}, and that size is part of "
-                      "the calibration -- leave it there once this is done.")
+                      "the calibration -- leave it there once this is done.",
+                      file=console)
                 calibrated = calibrate(source, width, height)
             else:
                 # A file gets a throwaway reader of its own. Calibrating costs
@@ -310,7 +320,7 @@ def main() -> int:
                 else f"every {args.stride} frames")
         print(f"{width}x{height} | minimap {pipeline.region.width}px | "
               f"{len(pipeline.gallery)} champion icons | {rate}"
-              + (f" | {', '.join(extras)}" if extras else ""))
+              + (f" | {', '.join(extras)}" if extras else ""), file=console)
 
         # The optional calibrations are skipped quietly, which is right for the
         # run and wrong for the person watching it: without them there is no
@@ -326,9 +336,10 @@ def main() -> int:
             ("nameplates", pipeline.plate_reader, "calibrate_nameplates.py"),
         ) if got is None]
         if absent:
-            print(f"no {', '.join(what for what, _ in absent)}. Add with:")
+            print(f"no {', '.join(what for what, _ in absent)}. Add with:",
+                  file=console)
             for _, tool in absent:
-                print(f"  python tools/{tool} --input \"{spec}\"")
+                print(f"  python tools/{tool} --input \"{spec}\"", file=console)
 
         # A live run has no stride -- it takes whichever frames it can keep up
         # with -- so the timeline records 1, meaning "no frames deliberately
@@ -337,14 +348,15 @@ def main() -> int:
         stride = 1 if args.window else args.stride
         origin = args.window or args.input
 
-        timeline: TimelineWriter | None = None
+        timeline: JsonlSink | None = None
+        sinks: list[JsonlSink | StdoutSink] = []
         if args.export:
-            timeline = stack.enter_context(
-                TimelineWriter(
-                    args.export,
-                    pipeline.timeline_meta(origin, stride, (width, height)),
-                )
-            )
+            meta = pipeline.timeline_meta(origin, stride, (width, height))
+            if args.export == "-":
+                sinks.append(StdoutSink(meta))
+            else:
+                timeline = JsonlSink(args.export, meta)
+                sinks.append(timeline)
             unkeyed = [name for name, calibration in (("clock", pipeline.clock),
                                                       ("world", pipeline.world))
                        if calibration is None]
@@ -352,10 +364,12 @@ def main() -> int:
                 print(f"warning: no calibrated {' and '.join(unkeyed)}; the "
                       "timeline will be missing the keys that join this clip to "
                       "anything else", file=sys.stderr)
+        feed = stack.enter_context(FanOut(sinks))
 
         writer: cv2.VideoWriter | None = None
         paused = False
         processed = 0
+        meter = RateMeter()
         started = time.perf_counter()
         # When each track last cast, so the overlay can mark it for a moment
         # rather than for the single frame the cast settles on.
@@ -366,8 +380,13 @@ def main() -> int:
             result = pipeline.process(frame.image, frame.timestamp)
             processed += 1
 
-            if timeline is not None:
-                timeline.write(result.observations)
+            if len(feed):
+                feed.publish(FrameState.of(
+                    result, frame,
+                    seq=processed - 1,
+                    fps=meter.tick(),
+                    dropped=getattr(source, "dropped", 0),
+                ))
 
             for observation in result.observations:
                 if observation.cast_drop is not None:
@@ -403,7 +422,7 @@ def main() -> int:
                         where = f"  self=({position[0]:5.0f},{position[1]:5.0f})"
                 print(f"{clock:>7}  t={frame.timestamp:7.2f}s  visible={len(visible):2d}"
                       f"{where}  allies={','.join(allies) or '-':40s} "
-                      f"enemies={','.join(enemies) or '-'}{down}")
+                      f"enemies={','.join(enemies) or '-'}{down}", file=console)
             else:
                 minimap = pipeline.region.crop(frame.image)
                 canvas = draw_tracks(
@@ -457,11 +476,11 @@ def main() -> int:
         share = source.dropped / max(processed + source.dropped, 1)
         behind = f", dropped {source.dropped} ({share:.0%}) to keep up"
     print(f"\n{processed} frames in {elapsed:.1f}s "
-          f"({processed / max(elapsed, 1e-9):.1f} fps{behind})")
+          f"({processed / max(elapsed, 1e-9):.1f} fps{behind})", file=console)
     if args.save:
-        print(f"wrote {args.save}")
+        print(f"wrote {args.save}", file=console)
     if timeline is not None:
-        print(f"wrote {timeline.path} ({timeline.rows} observations)")
+        print(f"wrote {timeline.path} ({timeline.rows} observations)", file=console)
     if session.error is not None:
         print(session.error, file=sys.stderr)
         return 1

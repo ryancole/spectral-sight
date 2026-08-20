@@ -230,6 +230,40 @@ Measured on 400 frames of the sample clip: 2,149 rows at 17.2 fps, game time on
 every row and monotonic, world units on every row, a champion named on 97%, and
 20% of rows recording someone in fog.
 
+**Live feed.** The same output, while it happens: another program can now
+consume the state as it is extracted rather than after the run ends. The unit
+on the wire is the *frame envelope* — everything the pipeline concluded about
+one instant in one self-contained message, so a consumer that misses one is a
+tenth of a second behind rather than desynchronised. The champion rows inside
+it are the timeline's rows byte for byte (pinned by a test that diffs the
+files), which is what keeps recorded clips usable as fixtures for the live
+path and leaves every consumer with exactly one row schema to learn.
+
+    python tools/watch.py --window kilrogg --quiet --export - | your-tool
+
+Three kinds of field ride on the envelope and not on the rows, because they
+describe the feed rather than the game. `seq` is the identity of a frame — an
+integer a consumer can resume, gap-detect and deduplicate on, where float
+equality on a timestamp is a bug waiting for a slow afternoon. `captured_at`
+is the wall-clock arrival of the frame, stamped on the capture thread *before*
+the frame waits its turn in the mailbox, because the queueing is part of the
+latency and a stamp taken any later would hide it; it is the only time in the
+envelope another process can compare against its own clock. And `fps`,
+`dropped` and `lag` exist so a reactor can tell "no enemies visible" from "the
+vision process is wedged" — the same distinction the timeline spends its
+`has_*` flags on, applied to liveness instead of calibration.
+
+Arrival stamping also quietly improved the offline story: a live frame's
+`timestamp` now comes from when it arrived rather than when the pipeline got
+around to it, which stops every waited-for frame being aged by exactly the
+processing time of its predecessor — an error that landed precisely when
+frames were waiting, which is when the timing mattered most.
+
+The file, stdout and (next) an HTTP server are all the same seam — a `Sink`
+that accepts envelopes — so `--export session.jsonl` keeps writing the
+identical timeline while other sinks listen, rather than the file and the
+feed being rival outputs.
+
 **Death.** An ally is never hidden by fog, so an ally missing from the minimap
 is dead — that was the reasoning, and the timeline could not act on it, so a
 dead ally read as a champion nobody had seen for twenty-four seconds. The HUD

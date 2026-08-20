@@ -34,6 +34,15 @@ class Frame:
     timestamp: float
     """Seconds since the start of the source."""
 
+    captured_at: float | None = None
+    """Wall-clock time the frame arrived from a live source, as epoch seconds.
+
+    None for a recorded clip, which has no wall time -- its frames happened
+    whenever the recording did. For a live window this is stamped on *arrival*,
+    before the frame waits its turn in the mailbox, because the gap between
+    arrival and processing is precisely the latency a downstream consumer needs
+    to know about and the one a stamp taken any later would hide."""
+
     @property
     def size(self) -> tuple[int, int]:
         """(width, height) in pixels."""

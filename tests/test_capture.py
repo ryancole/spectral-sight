@@ -17,7 +17,12 @@ import threading
 import numpy as np
 import pytest
 
-from spectral_sight.capture.window import FrameSizeChanged, Mailbox, WindowSource
+from spectral_sight.capture.window import (
+    Arrival,
+    FrameSizeChanged,
+    Mailbox,
+    WindowSource,
+)
 
 
 def image(value: int, size: tuple[int, int] = (4, 6)) -> np.ndarray:
@@ -28,7 +33,7 @@ class TestMailbox:
     def test_delivers_a_frame(self) -> None:
         box = Mailbox()
         box.put(image(7))
-        assert box.take(1.0)[0, 0, 0] == 7
+        assert box.take(1.0).image[0, 0, 0] == 7
 
     def test_newest_wins(self) -> None:
         """The whole point: a slow reader sees now, not the backlog."""
@@ -36,7 +41,7 @@ class TestMailbox:
         box.put(image(1))
         box.put(image(2))
         box.put(image(3))
-        assert box.take(1.0)[0, 0, 0] == 3
+        assert box.take(1.0).image[0, 0, 0] == 3
         assert box.dropped == 2
 
     def test_closing_ends_the_stream(self) -> None:
@@ -49,7 +54,7 @@ class TestMailbox:
         box = Mailbox()
         box.put(image(9))
         box.close()
-        assert box.take(1.0)[0, 0, 0] == 9
+        assert box.take(1.0).image[0, 0, 0] == 9
         assert box.take(1.0) is None
 
     def test_a_silent_source_times_out(self) -> None:
@@ -60,7 +65,7 @@ class TestMailbox:
     def test_blocks_until_a_frame_arrives(self) -> None:
         box = Mailbox()
         threading.Timer(0.02, lambda: box.put(image(5))).start()
-        assert box.take(2.0)[0, 0, 0] == 5
+        assert box.take(2.0).image[0, 0, 0] == 5
 
     def test_capture_thread_errors_reach_the_consumer(self) -> None:
         box = Mailbox()
@@ -70,17 +75,24 @@ class TestMailbox:
 
 
 class ScriptedMailbox:
-    """Hands out a fixed sequence and then closes. No threads, no timing."""
+    """Hands out a fixed sequence and then closes. No threads, no timing.
 
-    def __init__(self, images: list[np.ndarray]) -> None:
-        self._images = list(images)
+    Arrival stamps are scripted too -- one every 100ms of pretend time -- so a
+    test can assert exact timestamps instead of bounding real ones.
+    """
+
+    def __init__(self, images: list[np.ndarray], *, start: float = 5.0) -> None:
+        self._arrivals = [
+            Arrival(image=image, monotonic=start + i * 0.1, wall=1000.0 + i * 0.1)
+            for i, image in enumerate(images)
+        ]
         self.dropped = 0
 
-    def take(self, timeout: float | None = None) -> np.ndarray | None:
-        return self._images.pop(0) if self._images else None
+    def take(self, timeout: float | None = None) -> Arrival | None:
+        return self._arrivals.pop(0) if self._arrivals else None
 
     def close(self) -> None:
-        self._images.clear()
+        self._arrivals.clear()
 
 
 class TestWindowSource:
@@ -126,6 +138,28 @@ class TestWindowSource:
         second = next(stream)
         assert (first.index, second.index) == (0, 1)
         assert 0 <= first.timestamp < second.timestamp
+
+    def test_timestamps_come_from_arrival_not_from_take(self) -> None:
+        """A frame that waited in the mailbox is as old as its arrival.
+
+        Stamping at take would age every waited-for frame by the pipeline's
+        processing time -- precisely when frames wait -- and the velocity
+        model and cast intervals downstream would absorb the error silently.
+        Scripted arrivals land 100ms apart, so the timestamps are exact.
+        """
+        source = self.build()
+        source._mailbox = ScriptedMailbox([image(v) for v in (1, 2, 3)])
+        frames = list(source.frames())
+        assert [round(f.timestamp, 6) for f in frames] == [0.0, 0.1, 0.2]
+
+    def test_frames_carry_their_wall_clock_arrival(self) -> None:
+        """`captured_at` is the one time another process can compare against
+        its own clock; without it a consumer cannot measure how far behind the
+        game it is running."""
+        source = self.build()
+        source._mailbox = ScriptedMailbox([image(1), image(2)])
+        frames = list(source.frames())
+        assert [f.captured_at for f in frames] == [1000.0, 1000.1]
 
     def test_a_window_that_never_draws_fails_at_startup(self) -> None:
         source = self.build()
