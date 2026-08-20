@@ -596,9 +596,9 @@ it is a tuning signal, not a substitute for labelled positions.
 
 ## Input assumptions
 
-The target input is a **screen-recorded VOD from a player's perspective** — not
-a Riot `.rofl` replay, and not a spectator feed. This is a fixed property of the
-problem, not a limitation of the sample footage, and it drives the design:
+The target input is a **VOD from a player's perspective** — not a Riot `.rofl`
+replay, and not a spectator feed. This is a fixed property of the problem, not a
+limitation of the sample footage, and it drives the design:
 
 - **Fog of war is permanent.** Enemy champions are only on the minimap while your
   team has vision of them. Measured average is 6.4 markers per frame against a
@@ -609,6 +609,47 @@ problem, not a limitation of the sample footage, and it drives the design:
 - **Nothing may assume ten visible identities.** Tracking needs track birth and
   death plus re-identification on reappearance, not a fixed assignment over a
   closed set.
+
+### The input is a window, not a file
+
+This is a real-time review tool. It captures the VOD viewer's window while the
+VOD plays, rather than reading a recording of it — `tools/watch.py --window
+kilrogg`. The clips in `data/` are the development path and nothing more: a
+detector is only tunable when its input is byte-identical across runs, which is
+worth keeping for that alone.
+
+They are also, literally, recordings of the same window. Every clip is
+2118x1354 with a "kilrogg" title bar in the top-left corner, so every
+calibration in `etc/` was derived from receiver pixels well before anything read
+them live. The move to window capture changes where the pixels come from and
+nothing about what they contain.
+
+Two consequences follow, and both are load-bearing:
+
+- **The window's size is part of the calibration.** Every rectangle in `etc/` —
+  minimap region, clock box, portrait centres, plate geometry — is filed under
+  one exact frame size. The receiver fills its window by stretching, without
+  preserving aspect (`DXGI_SCALING_STRETCH`, in the receiver's presenter), which
+  is why the calibrated minimap panel is 325x322 rather than square. A resize
+  therefore does not merely move those rectangles, it reshapes the picture
+  underneath them — and nothing downstream could notice, since the pipeline would go on
+  emitting confident observations of whatever now sits where the minimap was.
+  So a mid-session resize is a hard stop, not a warning.
+- **Frames arrive whether or not anyone is ready for them.** A file waits for
+  its reader; a window does not. Frames the pipeline cannot keep up with are
+  dropped on arrival rather than queued, because a queued frame describes a
+  fight that has already resolved. The drop count is reported at the end of a
+  run, and it is the number to watch if the overlay looks like it is lagging.
+
+Time only moves forward. There is no seeking, so the tracker, the roster lock
+and the accumulated self-champion evidence all keep the monotonic input they
+assume.
+
+One quirk worth knowing, because it looks like a hang: Graphics Capture delivers
+a frame when the window **redraws**, so a picture that is not moving produces
+nothing at all. That makes no-frames-at-startup and no-frames-mid-session
+different failures — the first means the wrong window was matched, the second
+means the feed stalled. Only the first gets a deadline.
 
 ## Setup
 
@@ -707,20 +748,87 @@ rewrite the pipeline in another language.
 
 ## Usage
 
-One-time setup — fetch the champion icons, and calibrate the minimap region for
-your resolution and minimap-scale slider (the panel size is not derivable from
-resolution alone):
+One-time setup — fetch the champion icons:
 
 ```bash
 .venv/Scripts/python tools/fetch_icons.py
 ```
 
+The minimap region also has to be calibrated per (resolution, minimap-scale
+slider), since the panel size is not derivable from resolution alone. There is
+nothing to do about that: `watch.py` handles it the first time it sees a size it
+has no calibration for, by **recognising the map**, and then carries straight on
+into the session.
+
+Summoner's Rift is the same picture in every game, whatever size and shape it is
+drawn at, so the panel can be found the way any known picture is — correlate a
+reference against the frame across sizes and aspects and take the peak. Measured
+over 80 frames spanning four clips, three of which the reference was not built
+from: **every corner within one pixel** of a hand-drawn calibration.
+
+Accuracy is not why this is trustworthy, though. A region that is merely close
+is not a worse read but a confident read of the wrong pixels, and nothing
+downstream could notice. What makes it safe is the *separation*: where the panel
+is absent, or the window is shaped so oddly the search cannot express it,
+correlation falls to 0.00–0.74, against 0.825 at worst for a true find. Nothing
+has been observed in between. So it declines rather than guessing, and a decline
+falls back to dragging a box by hand.
+
+`--no-calibrate` turns the whole thing back into a hard failure, for runs with
+nobody watching. To override the automatic answer, or for a second minimap scale
+via `--profile`, the manual tool is still there — and like every tool here it
+takes `window:name` as a source, so none of them need a screenshot on disk:
+
 ```bash
-.venv/Scripts/python tools/calibrate_minimap.py --image data/frame.png
+.venv/Scripts/python tools/calibrate_minimap.py --image window:kilrogg
 ```
 
-Three optional calibrations add game time, world coordinates and death. All are
-skipped quietly if absent, so everything above works without them.
+The reference lives in `etc/map/reference.png` and is an average of many frames
+of a calibrated panel — terrain and structures sit still and survive, while
+champions, wards, pings and fog move and wash out. Rebuild it when the map art
+changes, which shows up as `watch.py` starting to ask for a drag it used to skip:
+
+```bash
+.venv/Scripts/python tools/build_reference.py --input "data/your clip.mp4"
+```
+
+### The other five
+
+Five more calibrations add game time, world coordinates, deaths, nameplates and
+the player's own bars. None of them need calibrating either, and for the same
+reason the minimap does not: **they are all the same HUD at one scale.** The
+receiver stretches a fixed game layout to fill its window, so a frame of any
+size is that layout under a scale and a shift, and finding the minimap fixes
+every other rectangle with it.
+
+Recovering that transform needs care about which numbers to trust. The
+horizontal scale is the frame width over the reference width, exactly — taking
+it from the panel's width instead costs a pixel of measurement error on a 325px
+panel, and 0.3% over the thousand pixels to the far side of the HUD is a 15px
+miss. That is not hypothetical; it is what the first version did. The vertical
+scale does come from the panel, because a window's title bar is not game and
+does not scale with it, and the vertical offset then absorbs that title bar
+without ever measuring it — 31 pixels of chrome, 45, or none all work out.
+
+Worst error over every HUD element at seven window sizes and three chrome
+heights: 3.4 pixels, and that at the far corner. Deaths agreed with the native
+calibration on every frame sampled at every size; the world transform landed
+within 0.3%.
+
+The clock is the exception, and it is the one that guards the rest. It has a
+legibility floor as well as a position — shrink the window enough and the timer
+is a smudge no calibration can read — so the derived reader is tried before it
+is kept, on several frames rather than the one it came from. If it fails, the
+run says so and continues without game time. That same check is what would catch
+the assumption underneath all of this being wrong: if the streamed game's own
+HUD scale changed, every derived rectangle would be misplaced by an amount no
+fit could detect, and the timer not being where it was predicted is the cheapest
+place to notice.
+
+So the whole set is skipped quietly if absent, and derived automatically if it
+can be. `--no-calibrate` runs with whatever exists and derives nothing.
+
+Reach for the tools below to redo one by hand, or when the derivation declines.
 
 Teach the clock its digits — drag a rough box around the match timer and it does
 the rest, including checking itself against video time:
@@ -755,7 +863,31 @@ That check is worth running. A box a few pixels off still reads a portrait and
 still produces a baseline, so a bad calibration does not announce itself — it
 just quietly stops noticing deaths.
 
-Then watch the whole pipeline run on a clip:
+Then watch the whole pipeline run — live, against the receiver as it plays:
+
+```bash
+.venv/Scripts/python tools/watch.py --window kilrogg
+```
+
+`--window` matches any window whose title contains the string, so the receiver
+is found whatever else it has put in its title bar. `--fps` sets the rate to ask
+the window for, defaulting to 10 to match the offline `--stride 3`. Ctrl+C ends
+the session and closes the timeline properly rather than leaving half a file.
+
+The startup line names whichever calibrations are missing and prints the command
+for each, for the case where derivation declined and you want to supply one by
+hand. All of them take `window:kilrogg` too, so none of this needs footage.
+
+One catch on a live source: the passes that *sample* rather than ask — the
+nameplate `--fit`, and the `--validate` reports — walk until the source ends,
+and a window never does. They take `--limit N` for that. It defaults to 0,
+meaning walk the whole thing, which is still right for a clip.
+
+`tools/grab.py` saves a still from a window if you want one to keep, to look at,
+or to hand to something else; nothing in this workflow needs it.
+
+Or against a recorded clip, which behaves identically in every respect except
+that it waits for the pipeline instead of dropping frames past it:
 
 ```bash
 .venv/Scripts/python tools/watch.py --input "data/your clip.mp4"
@@ -769,9 +901,11 @@ champion who has just cast, fading over two seconds — thick when the cast was
 pinned to consecutive readings, thin when it was measured across a gap and so
 happened somewhere in a window rather than at an instant. Q quits, SPACE pauses.
 
-Useful flags: `--start N` to skip into the clip, `--stride 1` to process every
-frame instead of 10 Hz, `--save out.mp4` to write the annotated video, and
-`--quiet` to print the tracked roster per frame instead of opening a window.
+Useful flags: `--save out.mp4` to write the annotated video, and `--quiet` to
+print the tracked roster per frame instead of opening a window. `--start N` to
+skip into the clip and `--stride 1` to process every frame instead of 10 Hz are
+`--input` only — a live window has no past to seek into, and no frames to skip
+that it did not already drop.
 
 Or extract the clip to a timeline once and ask questions of the file afterwards:
 
@@ -833,9 +967,10 @@ bands were fitted. `--benchmark N` times the detector instead of displaying it.
 ```
 src/spectral_sight/
   types.py                    Blip, Frame, Team
-  capture/                    frame sources: video, still, live monitor
+  capture/                    frame sources: video, still, live window
   perception/minimap/
     region.py                 where the minimap sits in the frame
+    locate.py                 finding that, by recognising the map art
     blips.py                  stage 1 detector
     viewport.py               camera rectangle, and so the local player
     world.py                  minimap pixels to Summoner's Rift units
@@ -851,11 +986,13 @@ src/spectral_sight/
     casts.py                  resource steps read as abilities used
     projection.py             screen to minimap, and plate to track
   tracking/                   identity accumulated across frames
+  calibration.py              deriving the whole calibration set from one fit
   pipeline.py                 the stages, wired in order
   export.py                   the output: observations, and the timeline file
   debug/overlay.py            visualisation
 tools/                        calibration and inspection CLIs
 tests/synthetic.py            minimaps with known ground truth
+etc/map/                      averaged map art, and the reference layout size
 etc/regions/                  calibrated minimap regions per resolution
 etc/clock/                    clock position and learned digits per resolution
 etc/world/                    map area and world bounds per resolution

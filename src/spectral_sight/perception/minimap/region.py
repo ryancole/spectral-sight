@@ -51,6 +51,43 @@ class MinimapRegion:
         """
         return x / self.width, y / self.height
 
+    @property
+    def looks_square(self) -> bool:
+        """Whether this is the shape a minimap panel actually is.
+
+        The panel is square in the game. It is not quite square here, because
+        the receiver fills its window by stretching without preserving aspect --
+        the calibrated 2118x1354 panel is 325x322 -- so this is a loose check
+        for a misdrag, not a claim about the aspect.
+        """
+        return abs(self.width - self.height) <= max(self.width, self.height) * 0.08
+
+    @classmethod
+    def select(
+        cls, image: np.ndarray, *, window: str = "calibrate minimap"
+    ) -> MinimapRegion | None:
+        """Drag a box around the panel. None if the drag was cancelled.
+
+        The fallback, not the route. `locate.locate_panel` finds the panel by
+        recognising the map drawn on it, to within a pixel, and this is what
+        happens when it declines -- on a frame with no panel in it, or a window
+        shaped so oddly the search cannot express the panel's aspect.
+
+        The reasoning that once made this the only option still holds and is
+        worth keeping: a region that is merely close is not a slightly worse
+        read, it is a confident read of the wrong pixels, and nothing downstream
+        is in a position to notice. What retired it was not the locator being
+        accurate but the locator being able to say when it is not.
+        """
+        import cv2
+
+        box = cv2.selectROI(window, image, showCrosshair=False)
+        cv2.destroyWindow(window)
+        x, y, width, height = (int(v) for v in box)
+        if width == 0 or height == 0:
+            return None
+        return cls(x=x, y=y, width=width, height=height)
+
     # -- persistence ------------------------------------------------------
 
     def to_dict(self) -> dict[str, int]:
@@ -91,7 +128,7 @@ class MinimapRegion:
         path = REGION_DIR / f"{name}.json"
         if not path.exists():
             raise FileNotFoundError(
-                f"no calibrated minimap region at {path}. "
-                f"Run: python tools/calibrate_minimap.py --image <screenshot>"
+                f"no calibrated minimap region at {path}. Run: python "
+                f"tools/calibrate_minimap.py --image <clip, still or window:name>"
             )
         return cls.load(path)

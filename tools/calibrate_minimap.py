@@ -1,20 +1,23 @@
-"""Interactively mark the minimap panel in a screenshot and save the region.
+"""Interactively mark the minimap panel in a frame and save the region.
 
 The minimap's size is driven by an in-game scale slider, so it cannot be derived
 from resolution alone. Drag a box around the panel once per (resolution, scale)
 and everything downstream reads the saved JSON.
 
     python tools/calibrate_minimap.py --image data/frame.png
+    python tools/calibrate_minimap.py --image window:kilrogg
 
 Drag the box, then press ENTER to accept or C to cancel.
+
+`watch.py` asks for this itself when it finds no calibration for the size it is
+looking at, so reaching for this tool directly is for recalibrating, or for a
+non-default minimap scale via `--profile`.
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
-
-import cv2
 
 from spectral_sight.capture import open_source
 from spectral_sight.perception.minimap.region import REGION_DIR, MinimapRegion
@@ -40,18 +43,15 @@ def main() -> int:
     width, height = frame.size
     print(f"frame is {width}x{height}. Drag the minimap panel, ENTER to accept.")
 
-    box = cv2.selectROI("calibrate minimap", frame.image, showCrosshair=False)
-    cv2.destroyAllWindows()
-
-    x, y, w, h = (int(v) for v in box)
-    if w == 0 or h == 0:
+    region = MinimapRegion.select(frame.image)
+    if region is None:
         print("cancelled", file=sys.stderr)
         return 1
 
-    if abs(w - h) > max(w, h) * 0.08:
-        print(f"warning: {w}x{h} is not square; the minimap panel should be", file=sys.stderr)
+    if not region.looks_square:
+        print(f"warning: {region.width}x{region.height} is not square; the "
+              "minimap panel should be", file=sys.stderr)
 
-    region = MinimapRegion(x=x, y=y, width=w, height=h)
     suffix = "" if args.profile == "default" else f".{args.profile}"
     path = args.out or REGION_DIR / f"{width}x{height}{suffix}.json"
     region.save(path)

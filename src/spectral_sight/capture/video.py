@@ -87,13 +87,3 @@ class ImageSource(FrameSource):
     def frames(self) -> Iterator[Frame]:
         for index in range(self._repeat):
             yield Frame(image=self._image.copy(), index=index, timestamp=0.0)
-
-
-def open_source(
-    path: str | Path, *, stride: int = 1, start: int = 0
-) -> FrameSource:
-    """Open a still or a clip, picking the reader from the file suffix."""
-    path = Path(path)
-    if path.suffix.lower() in IMAGE_SUFFIXES:
-        return ImageSource(path)
-    return VideoFileSource(path, stride=stride, start=start)
