@@ -68,11 +68,16 @@ class MinimapRegion:
     ) -> MinimapRegion | None:
         """Drag a box around the panel. None if the drag was cancelled.
 
-        A person points rather than a detector finding it, and that is a
-        deliberate choice: a region that is merely close is not a slightly worse
+        The fallback, not the route. `locate.locate_panel` finds the panel by
+        recognising the map drawn on it, to within a pixel, and this is what
+        happens when it declines -- on a frame with no panel in it, or a window
+        shaped so oddly the search cannot express the panel's aspect.
+
+        The reasoning that once made this the only option still holds and is
+        worth keeping: a region that is merely close is not a slightly worse
         read, it is a confident read of the wrong pixels, and nothing downstream
-        is in a position to notice. One drag per (resolution, scale) buys
-        certainty about the one input every other stage is measured against.
+        is in a position to notice. What retired it was not the locator being
+        accurate but the locator being able to say when it is not.
         """
         import cv2
 

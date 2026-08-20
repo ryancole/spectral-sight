@@ -57,6 +57,7 @@ from spectral_sight.capture import (
 from spectral_sight.debug import draw_tracks
 from spectral_sight.debug.overlay import CastMark
 from spectral_sight.export import TimelineWriter
+from spectral_sight.perception.minimap.locate import locate_panel
 from spectral_sight.perception.minimap.region import REGION_DIR, MinimapRegion
 from spectral_sight.pipeline import Pipeline
 from spectral_sight.types import Frame, Team
@@ -108,18 +109,44 @@ def open_target(args: argparse.Namespace) -> FrameSource:
     return open_source(args.input, stride=args.stride, start=args.start)
 
 
+def _locate(image) -> MinimapRegion | None:
+    """The panel by recognition, or None to fall back to a human.
+
+    A weak match is reported with its score rather than swallowed, because the
+    next thing that happens is someone being asked to drag a box and the useful
+    thing to know is whether the answer was nearly there or nowhere near.
+    """
+    try:
+        match = locate_panel(image)
+    except FileNotFoundError as exc:
+        print(exc, file=sys.stderr)
+        return None
+    if match is None:
+        return None
+    if not match.confident:
+        print(f"the map art did not match well enough to trust "
+              f"({match.score:.2f}); asking instead")
+        return None
+    print(f"found the minimap panel by its art, match {match.score:.2f}. "
+          f"Run tools/calibrate_minimap.py to override it.")
+    return match.region
+
+
 def calibrate_region(source: FrameSource, width: int, height: int) -> bool:
     """Mark the minimap panel using a frame from the source about to be read.
 
+    Tried by recognising the map art first, and only then by asking. The
+    locator is accurate to a pixel where it is confident at all and declines
+    with a wide margin where it is not, so the drag is the fallback rather than
+    the route -- see `perception/minimap/locate.py` for the measurements.
+
     Calibration used to mean going and finding a screenshot first, which for a
     live tool is a recording step in the middle of the workflow whose whole
-    point is that there is no recording. The frame is already here -- so ask for
-    the one thing that cannot be derived, save it, and carry on into the session
-    rather than exiting with instructions.
+    point is that there is no recording. The frame is already here.
 
-    Only the minimap region is asked for. It is the one calibration that is
-    required, and it is a single drag; the optional ones each need their own
-    conversation and are better as a deliberate visit to their own tool.
+    Only the minimap region is settled here. It is the one calibration that is
+    required; the optional ones each need their own conversation and are better
+    as a deliberate visit to their own tool.
     """
     frame = next(iter(source.frames()), None)
     if frame is None:
@@ -128,15 +155,22 @@ def calibrate_region(source: FrameSource, width: int, height: int) -> bool:
         return False
 
     print(f"No minimap calibration for {width}x{height} yet.")
-    print("Drag a box around the minimap panel, then ENTER to accept, C to cancel.")
-    region = MinimapRegion.select(frame.image)
+    region = _locate(frame.image)
     if region is None:
-        print("cancelled; there is nothing to run without a minimap region",
-              file=sys.stderr)
-        return False
-    if not region.looks_square:
-        print(f"warning: {region.width}x{region.height} is not square, and the "
-              "minimap panel should be roughly square", file=sys.stderr)
+        print("Drag a box around the minimap panel, then ENTER to accept, C to "
+              "cancel.")
+        region = MinimapRegion.select(frame.image)
+        if region is None:
+            print("cancelled; there is nothing to run without a minimap region",
+                  file=sys.stderr)
+            return False
+        # Only a hand-drawn region is checked for shape. A heavily stretched
+        # window really does make the panel oblong -- 264x332 on one measured
+        # size -- so warning about the locator's answer would be scolding it for
+        # being right. A drag has no such excuse.
+        if not region.looks_square:
+            print(f"warning: {region.width}x{region.height} is not square, and "
+                  "the minimap panel usually is", file=sys.stderr)
 
     path = REGION_DIR / f"{width}x{height}.json"
     region.save(path)

@@ -755,19 +755,41 @@ One-time setup — fetch the champion icons:
 ```
 
 The minimap region also has to be calibrated per (resolution, minimap-scale
-slider), since the panel size is not derivable from resolution alone. That
-happens on its own: `watch.py` asks for it the first time it sees a size it has
-no calibration for, using a frame from the source it is about to read, and then
-carries straight on into the session. Drag a box around the panel, press ENTER,
-done. `--no-calibrate` turns that back into a hard failure for runs with nobody
-watching.
+slider), since the panel size is not derivable from resolution alone. There is
+nothing to do about that: `watch.py` handles it the first time it sees a size it
+has no calibration for, by **recognising the map**, and then carries straight on
+into the session.
 
-Reach for the tool directly only to recalibrate, or for a second minimap scale
-via `--profile`. Every tool here takes a source the same way, and `window:name`
-is a source, so none of them need a screenshot on disk:
+Summoner's Rift is the same picture in every game, whatever size and shape it is
+drawn at, so the panel can be found the way any known picture is — correlate a
+reference against the frame across sizes and aspects and take the peak. Measured
+over 80 frames spanning four clips, three of which the reference was not built
+from: **every corner within one pixel** of a hand-drawn calibration.
+
+Accuracy is not why this is trustworthy, though. A region that is merely close
+is not a worse read but a confident read of the wrong pixels, and nothing
+downstream could notice. What makes it safe is the *separation*: where the panel
+is absent, or the window is shaped so oddly the search cannot express it,
+correlation falls to 0.00–0.74, against 0.825 at worst for a true find. Nothing
+has been observed in between. So it declines rather than guessing, and a decline
+falls back to dragging a box by hand.
+
+`--no-calibrate` turns the whole thing back into a hard failure, for runs with
+nobody watching. To override the automatic answer, or for a second minimap scale
+via `--profile`, the manual tool is still there — and like every tool here it
+takes `window:name` as a source, so none of them need a screenshot on disk:
 
 ```bash
 .venv/Scripts/python tools/calibrate_minimap.py --image window:kilrogg
+```
+
+The reference lives in `etc/map/reference.png` and is an average of many frames
+of a calibrated panel — terrain and structures sit still and survive, while
+champions, wards, pings and fog move and wash out. Rebuild it when the map art
+changes, which shows up as `watch.py` starting to ask for a drag it used to skip:
+
+```bash
+.venv/Scripts/python tools/build_reference.py --input "data/your clip.mp4"
 ```
 
 Three optional calibrations add game time, world coordinates and death. All are
@@ -914,6 +936,7 @@ src/spectral_sight/
   capture/                    frame sources: video, still, live window
   perception/minimap/
     region.py                 where the minimap sits in the frame
+    locate.py                 finding that, by recognising the map art
     blips.py                  stage 1 detector
     viewport.py               camera rectangle, and so the local player
     world.py                  minimap pixels to Summoner's Rift units
@@ -934,6 +957,7 @@ src/spectral_sight/
   debug/overlay.py            visualisation
 tools/                        calibration and inspection CLIs
 tests/synthetic.py            minimaps with known ground truth
+etc/map/                      averaged map art, for locating the panel
 etc/regions/                  calibrated minimap regions per resolution
 etc/clock/                    clock position and learned digits per resolution
 etc/world/                    map area and world bounds per resolution
