@@ -1,4 +1,14 @@
-"""Watch the whole pipeline run on a clip: detect, identify, track.
+"""Watch the whole pipeline run: detect, identify, track.
+
+Live, against a window -- this is the real-time path:
+
+    # read the kilrogg receiver as it plays
+    python tools/watch.py --window kilrogg
+
+    # ...and keep the timeline while you watch
+    python tools/watch.py --window kilrogg --export session.jsonl
+
+Or offline, against a recorded clip -- the development path:
 
     # play a clip in a window
     python tools/watch.py --input "data/my clip.mp4"
@@ -11,6 +21,12 @@
 
     # extract the whole clip to a timeline, as fast as it will go
     python tools/watch.py --input clip.mp4 --quiet --export clip.jsonl
+
+The two differ in how they fall behind, and only in that. A clip waits; a window
+does not. Frames arrive from a window whether or not the pipeline is ready for
+them, so the ones it cannot keep up with are dropped on arrival rather than
+queued -- see `Mailbox`. The run reports the drop count at the end, which is the
+number to watch if the overlay looks like it is lagging the game.
 
 Keys: Q or ESC to quit, SPACE to pause, any key to step while paused.
 
@@ -27,16 +43,22 @@ import argparse
 import contextlib
 import sys
 import time
+from collections.abc import Iterator
 from pathlib import Path
 
 import cv2
 
-from spectral_sight.capture import open_source
+from spectral_sight.capture import (
+    FrameSizeChanged,
+    FrameSource,
+    WindowSource,
+    open_source,
+)
 from spectral_sight.debug import draw_tracks
 from spectral_sight.debug.overlay import CastMark
 from spectral_sight.export import TimelineWriter
 from spectral_sight.pipeline import Pipeline
-from spectral_sight.types import Team
+from spectral_sight.types import Frame, Team
 
 DEFAULT_ICONS = Path(__file__).resolve().parents[1] / "etc" / "icons"
 
@@ -55,13 +77,49 @@ def newest_icon_set() -> Path:
     return versions[-1]
 
 
+class Session:
+    """A source's frames, absorbing the two things that end a live run.
+
+    Ctrl+C is how a live session is meant to be stopped rather than a failure,
+    and a resized window invalidates every calibration at once. Neither should
+    unwind past the block that owns the timeline file, or a run gets thrown away
+    by the way it ended -- which for an hour of VOD review is the whole session.
+    """
+
+    def __init__(self, source: FrameSource) -> None:
+        self.source = source
+        self.interrupted = False
+        self.error: str | None = None
+
+    def __iter__(self) -> Iterator[Frame]:
+        try:
+            yield from self.source.frames()
+        except KeyboardInterrupt:
+            self.interrupted = True
+        except FrameSizeChanged as exc:
+            self.error = str(exc)
+
+
+def open_target(args: argparse.Namespace) -> FrameSource:
+    """The clip or the window, whichever was asked for."""
+    if args.window:
+        return WindowSource(args.window, target_fps=args.fps)
+    return open_source(args.input, stride=args.stride, start=args.start)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--input", required=True, help="video or image path")
+    target = parser.add_mutually_exclusive_group(required=True)
+    target.add_argument("--input", help="video or image path")
+    target.add_argument("--window",
+                        help="capture a live window whose title contains this")
     parser.add_argument("--icons", help="icon set directory; defaults to newest")
     parser.add_argument("--stride", type=int, default=3,
-                        help="process every Nth frame (3 = 10 Hz on 30 fps)")
+                        help="process every Nth frame (3 = 10 Hz on 30 fps); "
+                             "--input only")
+    parser.add_argument("--fps", type=float, default=10.0,
+                        help="frames per second to ask the window for; --window only")
     parser.add_argument("--zoom", type=float, default=2.5, help="preview upscale")
     parser.add_argument("--save", help="write an annotated video here")
     parser.add_argument("--export", help="write a JSONL timeline here")
@@ -69,8 +127,11 @@ def main() -> int:
                         help="print state instead of opening a window")
     parser.add_argument("--limit", type=int, help="stop after N processed frames")
     parser.add_argument("--start", type=int, default=0,
-                        help="skip to this source frame before starting")
+                        help="skip to this source frame before starting; --input only")
     args = parser.parse_args()
+
+    if args.window and args.start:
+        parser.error("--start is a seek into a file; a live window has no past")
 
     try:
         icons = Path(args.icons) if args.icons else newest_icon_set()
@@ -79,16 +140,25 @@ def main() -> int:
         return 1
 
     with contextlib.ExitStack() as stack:
-        source = stack.enter_context(
-            open_source(args.input, stride=args.stride, start=args.start)
-        )
-        width, height = source.size
+        # Opening a window and learning its size are one step from the caller's
+        # side: a window that cannot be found and one that never paints are the
+        # same failure to report, and neither is worth a traceback.
+        try:
+            source = stack.enter_context(open_target(args))
+            width, height = source.size
+        except (RuntimeError, TimeoutError) as exc:
+            print(exc, file=sys.stderr)
+            return 1
         try:
             pipeline = Pipeline.for_resolution(width, height, icons)
         except FileNotFoundError as exc:
             print(exc, file=sys.stderr)
             print("Calibrate first: python tools/calibrate_minimap.py --image <frame>",
                   file=sys.stderr)
+            if args.window:
+                print(f"The window is currently {width}x{height}. Its size is part "
+                      "of the calibration, so pin it there before calibrating and "
+                      "leave it there afterwards.", file=sys.stderr)
             return 1
 
         extras = []
@@ -97,16 +167,25 @@ def main() -> int:
         if pipeline.world is not None:
             ux, _ = pipeline.world.units_per_pixel
             extras.append(f"world {ux:.0f}u/px")
+        rate = (f"live {args.fps:g} fps" if args.window
+                else f"every {args.stride} frames")
         print(f"{width}x{height} | minimap {pipeline.region.width}px | "
-              f"{len(pipeline.gallery)} champion icons | every {args.stride} frames"
+              f"{len(pipeline.gallery)} champion icons | {rate}"
               + (f" | {', '.join(extras)}" if extras else " | uncalibrated: clock, world"))
+
+        # A live run has no stride -- it takes whichever frames it can keep up
+        # with -- so the timeline records 1, meaning "no frames deliberately
+        # skipped", rather than a number that would read as a decimation the
+        # run did not perform.
+        stride = 1 if args.window else args.stride
+        origin = args.window or args.input
 
         timeline: TimelineWriter | None = None
         if args.export:
             timeline = stack.enter_context(
                 TimelineWriter(
                     args.export,
-                    pipeline.timeline_meta(args.input, args.stride, (width, height)),
+                    pipeline.timeline_meta(origin, stride, (width, height)),
                 )
             )
             missing = [name for name, calibration in (("clock", pipeline.clock),
@@ -125,7 +204,8 @@ def main() -> int:
         # rather than for the single frame the cast settles on.
         last_cast: dict[int, tuple[float, bool]] = {}
 
-        for frame in source.frames():
+        session = Session(source)
+        for frame in session:
             result = pipeline.process(frame.image, frame.timestamp)
             processed += 1
 
@@ -192,7 +272,8 @@ def main() -> int:
                         h, w = canvas.shape[:2]
                         writer = cv2.VideoWriter(
                             args.save, cv2.VideoWriter_fourcc(*"mp4v"),
-                            30.0 / max(args.stride, 1), (w, h),
+                            args.fps if args.window else 30.0 / max(args.stride, 1),
+                            (w, h),
                         )
                     writer.write(canvas)
                 else:
@@ -211,11 +292,22 @@ def main() -> int:
         cv2.destroyAllWindows()
 
     elapsed = time.perf_counter() - started
-    print(f"\n{processed} frames in {elapsed:.1f}s ({processed / max(elapsed, 1e-9):.1f} fps)")
+    # Frames dropped on arrival, which is the number that says whether the
+    # pipeline kept up: a high count means the overlay is describing a moment
+    # the game has already moved on from, and the answer is a lower --fps.
+    behind = ""
+    if isinstance(source, WindowSource) and source.dropped:
+        share = source.dropped / max(processed + source.dropped, 1)
+        behind = f", dropped {source.dropped} ({share:.0%}) to keep up"
+    print(f"\n{processed} frames in {elapsed:.1f}s "
+          f"({processed / max(elapsed, 1e-9):.1f} fps{behind})")
     if args.save:
         print(f"wrote {args.save}")
     if timeline is not None:
         print(f"wrote {timeline.path} ({timeline.rows} observations)")
+    if session.error is not None:
+        print(session.error, file=sys.stderr)
+        return 1
     return 0
 
 

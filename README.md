@@ -596,9 +596,9 @@ it is a tuning signal, not a substitute for labelled positions.
 
 ## Input assumptions
 
-The target input is a **screen-recorded VOD from a player's perspective** — not
-a Riot `.rofl` replay, and not a spectator feed. This is a fixed property of the
-problem, not a limitation of the sample footage, and it drives the design:
+The target input is a **VOD from a player's perspective** — not a Riot `.rofl`
+replay, and not a spectator feed. This is a fixed property of the problem, not a
+limitation of the sample footage, and it drives the design:
 
 - **Fog of war is permanent.** Enemy champions are only on the minimap while your
   team has vision of them. Measured average is 6.4 markers per frame against a
@@ -609,6 +609,47 @@ problem, not a limitation of the sample footage, and it drives the design:
 - **Nothing may assume ten visible identities.** Tracking needs track birth and
   death plus re-identification on reappearance, not a fixed assignment over a
   closed set.
+
+### The input is a window, not a file
+
+This is a real-time review tool. It captures the VOD viewer's window while the
+VOD plays, rather than reading a recording of it — `tools/watch.py --window
+kilrogg`. The clips in `data/` are the development path and nothing more: a
+detector is only tunable when its input is byte-identical across runs, which is
+worth keeping for that alone.
+
+They are also, literally, recordings of the same window. Every clip is
+2118x1354 with a "kilrogg" title bar in the top-left corner, so every
+calibration in `etc/` was derived from receiver pixels well before anything read
+them live. The move to window capture changes where the pixels come from and
+nothing about what they contain.
+
+Two consequences follow, and both are load-bearing:
+
+- **The window's size is part of the calibration.** Every rectangle in `etc/` —
+  minimap region, clock box, portrait centres, plate geometry — is filed under
+  one exact frame size. The receiver fills its window by stretching, without
+  preserving aspect (`DXGI_SCALING_STRETCH`, in the receiver's presenter), which
+  is why the calibrated minimap panel is 325x322 rather than square. A resize
+  therefore does not merely move those rectangles, it reshapes the picture
+  underneath them — and nothing downstream could notice, since the pipeline would go on
+  emitting confident observations of whatever now sits where the minimap was.
+  So a mid-session resize is a hard stop, not a warning.
+- **Frames arrive whether or not anyone is ready for them.** A file waits for
+  its reader; a window does not. Frames the pipeline cannot keep up with are
+  dropped on arrival rather than queued, because a queued frame describes a
+  fight that has already resolved. The drop count is reported at the end of a
+  run, and it is the number to watch if the overlay looks like it is lagging.
+
+Time only moves forward. There is no seeking, so the tracker, the roster lock
+and the accumulated self-champion evidence all keep the monotonic input they
+assume.
+
+One quirk worth knowing, because it looks like a hang: Graphics Capture delivers
+a frame when the window **redraws**, so a picture that is not moving produces
+nothing at all. That makes no-frames-at-startup and no-frames-mid-session
+different failures — the first means the wrong window was matched, the second
+means the feed stalled. Only the first gets a deadline.
 
 ## Setup
 
@@ -755,7 +796,27 @@ That check is worth running. A box a few pixels off still reads a portrait and
 still produces a baseline, so a bad calibration does not announce itself — it
 just quietly stops noticing deaths.
 
-Then watch the whole pipeline run on a clip:
+Calibrating against a live window needs a still from it, which is what
+`grab.py` is for. `--delay` is there because the frame worth calibrating against
+has a game in it, and the moment you press enter is not that moment:
+
+```bash
+.venv/Scripts/python tools/grab.py --window kilrogg --out data/frame.png --delay 5
+```
+
+Then watch the whole pipeline run — live, against the receiver as it plays:
+
+```bash
+.venv/Scripts/python tools/watch.py --window kilrogg
+```
+
+`--window` matches any window whose title contains the string, so the receiver
+is found whatever else it has put in its title bar. `--fps` sets the rate to ask
+the window for, defaulting to 10 to match the offline `--stride 3`. Ctrl+C ends
+the session and closes the timeline properly rather than leaving half a file.
+
+Or against a recorded clip, which behaves identically in every respect except
+that it waits for the pipeline instead of dropping frames past it:
 
 ```bash
 .venv/Scripts/python tools/watch.py --input "data/your clip.mp4"
@@ -769,9 +830,11 @@ champion who has just cast, fading over two seconds — thick when the cast was
 pinned to consecutive readings, thin when it was measured across a gap and so
 happened somewhere in a window rather than at an instant. Q quits, SPACE pauses.
 
-Useful flags: `--start N` to skip into the clip, `--stride 1` to process every
-frame instead of 10 Hz, `--save out.mp4` to write the annotated video, and
-`--quiet` to print the tracked roster per frame instead of opening a window.
+Useful flags: `--save out.mp4` to write the annotated video, and `--quiet` to
+print the tracked roster per frame instead of opening a window. `--start N` to
+skip into the clip and `--stride 1` to process every frame instead of 10 Hz are
+`--input` only — a live window has no past to seek into, and no frames to skip
+that it did not already drop.
 
 Or extract the clip to a timeline once and ask questions of the file afterwards:
 
@@ -833,7 +896,7 @@ bands were fitted. `--benchmark N` times the detector instead of displaying it.
 ```
 src/spectral_sight/
   types.py                    Blip, Frame, Team
-  capture/                    frame sources: video, still, live monitor
+  capture/                    frame sources: video, still, live window
   perception/minimap/
     region.py                 where the minimap sits in the frame
     blips.py                  stage 1 detector
