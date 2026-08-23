@@ -11,6 +11,10 @@ Live, against a window -- this is the real-time path:
     # ...or stream frame envelopes to another program as they happen
     python tools/watch.py --window kilrogg --quiet --export - | your-tool
 
+    # ...or serve them over HTTP, to as many programs as care to listen
+    python tools/watch.py --window kilrogg --serve
+    curl http://127.0.0.1:8723/stream
+
 Or offline, against a recorded clip -- the development path:
 
     # play a clip in a window
@@ -61,6 +65,7 @@ from spectral_sight.debug import draw_tracks
 from spectral_sight.debug.overlay import CastMark
 from spectral_sight.events import EventDeriver
 from spectral_sight.feed import FanOut, FrameState, JsonlSink, RateMeter, StdoutSink
+from spectral_sight.serve import FeedServer
 from spectral_sight.calibration import (
     MISSING_CLOCK,
     Reference,
@@ -253,6 +258,11 @@ def main() -> int:
     parser.add_argument("--export",
                         help="write a JSONL timeline here, or '-' to stream "
                              "frame envelopes to stdout for another program")
+    parser.add_argument("--serve", nargs="?", const=8723, type=int,
+                        metavar="PORT",
+                        help="serve the feed over HTTP on 127.0.0.1 "
+                             "(default port 8723): /meta, /state, /stream, "
+                             "/events. Composes with --export")
     parser.add_argument("--quiet", action="store_true",
                         help="print state instead of opening a window")
     parser.add_argument("--limit", type=int, help="stop after N processed frames")
@@ -350,22 +360,28 @@ def main() -> int:
         origin = args.window or args.input
 
         timeline: JsonlSink | None = None
-        sinks: list[JsonlSink | StdoutSink] = []
-        if args.export:
+        server: FeedServer | None = None
+        sinks: list[JsonlSink | StdoutSink | FeedServer] = []
+        if args.export or args.serve is not None:
             meta = pipeline.timeline_meta(origin, stride, (width, height))
             if args.export == "-":
                 sinks.append(StdoutSink(meta))
-            else:
+            elif args.export:
                 timeline = JsonlSink(args.export, meta)
                 sinks.append(timeline)
+            if args.serve is not None:
+                server = FeedServer(meta, port=args.serve)
+                sinks.append(server)
             unkeyed = [name for name, calibration in (("clock", pipeline.clock),
                                                       ("world", pipeline.world))
                        if calibration is None]
             if unkeyed:
                 print(f"warning: no calibrated {' and '.join(unkeyed)}; the "
-                      "timeline will be missing the keys that join this clip to "
+                      "feed will be missing the keys that join this clip to "
                       "anything else", file=sys.stderr)
         feed = stack.enter_context(FanOut(sinks))
+        if server is not None:
+            print(f"serving {server.url}/stream", file=console)
 
         writer: cv2.VideoWriter | None = None
         paused = False

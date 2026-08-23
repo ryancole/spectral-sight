@@ -314,6 +314,49 @@ portrait-measured 11.9–12.0s. The rest is fog traffic, 444 vanishes and 437
 reappearances, which is what player-perspective footage mostly *is*, and why a
 consumer that wants quiet subscribes to kinds rather than to everything.
 
+**The server.** The feed over HTTP, which is the consumer boundary all of
+this was aiming at: any language, any process, joins mid-game, survives its
+consumers crashing, and `curl http://127.0.0.1:8723/stream` is a working
+debugger. Server-Sent Events rather than WebSockets because the stream is
+strictly one-way and SSE is plain HTTP — no dependency on either end, and
+resume built into the protocol.
+
+    python tools/watch.py --window kilrogg --serve
+
+Four endpoints, one schema. `/stream` is every message as it happens, each
+SSE record's `data:` exactly what the stdout sink writes; `/events` is the
+same stream with the frames filtered out; `/state` is the latest envelope
+plus the meta, for pollers and late joiners; `/meta` is the capability
+header, so a consumer can tell "no nameplate calibration" from "a quiet
+game". `--serve` composes with `--export` — the file stays the log of record
+while the socket carries the live copy.
+
+**The pipeline thread never touches a socket.** Publishing is an append to a
+shared ring plus a notify; per-client handler threads do all the waiting and
+writing. This is the `Mailbox` rule applied at the other end of the process:
+the vision loop must not be able to feel the network at all — not a stalled
+client, not a dead one, not fifty. A test pins it by connecting a client
+that never reads and publishing five thousand messages through it.
+
+One ring, one backpressure rule. Every message gets a monotonic id — the SSE
+`id:`, distinct from a frame's `seq` because events share their frame's seq
+and a resume key must be unique. A reconnecting client resumes losslessly by
+`Last-Event-ID` (a browser `EventSource` sends it unasked) or `?since=`; a
+client that has fallen off the back of the ring instead gets
+`{"t": "gap", "from": N, "to": M}` and then the *newest* message. Latest-wins
+again, and deliberately not the oldest kept: a consumer that cannot keep up
+gets bounded staleness and an honest account of what it missed, rather than
+a backlog it will fall further behind on — `GET /state` is always there to
+resync from.
+
+Measured: publish-to-receipt across processes on the same machine is
+**p50 0.2ms, p90 0.6ms, max 0.7ms** over 300 frames at 10 Hz — three orders
+of magnitude below the ~100ms the vision spends producing each frame, so the
+transport adds nothing worth counting. Serving the sample clip flat-out with
+a reading consumer and a stalled one attached costs the pipeline 0–2% against
+running bare, and the run ends by closing every stream cleanly rather than
+leaving consumers hanging on a dead socket.
+
 **Death.** An ally is never hidden by fog, so an ally missing from the minimap
 is dead — that was the reasoning, and the timeline could not act on it, so a
 dead ally read as a champion nobody had seen for twenty-four seconds. The HUD
