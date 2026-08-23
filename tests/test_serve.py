@@ -131,9 +131,25 @@ class TestEndpoints:
         assert body["frame"]["seq"] == 1
         assert body["meta"] == server.meta.to_dict()
 
-    def test_the_root_names_the_endpoints(self, server: FeedServer) -> None:
-        body = get(server, "/")["body"]
-        assert "/stream" in body["endpoints"]
+    def test_the_root_serves_the_dashboard(self, server: FeedServer) -> None:
+        """One self-contained page speaking the same four endpoints as any
+        other consumer -- the browser is the proof of the cross-language
+        claim, so it must arrive with no build step and no network."""
+        connection = http.client.HTTPConnection(
+            "127.0.0.1", server.port, timeout=5
+        )
+        try:
+            connection.request("GET", "/")
+            response = connection.getresponse()
+            page = response.read().decode("utf-8")
+        finally:
+            connection.close()
+        assert response.status == 200
+        assert "text/html" in response.getheader("Content-Type")
+        # It consumes the public endpoints, not some private channel.
+        assert "/stream" in page and "/meta" in page
+        # And it carries no external references to break offline.
+        assert "http://" not in page and "https://" not in page
 
     def test_an_unknown_path_is_a_404(self, server: FeedServer) -> None:
         assert get(server, "/nope")["status"] == 404
@@ -233,6 +249,42 @@ class TestBackpressure:
         elapsed = time.perf_counter() - started
         assert elapsed < 2.0
         stalled.close()
+
+
+class TestListen:
+    def test_the_reference_consumer_speaks_the_protocol(
+        self, server: FeedServer
+    ) -> None:
+        """`tools/listen.py` is the copyable example, so it is held to the
+        real wire: a subprocess, a real socket, and both message shapes."""
+        import subprocess
+        import sys
+        from pathlib import Path
+
+        tool = Path(__file__).resolve().parents[1] / "tools" / "listen.py"
+        listener = subprocess.Popen(
+            [sys.executable, str(tool), server.url, "--limit", "2"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        try:
+            # No handshake to wait on: ?since is not used, but the ring holds
+            # these two messages far longer than the subprocess takes to
+            # connect... except a fresh subscriber starts live, so publish
+            # until it has had time to attach.
+            import time
+            for seq in range(50):
+                server.publish(state(seq))
+                server.publish_event(event(seq))
+                time.sleep(0.1)
+                if listener.poll() is not None:
+                    break
+            out, err = listener.communicate(timeout=10)
+        finally:
+            listener.kill()
+        assert listener.returncode == 0, err
+        lines = out.splitlines()
+        assert len(lines) == 2
+        assert any("seq=" in line for line in lines)
 
 
 class TestLifecycle:

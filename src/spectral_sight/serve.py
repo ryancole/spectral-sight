@@ -54,6 +54,7 @@ import threading
 from collections import deque
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import parse_qs, urlparse
 
@@ -249,13 +250,26 @@ class _Handler(BaseHTTPRequestHandler):
             case "/events":
                 self._stream(url, events_only=True)
             case "/":
-                self._json({
-                    "endpoints": ["/meta", "/state", "/stream", "/events"],
-                    "source": self.feed.meta.source,
-                })
+                self._dashboard()
             case _:
                 self._json({"error": f"no such endpoint: {url.path}"},
                            status=404)
+
+    def _dashboard(self) -> None:
+        """The bundled page -- see `dashboard.html` for why it is one file.
+
+        Read per request rather than cached: requests for it are rare, the
+        file is small, and editing it against a running server showing live
+        data is exactly how it gets worked on.
+        """
+        payload = (
+            Path(__file__).with_name("dashboard.html").read_bytes()
+        )
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
 
     def _json(self, body: dict[str, object], status: int = 200) -> None:
         payload = json.dumps(body).encode("utf-8")

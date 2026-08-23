@@ -393,6 +393,33 @@ skipped past is state, readable from `/state`; only what changes after the
 seek is news. `--hold` keeps `/state` serving the final frame after the
 timeline ends, for consumers that arrive late.
 
+**Reference consumers.** Two, each proving a different half of the claim
+that anything can attach.
+
+`tools/listen.py` is the whole protocol on one page, stdlib only: open the
+stream, split records on blank lines, parse `data:` as JSON, discriminate on
+`t`. It is the copyable starting point for a consumer in any language, and
+`--limit 2` makes it the quickest answer to "is the feed up". It is held to
+the real wire in the test suite — a subprocess over a real socket — because
+a reference consumer that quietly diverged from the protocol would be worse
+than none.
+
+The dashboard at `GET /` is the opposite pole: a browser, as foreign a
+consumer as exists, speaking the same four endpoints as everything else — no
+private channel, no build step, one self-contained file with no external
+references, so it works on a machine that has never seen the internet and
+doubles as an OBS browser source. Minimap with fog drawn hollow and deaths
+crossed out (the same vocabulary as the debug overlay), rosters with levels,
+the game clock, feed health, and an event log that hides fog traffic by
+default — 444 vanishes on the sample clip is what player-perspective footage
+is, and not what a person watching wants scrolling past. Reconnection is
+free: a browser `EventSource` retries and volunteers `Last-Event-ID`
+unasked, which is precisely why the stream resumes by that key.
+
+Verified against a replay of the sample clip: both rosters populated with
+levels, Xerath's casts and Zilean's 12.1s respawn in the log, the clock
+advancing, and the map painting all ten champions.
+
 **Death.** An ally is never hidden by fog, so an ally missing from the minimap
 is dead — that was the reasoning, and the timeline could not act on it, so a
 dead ally read as a champion nobody had seen for twenty-four seconds. The HUD
