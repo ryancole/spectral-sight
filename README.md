@@ -420,6 +420,10 @@ Verified against a replay of the sample clip: both rosters populated with
 levels, Xerath's casts and Zilean's 12.1s respawn in the log, the clock
 advancing, and the map painting all ten champions.
 
+For writing a consumer, the wire format — the timeline file, the frame
+envelope, every event kind and the SSE protocol — is specified in one place:
+[docs/output-format.md](docs/output-format.md).
+
 **Death.** An ally is never hidden by fog, so an ally missing from the minimap
 is dead — that was the reasoning, and the timeline could not act on it, so a
 dead ally read as a champion nobody had seen for twenty-four seconds. The HUD
@@ -1181,6 +1185,7 @@ src/spectral_sight/
   export.py                   the output: observations, and the timeline file
   debug/overlay.py            visualisation
 tools/                        calibration and inspection CLIs
+docs/output-format.md         the wire format, for consumers in any language
 tests/synthetic.py            minimaps with known ground truth
 etc/map/                      averaged map art, and the reference layout size
 etc/regions/                  calibrated minimap regions per resolution
