@@ -404,6 +404,23 @@ class TimelineWriter:
             self._file = None
 
 
+def read_meta(path: str | Path) -> TimelineMeta:
+    """Just the header, without touching the rows.
+
+    For callers that need to know what a timeline *is* -- its calibration,
+    its capabilities, its source -- before or without paying for its body:
+    a replay server hands this to consumers while the rows stream out on
+    their own schedule.
+    """
+    with Path(path).open("r", encoding="utf-8") as handle:
+        header = handle.readline()
+        if not header.strip():
+            raise ValueError(f"{path} is empty")
+        data = json.loads(header)
+        _check_schema(data, path)
+        return TimelineMeta.from_dict(data)
+
+
 def iter_timeline(path: str | Path) -> Iterator[Observation]:
     """Stream a timeline's observations, skipping the header.
 

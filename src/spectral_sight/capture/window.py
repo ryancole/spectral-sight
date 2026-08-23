@@ -22,6 +22,7 @@ from __future__ import annotations
 import threading
 import time
 from collections.abc import Iterator
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -46,6 +47,26 @@ class FrameSizeChanged(RuntimeError):
     """
 
 
+@dataclass(frozen=True, slots=True)
+class Arrival:
+    """A frame plus when it arrived, stamped on the capture thread.
+
+    Two clocks, because the two consumers of "when" cannot share one. The
+    monotonic stamp orders frames and measures elapsed time within this
+    process, which is what the tracker's velocity model and the cast detector
+    consume, and it must never run backwards -- which the wall clock, subject
+    to NTP steps, cannot promise. The wall stamp is the opposite trade: it
+    means something to *other* processes, which is what a live consumer of the
+    pipeline's output needs to measure how far behind the game it is running.
+    """
+
+    image: np.ndarray
+    monotonic: float
+    """`time.perf_counter()` at arrival."""
+    wall: float
+    """`time.time()` at arrival, as epoch seconds."""
+
+
 class Mailbox:
     """A single-slot, latest-wins handoff from the capture thread.
 
@@ -65,16 +86,22 @@ class Mailbox:
 
     def __init__(self) -> None:
         self._condition = threading.Condition()
-        self._pending: np.ndarray | None = None
+        self._pending: Arrival | None = None
         self._closed = False
         self._error: BaseException | None = None
         self.dropped = 0
 
     def put(self, image: np.ndarray) -> None:
+        # Stamped here, on the capture thread, rather than at take: a frame
+        # that waited in this slot is *older* than its take time, and that
+        # queueing delay is exactly what a latency measurement must include.
+        arrival = Arrival(
+            image=image, monotonic=time.perf_counter(), wall=time.time()
+        )
         with self._condition:
             if self._pending is not None:
                 self.dropped += 1
-            self._pending = image
+            self._pending = arrival
             self._condition.notify()
 
     def fail(self, error: BaseException) -> None:
@@ -89,7 +116,7 @@ class Mailbox:
             self._closed = True
             self._condition.notify_all()
 
-    def take(self, timeout: float | None = None) -> np.ndarray | None:
+    def take(self, timeout: float | None = None) -> Arrival | None:
         """Wait for the next frame. None once the source is done.
 
         `timeout` of None waits indefinitely, which is what a running session
@@ -114,8 +141,8 @@ class Mailbox:
                     )
                 self._condition.wait(min(remaining, self.WAIT_SLICE))
             if self._pending is not None:
-                image, self._pending = self._pending, None
-                return image
+                arrival, self._pending = self._pending, None
+                return arrival
             if self._error is not None:
                 raise self._error
             return None
@@ -176,7 +203,7 @@ class WindowSource(FrameSource):
         self._mailbox = Mailbox()
         self._size: tuple[int, int] | None = None
         self._control = None
-        self._first: np.ndarray | None = None
+        self._first: Arrival | None = None
         """Held by `size`, which has to pull a frame to learn one. Handed to
         `frames` rather than dropped, so building the pipeline does not cost the
         frame it was built from."""
@@ -225,11 +252,11 @@ class WindowSource(FrameSource):
         assert self._size is not None
         return self._size
 
-    def _await_frame(self, timeout: float | None = None) -> np.ndarray:
-        image = self._mailbox.take(timeout)
-        if image is None:
+    def _await_frame(self, timeout: float | None = None) -> Arrival:
+        arrival = self._mailbox.take(timeout)
+        if arrival is None:
             raise WindowClosed(f"window {self.title!r} closed before it drew a frame")
-        height, width = image.shape[:2]
+        height, width = arrival.image.shape[:2]
         if self._size is None:
             self._size = (width, height)
         elif (width, height) != self._size:
@@ -239,7 +266,7 @@ class WindowSource(FrameSource):
                 f"describes this frame. Restore the window size, or calibrate "
                 f"for {width}x{height}."
             )
-        return image
+        return arrival
 
     @property
     def dropped(self) -> int:
@@ -247,12 +274,18 @@ class WindowSource(FrameSource):
         return self._mailbox.dropped
 
     def frames(self) -> Iterator[Frame]:
-        # Wall-clock timestamps, not a frame counter over an assumed rate: this
-        # is a live stream, the rate is whatever the window and the pipeline
+        # Real elapsed time, not a frame counter over an assumed rate: this is
+        # a live stream, the rate is whatever the window and the pipeline
         # settle on between them, and the cast detector reasons about elapsed
         # seconds. A counted timestamp would run slow exactly when frames were
         # being dropped, which is when the timing matters most.
-        start = time.perf_counter()
+        #
+        # Timestamps come from the *arrival* stamp, anchored at the first
+        # frame's, rather than being read at yield. A frame that sat in the
+        # mailbox while the pipeline finished its predecessor is older than its
+        # yield time by exactly that wait, and stamping at yield would smear
+        # the error over every velocity and every cast interval downstream.
+        start: float | None = None
         index = 0
         pending, self._first = self._first, None
         while True:
@@ -263,9 +296,14 @@ class WindowSource(FrameSource):
                     pending = self._await_frame()
                 except WindowClosed:
                     return
+            if start is None:
+                start = pending.monotonic
             if index % self.stride == 0:
                 yield Frame(
-                    image=pending, index=index, timestamp=time.perf_counter() - start
+                    image=pending.image,
+                    index=index,
+                    timestamp=pending.monotonic - start,
+                    captured_at=pending.wall,
                 )
             pending = None
             index += 1
@@ -325,10 +363,16 @@ class MonitorSource(FrameSource):
                 continue
 
             assert self._last is not None
+            # Stamped at yield rather than at acquire, which for this source is
+            # the same moment: acquisition is synchronous with the caller, so
+            # there is no mailbox wait to account for. A re-emitted frame is
+            # stamped fresh too -- the screen not changing means the old pixels
+            # still describe *now*.
             yield Frame(
                 image=self._last,
                 index=index,
                 timestamp=time.perf_counter() - start,
+                captured_at=time.time(),
             )
             index += 1
 

@@ -230,6 +230,196 @@ Measured on 400 frames of the sample clip: 2,149 rows at 17.2 fps, game time on
 every row and monotonic, world units on every row, a champion named on 97%, and
 20% of rows recording someone in fog.
 
+**Live feed.** The same output, while it happens: another program can now
+consume the state as it is extracted rather than after the run ends. The unit
+on the wire is the *frame envelope* — everything the pipeline concluded about
+one instant in one self-contained message, so a consumer that misses one is a
+tenth of a second behind rather than desynchronised. The champion rows inside
+it are the timeline's rows byte for byte (pinned by a test that diffs the
+files), which is what keeps recorded clips usable as fixtures for the live
+path and leaves every consumer with exactly one row schema to learn.
+
+    python tools/watch.py --window kilrogg --quiet --export - | your-tool
+
+Three kinds of field ride on the envelope and not on the rows, because they
+describe the feed rather than the game. `seq` is the identity of a frame — an
+integer a consumer can resume, gap-detect and deduplicate on, where float
+equality on a timestamp is a bug waiting for a slow afternoon. `captured_at`
+is the wall-clock arrival of the frame, stamped on the capture thread *before*
+the frame waits its turn in the mailbox, because the queueing is part of the
+latency and a stamp taken any later would hide it; it is the only time in the
+envelope another process can compare against its own clock. And `fps`,
+`dropped` and `lag` exist so a reactor can tell "no enemies visible" from "the
+vision process is wedged" — the same distinction the timeline spends its
+`has_*` flags on, applied to liveness instead of calibration.
+
+Arrival stamping also quietly improved the offline story: a live frame's
+`timestamp` now comes from when it arrived rather than when the pipeline got
+around to it, which stops every waited-for frame being aged by exactly the
+processing time of its predecessor — an error that landed precisely when
+frames were waiting, which is when the timing mattered most.
+
+The file, stdout and (next) an HTTP server are all the same seam — a `Sink`
+that accepts envelopes — so `--export session.jsonl` keeps writing the
+identical timeline while other sinks listen, rather than the file and the
+feed being rival outputs.
+
+**Events.** A frame envelope says what is true; an event says what changed,
+and a consumer reacting in real time mostly wants the changes — a death, a
+cast, a champion slipping into fog — without diffing ten rows against their
+predecessors itself, badly, in every downstream tool at once. So the feed
+interleaves `{"t": "event", "kind": ...}` messages with the frames: `cast`,
+`death`/`respawn`, `vanished`/`reappeared`, `level_up`, `identified` and
+`roster`, each carrying the same `video_time`/`game_time` keys as everything
+else.
+
+These are *perceptual* events, deliberately: things the vision concluded, not
+what they might mean. "Gank incoming" is the analysis tool's job, and holding
+that line is what keeps this schema stable while downstream opinions change.
+
+The constraint that carries the design is that **events are a pure function of
+the rows.** The deriver's whole world is the envelope stream — never the
+tracker, the filters or a pixel — which makes replay a checkable claim rather
+than a hope: extracting a clip to a timeline and re-deriving events from the
+file must reproduce what the live run published. Measured on the sample clip,
+it does — byte-identical apart from `seq`, which numbers envelopes on the wire
+and cannot count the frames that produced no rows (the file is silent about
+them; `video_time` and `game_time` are the durable keys, and the divergence is
+two frames at the very start of the run, before anything was confirmed).
+
+Two transition rules are worth recording because they are where a
+change-detector quietly goes wrong:
+
+- **`alive: null` never transitions anything.** It means the HUD and the
+  minimap disagreed, and a None between two Falses is one death, not two. A
+  deriver that treated unknown as alive would resurrect a corpse every time
+  the portraits blinked, just to kill it again.
+- **Liveness is keyed by champion, everything else by track.** A corpse's
+  track is often dropped before the respawn arrives on a fresh one, so the
+  name is the identity that survives being dead. And a death *suppresses* the
+  vanish it explains: "the corpse left the minimap" is not fog, and a consumer
+  told `vanished` would treat it as a champion who might walk out at them —
+  the one thing a corpse cannot do.
+
+`tools/derive_events.py` prints the event log of any timeline — prose by
+default, `--json` for the wire form — so five minutes of footage answers
+"what happened" without re-running any vision.
+
+Measured on the 5.3-minute clip: 917 events over 3,185 frames, and the ones
+with ground truth elsewhere in this document all land on it. The six casts
+come out with the same six percentages the cast section records — Xerath's
+four, Zilean's 9.4%, Sivir's 16.2% — with Sivir's correctly the unconfirmed
+one. The two deaths are both Zilean's, each respawning 12.1s later against the
+portrait-measured 11.9–12.0s. The rest is fog traffic, 444 vanishes and 437
+reappearances, which is what player-perspective footage mostly *is*, and why a
+consumer that wants quiet subscribes to kinds rather than to everything.
+
+**The server.** The feed over HTTP, which is the consumer boundary all of
+this was aiming at: any language, any process, joins mid-game, survives its
+consumers crashing, and `curl http://127.0.0.1:8723/stream` is a working
+debugger. Server-Sent Events rather than WebSockets because the stream is
+strictly one-way and SSE is plain HTTP — no dependency on either end, and
+resume built into the protocol.
+
+    python tools/watch.py --window kilrogg --serve
+
+Four endpoints, one schema. `/stream` is every message as it happens, each
+SSE record's `data:` exactly what the stdout sink writes; `/events` is the
+same stream with the frames filtered out; `/state` is the latest envelope
+plus the meta, for pollers and late joiners; `/meta` is the capability
+header, so a consumer can tell "no nameplate calibration" from "a quiet
+game". `--serve` composes with `--export` — the file stays the log of record
+while the socket carries the live copy.
+
+**The pipeline thread never touches a socket.** Publishing is an append to a
+shared ring plus a notify; per-client handler threads do all the waiting and
+writing. This is the `Mailbox` rule applied at the other end of the process:
+the vision loop must not be able to feel the network at all — not a stalled
+client, not a dead one, not fifty. A test pins it by connecting a client
+that never reads and publishing five thousand messages through it.
+
+One ring, one backpressure rule. Every message gets a monotonic id — the SSE
+`id:`, distinct from a frame's `seq` because events share their frame's seq
+and a resume key must be unique. A reconnecting client resumes losslessly by
+`Last-Event-ID` (a browser `EventSource` sends it unasked) or `?since=`; a
+client that has fallen off the back of the ring instead gets
+`{"t": "gap", "from": N, "to": M}` and then the *newest* message. Latest-wins
+again, and deliberately not the oldest kept: a consumer that cannot keep up
+gets bounded staleness and an honest account of what it missed, rather than
+a backlog it will fall further behind on — `GET /state` is always there to
+resync from.
+
+Measured: publish-to-receipt across processes on the same machine is
+**p50 0.2ms, p90 0.6ms, max 0.7ms** over 300 frames at 10 Hz — three orders
+of magnitude below the ~100ms the vision spends producing each frame, so the
+transport adds nothing worth counting. Serving the sample clip flat-out with
+a reading consumer and a stalled one attached costs the pipeline 0–2% against
+running bare, and the run ends by closing every stream cleanly rather than
+leaving consumers hanging on a dead socket.
+
+**Replay.** A recorded timeline, served back as the live feed it once was:
+
+    python tools/replay.py session.jsonl
+    python tools/replay.py session.jsonl --speed 4 --from 260
+
+To anything listening this is `watch.py --serve` — same endpoints, same
+messages, same events, paced by the recording's own clock — except that no
+League client, no capture and no vision is running. Which is how the
+downstream tool gets built: against a clip whose deaths and casts are known,
+repeatably, at whatever speed the work needs, jumping straight to the
+teamfight instead of waiting four minutes for it. The determinism the events
+section bought is what makes this trustworthy rather than merely convenient —
+events are re-derived from the rows on the way out, and a replay is not a
+recording of the feed but the feed, recomputed from the same facts. Measured
+on the 5.3-minute timeline: all 3,185 frames and all 917 events served, the
+event stream byte-identical to what `derive_events.py` prints.
+
+Two fields are the replay's own, and they are exactly the ones that describe
+the feed rather than the game: `captured_at` is stamped fresh at publish —
+the replay *is* happening now, so a consumer's latency arithmetic works
+unchanged — and `lag` is zero for the same reason. The rows pass through
+untouched.
+
+Pacing is scheduled against a fixed anchor — each frame due at
+`anchor + elapsed_video / speed` — so sleep jitter cannot accumulate.
+Measured over a 15-second segment at 1×: schedule error **p50 0.3ms, p90
+0.6ms, max 0.7ms** against the recording's own frame spacing.
+
+Seeking with `--from` fast-forwards the event deriver through the skipped
+rows *silently*: its memory arrives warm, so the first events after the seek
+are right because of what was skipped — a respawn at +12s knows its death at
++5s lasted seven seconds even though that death was never published. The
+skipped past is state, readable from `/state`; only what changes after the
+seek is news. `--hold` keeps `/state` serving the final frame after the
+timeline ends, for consumers that arrive late.
+
+**Reference consumers.** Two, each proving a different half of the claim
+that anything can attach.
+
+`tools/listen.py` is the whole protocol on one page, stdlib only: open the
+stream, split records on blank lines, parse `data:` as JSON, discriminate on
+`t`. It is the copyable starting point for a consumer in any language, and
+`--limit 2` makes it the quickest answer to "is the feed up". It is held to
+the real wire in the test suite — a subprocess over a real socket — because
+a reference consumer that quietly diverged from the protocol would be worse
+than none.
+
+The dashboard at `GET /` is the opposite pole: a browser, as foreign a
+consumer as exists, speaking the same four endpoints as everything else — no
+private channel, no build step, one self-contained file with no external
+references, so it works on a machine that has never seen the internet and
+doubles as an OBS browser source. Minimap with fog drawn hollow and deaths
+crossed out (the same vocabulary as the debug overlay), rosters with levels,
+the game clock, feed health, and an event log that hides fog traffic by
+default — 444 vanishes on the sample clip is what player-perspective footage
+is, and not what a person watching wants scrolling past. Reconnection is
+free: a browser `EventSource` retries and volunteers `Last-Event-ID`
+unasked, which is precisely why the stream resumes by that key.
+
+Verified against a replay of the sample clip: both rosters populated with
+levels, Xerath's casts and Zilean's 12.1s respawn in the log, the clock
+advancing, and the map painting all ten champions.
+
 **Death.** An ally is never hidden by fog, so an ally missing from the minimap
 is dead — that was the reasoning, and the timeline could not act on it, so a
 dead ally read as a champion nobody had seen for twenty-four seconds. The HUD
