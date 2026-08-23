@@ -357,6 +357,42 @@ a reading consumer and a stalled one attached costs the pipeline 0–2% against
 running bare, and the run ends by closing every stream cleanly rather than
 leaving consumers hanging on a dead socket.
 
+**Replay.** A recorded timeline, served back as the live feed it once was:
+
+    python tools/replay.py session.jsonl
+    python tools/replay.py session.jsonl --speed 4 --from 260
+
+To anything listening this is `watch.py --serve` — same endpoints, same
+messages, same events, paced by the recording's own clock — except that no
+League client, no capture and no vision is running. Which is how the
+downstream tool gets built: against a clip whose deaths and casts are known,
+repeatably, at whatever speed the work needs, jumping straight to the
+teamfight instead of waiting four minutes for it. The determinism the events
+section bought is what makes this trustworthy rather than merely convenient —
+events are re-derived from the rows on the way out, and a replay is not a
+recording of the feed but the feed, recomputed from the same facts. Measured
+on the 5.3-minute timeline: all 3,185 frames and all 917 events served, the
+event stream byte-identical to what `derive_events.py` prints.
+
+Two fields are the replay's own, and they are exactly the ones that describe
+the feed rather than the game: `captured_at` is stamped fresh at publish —
+the replay *is* happening now, so a consumer's latency arithmetic works
+unchanged — and `lag` is zero for the same reason. The rows pass through
+untouched.
+
+Pacing is scheduled against a fixed anchor — each frame due at
+`anchor + elapsed_video / speed` — so sleep jitter cannot accumulate.
+Measured over a 15-second segment at 1×: schedule error **p50 0.3ms, p90
+0.6ms, max 0.7ms** against the recording's own frame spacing.
+
+Seeking with `--from` fast-forwards the event deriver through the skipped
+rows *silently*: its memory arrives warm, so the first events after the seek
+are right because of what was skipped — a respawn at +12s knows its death at
++5s lasted seven seconds even though that death was never published. The
+skipped past is state, readable from `/state`; only what changes after the
+seek is news. `--hold` keeps `/state` serving the final frame after the
+timeline ends, for consumers that arrive late.
+
 **Death.** An ally is never hidden by fog, so an ally missing from the minimap
 is dead — that was the reasoning, and the timeline could not act on it, so a
 dead ally read as a champion nobody had seen for twenty-four seconds. The HUD
