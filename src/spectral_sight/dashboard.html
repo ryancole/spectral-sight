@@ -53,6 +53,17 @@
   #rosters .dead { text-decoration: line-through; color: var(--dim); }
   #rosters .fog { color: var(--dim); }
   #rosters .self::after { content: " ◈"; color: var(--gold); }
+  #coach-panel { max-height: 200px; display: flex; flex-direction: column; }
+  #coach-panel .bar { display: flex; gap: 12px; align-items: baseline; margin-bottom: 6px; }
+  #coach-panel h2 { font-size: 12px; color: var(--gold); }
+  #coach-status { color: var(--dim); font-size: 12px; }
+  #coach-status.live { color: #6fdc8c; }
+  #coach-status.paused { color: var(--red); }
+  #coach-log { overflow-y: auto; flex: 1; min-height: 0; }
+  #coach-log div { padding: 1px 0; border-bottom: 1px solid #10141b; }
+  #coach-log .t { color: var(--dim); margin-right: 8px; }
+  #coach-log .p3 { color: var(--red); font-weight: bold; }
+  #coach-log .p2 { color: var(--gold); }
   #log-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; }
   #log-panel .bar { display: flex; gap: 12px; align-items: center; margin-bottom: 6px; }
   #log-panel h2 { font-size: 12px; color: var(--dim); }
@@ -83,6 +94,13 @@
       <div class="blue"><h2>ORDER</h2><ul id="blue"></ul></div>
       <div class="red"><h2>CHAOS</h2><ul id="red"></ul></div>
     </div>
+    <div class="panel" id="coach-panel">
+      <div class="bar">
+        <h2>COACHING</h2>
+        <span id="coach-status">offline — start mind-control to see feedback</span>
+      </div>
+      <div id="coach-log"></div>
+    </div>
     <div class="panel" id="log-panel">
       <div class="bar">
         <h2>EVENTS</h2>
@@ -97,6 +115,7 @@
 const $ = id => document.getElementById(id);
 const canvas = $("map"), ctx = canvas.getContext("2d");
 let meta = null, frame = null, cropMax = 300;
+let ghost = null;  // mind-control's attention cursor: {nx, ny, at} in map space
 
 // The meta is the capability header: without world bounds the map falls back
 // to crop pixels, and the header tells us which timeline this even is.
@@ -154,6 +173,22 @@ function draw() {
       ctx.textAlign = "center";
       ctx.fillText(c.champion, x, y - 12);
     }
+    ctx.globalAlpha = 1.0;
+  }
+  // Where mind-control says attention should sit: a gold crosshair that
+  // fades once the ghost has been quiet for a while.
+  if (ghost) {
+    const age = Date.now() - ghost.at;
+    if (age > 6000) { ghost = null; return; }
+    const nx = Math.min(Math.max(ghost.nx, 0), 1), ny = Math.min(Math.max(ghost.ny, 0), 1);
+    const x = 12 + nx * (w - 24), y = 12 + ny * (h - 24);
+    ctx.globalAlpha = Math.max(0.25, 1 - age / 6000);
+    ctx.strokeStyle = "#e8c36a";
+    ctx.beginPath(); ctx.arc(x, y, 11, 0, Math.PI * 2); ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(x - 17, y); ctx.lineTo(x - 6, y); ctx.moveTo(x + 6, y); ctx.lineTo(x + 17, y);
+    ctx.moveTo(x, y - 17); ctx.lineTo(x, y - 6); ctx.moveTo(x, y + 6); ctx.lineTo(x, y + 17);
+    ctx.stroke();
     ctx.globalAlpha = 1.0;
   }
 }
@@ -219,6 +254,43 @@ stream.addEventListener("event", e => logLine(JSON.parse(e.data)));
 stream.addEventListener("gap", e => logLine({ kind: "gap", ...JSON.parse(e.data) }));
 stream.onopen = () => { $("status").textContent = "● live"; $("status").className = "live"; };
 stream.onerror = () => { $("status").textContent = "reconnecting…"; $("status").className = "down"; };
+
+// mind-control's coaching feedback: a separate, optional process publishing
+// its own SSE stream. The panel and the map crosshair light up when it runs;
+// while it does not, EventSource just keeps retrying quietly.
+function coachLine(m) {
+  const line = document.createElement("div");
+  const when = document.createElement("span");
+  when.className = "t";
+  when.textContent = clockText(m.game_time, true);
+  const what = document.createElement("span");
+  what.className = `p${m.priority}`;
+  what.textContent = m.reason;
+  line.append(when, what);
+  const log = $("coach-log");
+  log.prepend(line);
+  while (log.childElementCount > 100) log.lastElementChild.remove();
+}
+
+const coachOffline = "offline — start mind-control to see feedback";
+const coachUrl = new URLSearchParams(location.search).get("coach")
+  || "http://localhost:8724/stream";
+const coachStream = new EventSource(coachUrl);
+coachStream.onopen = () => { $("coach-status").textContent = "● connected"; $("coach-status").className = "live"; };
+coachStream.onerror = () => { $("coach-status").textContent = coachOffline; $("coach-status").className = ""; ghost = null; };
+coachStream.onmessage = e => {
+  const m = JSON.parse(e.data);
+  if (m.t === "move") {
+    ghost = { nx: m.nx, ny: m.ny, at: Date.now() };
+  } else if (m.t === "glance") {
+    ghost = { nx: m.nx, ny: m.ny, at: Date.now() };
+    coachLine(m);
+  } else if (m.t === "status") {
+    const status = $("coach-status");
+    if (m.state === "paused") { status.textContent = `paused: ${m.reason}`; status.className = "paused"; ghost = null; }
+    else { status.textContent = "● coaching"; status.className = "live"; }
+  }
+};
 </script>
 </body>
 </html>
