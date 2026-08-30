@@ -148,8 +148,13 @@ class TestEndpoints:
         assert "text/html" in response.getheader("Content-Type")
         # It consumes the public endpoints, not some private channel.
         assert "/stream" in page and "/meta" in page
-        # And it carries no external references to break offline.
-        assert "http://" not in page and "https://" not in page
+        # And it carries no external references to break offline. Loopback is
+        # not external: the coach fallback names another process on the same
+        # machine, and a URL that never leaves it cannot need the network.
+        external = page.replace("http://localhost:", "").replace(
+            "http://127.0.0.1:", ""
+        )
+        assert "http://" not in external and "https://" not in external
 
     def test_an_unknown_path_is_a_404(self, server: FeedServer) -> None:
         assert get(server, "/nope")["status"] == 404
