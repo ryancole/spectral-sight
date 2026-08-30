@@ -303,8 +303,24 @@ class Pipeline:
         if self.clock is not None:
             clock = self._clock_filter.update(self.clock.read(frame), timestamp)
 
-        liveness = (None if self.liveness is None
-                    else self.liveness.read(frame))
+        liveness = None
+        if self.liveness is not None:
+            if self._clock_filter.resynced:
+                # The clock just contradicted its own prediction: a seek, or a
+                # different game spliced into the same capture. The portrait
+                # boxes may hold different champions now, so what the slots
+                # learned is evidence about footage that ended.
+                self.liveness.reset()
+            # Baselines learn only from frames the timer resolves on, because
+            # the timer is the one HUD element that proves the in-game HUD is
+            # on screen at all. A recording that starts in queue otherwise
+            # teaches the portraits splash art, which out-saturates any living
+            # champion -- and a running maximum never comes back down, so the
+            # real HUD would read dead from its first frame onward. With no
+            # clock calibration there is no such proof to wait for, and
+            # learning from every frame is the behaviour that predates it.
+            learn = self.clock is None or (clock is not None and clock.observed)
+            liveness = self.liveness.read(frame, learn=learn)
 
         minimap = self.region.crop(frame)
         blips = self.detector.detect(minimap)

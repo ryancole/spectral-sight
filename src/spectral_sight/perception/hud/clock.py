@@ -385,12 +385,21 @@ class ClockFilter:
     resync_after: float = 3.0
     """Seconds of sustained disagreement before the prediction gives way."""
 
+    resynced: bool = False
+    """True just after an update adopted a reading that contradicted the
+    prediction -- a pause ending somewhere else, a seek, or different footage
+    spliced into the same capture. Cleared by the next update. Exposed because
+    continuity is a promise other state is built on: the HUD portrait
+    baselines are evidence about the footage before the tear, and this flag is
+    the one moment that says the footage changed."""
+
     _seconds: float | None = None
     _at: float = 0.0
     _disagreeing_since: float | None = None
 
     def update(self, reading: GameClock | None, timestamp: float) -> GameClock | None:
         """Fold one frame's reading in and return the clock to trust."""
+        self.resynced = False
         if self._seconds is None:
             if reading is not None:
                 self._seconds, self._at = float(reading.total_seconds), timestamp
@@ -411,6 +420,7 @@ class ClockFilter:
         elif timestamp - self._disagreeing_since >= self.resync_after:
             self._seconds, self._at = float(reading.total_seconds), timestamp
             self._disagreeing_since = None
+            self.resynced = True
             return reading
 
         return GameClock(int(predicted), confidence=0.0, observed=False)
@@ -419,6 +429,7 @@ class ClockFilter:
         self._seconds = None
         self._at = 0.0
         self._disagreeing_since = None
+        self.resynced = False
 
 
 # -- persistence ----------------------------------------------------------

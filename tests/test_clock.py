@@ -232,3 +232,17 @@ def test_a_single_disagreement_does_not_resync() -> None:
     back = clock.update(GameClock(102, 1.0), 2.0)
     assert back.total_seconds == 102
     assert back.observed
+
+
+def test_a_resync_is_announced_for_exactly_one_update() -> None:
+    """The flag other state hangs on: a resync means the footage tore, and
+    whoever learned from the frames before it needs to know the once."""
+    clock = ClockFilter(resync_after=3.0)
+    clock.update(GameClock(100, 1.0), 0.0)
+    assert clock.resynced is False, "the first reading is trust, not a tear"
+    clock.update(GameClock(500, 1.0), 1.0)
+    assert clock.resynced is False, "still hoping it is a misread"
+    clock.update(GameClock(504, 1.0), 5.0)
+    assert clock.resynced is True
+    clock.update(GameClock(505, 1.0), 6.0)
+    assert clock.resynced is False, "announced once, not latched"

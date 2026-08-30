@@ -39,6 +39,20 @@ rather than a high-water mark that drifts away from the living reading.
 it reports None rather than guessing, so a clip that opens on a dead champion,
 or on a loading screen with no HUD at all, produces no answer instead of a
 confident wrong one.
+
+**The baseline is only as good as the frames it was learned from, and the
+reader cannot tell those frames apart on its own.** MIN_BASELINE guards the
+too-drab direction -- a baseline learned from a corpse -- but a recording that
+starts before the game fails in the other one: queue and loading screens put
+splash art where the portraits will be, and splash art out-saturates any
+living portrait. Measured on a real session, baselines learned in queue sat so
+far above the real HUD that every living champion read dead from the first
+in-game frame -- permanently, because a running maximum has no way back down.
+Whether the in-game HUD is actually on screen is something only the caller can
+know (the pipeline proves it by the match timer resolving), so `read` takes
+`learn`: an untrusted frame is still judged, but teaches nothing. `reset`
+handles the footage tearing wholesale -- a seek, or a different game spliced
+into the same capture -- by starting the evidence over.
 """
 
 from __future__ import annotations
@@ -133,22 +147,41 @@ class AliveReader:
         self._baselines: dict[str, float] = {}
         self._discs: dict[tuple[int, int], np.ndarray] = {}
 
-    def read(self, frame: np.ndarray) -> Liveness:
-        """Read every friendly portrait on this frame."""
+    def read(self, frame: np.ndarray, *, learn: bool = True) -> Liveness:
+        """Read every friendly portrait on this frame.
+
+        `learn` says whether this frame is allowed to raise the baselines.
+        Pass False on a frame not known to show the in-game HUD: the slots
+        still answer from what they have already learned, without taking
+        whatever is on screen as evidence of what a living portrait looks
+        like -- see the module docstring for the session that made this
+        necessary.
+        """
         states = []
         for name, crop in self.layout.all_crops(frame).items():
-            states.append(self._read_slot(name, crop))
+            states.append(self._read_slot(name, crop, learn))
         return Liveness(slots=tuple(states))
+
+    def reset(self) -> None:
+        """Forget every baseline, for when the footage tears wholesale.
+
+        A seek, or a different game spliced into the same capture, puts a
+        different set of portraits in the same boxes, and a running maximum
+        learned from art that is no longer on screen can only be wrong in one
+        direction: reading living champions as dead."""
+        self._baselines.clear()
 
     @property
     def baselines(self) -> dict[str, float]:
         """What each slot has learned it looks like alive. For inspection."""
         return dict(self._baselines)
 
-    def _read_slot(self, name: str, crop: np.ndarray) -> SlotState:
+    def _read_slot(self, name: str, crop: np.ndarray, learn: bool) -> SlotState:
         saturation = self._disc_saturation(crop)
-        baseline = max(self._baselines.get(name, 0.0), saturation)
-        self._baselines[name] = baseline
+        baseline = self._baselines.get(name, 0.0)
+        if learn and saturation > baseline:
+            baseline = saturation
+            self._baselines[name] = baseline
 
         alive: bool | None = None
         if baseline >= self.min_baseline:

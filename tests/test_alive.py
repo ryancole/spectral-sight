@@ -29,6 +29,7 @@ from spectral_sight.perception.hud.alive import (
     Liveness,
     SlotState,
 )
+from spectral_sight.perception.hud.clock import GameClock
 from spectral_sight.perception.hud.portraits import PortraitLayout
 from spectral_sight.perception.identity import Gallery
 from spectral_sight.perception.minimap import MinimapRegion
@@ -188,6 +189,52 @@ def test_the_minimum_baseline_is_what_makes_unproven_slots_silent() -> None:
         np.zeros((FRAME_SIZE[1], FRAME_SIZE[0], 3), np.uint8)).slots)
 
 
+# -- learning only from frames the caller trusts --------------------------
+
+
+def splash_frame() -> np.ndarray:
+    """Fully saturated everywhere: what queue and loading screens put where
+    the portraits will be. Hotter than any living portrait, which is why
+    MIN_BASELINE cannot catch it -- it guards the too-drab direction only."""
+    return np.full((FRAME_SIZE[1], FRAME_SIZE[0], 3), (0, 0, 255), np.uint8)
+
+
+def test_an_untrusted_frame_teaches_nothing() -> None:
+    """The live-session failure. A baseline learned from splash art sits so
+    far above the real HUD that every living champion reads dead from the
+    first in-game frame -- forever, since a running maximum has no way back
+    down. So a frame not known to show the HUD may be judged, never learned
+    from."""
+    reader = AliveReader(LAYOUT)
+    for _ in range(5):
+        liveness = reader.read(splash_frame(), learn=False)
+    assert reader.baselines == {}
+    assert all(s.alive is None for s in liveness.slots)
+    # The real HUD then arrives and is judged only against itself.
+    assert all(s.alive for s in read(reader, frames=3).slots)
+
+
+def test_an_untrusted_frame_is_still_judged_from_what_is_known() -> None:
+    """The gate stops learning, not answering: mid-game frames where the
+    caller briefly loses its proof still deserve a verdict."""
+    reader = AliveReader(LAYOUT)
+    read(reader, frames=3)
+    before = reader.baselines
+    liveness = reader.read(frame(dead=("ally2",)), learn=False)
+    assert liveness.slot("ally2").alive is False
+    assert liveness.slot("ally1").alive is True
+    assert reader.baselines == before
+
+
+def test_reset_starts_the_evidence_over() -> None:
+    reader = AliveReader(LAYOUT)
+    read(reader, frames=3)
+    reader.reset()
+    assert reader.baselines == {}
+    assert all(s.alive is None
+               for s in reader.read(frame(), learn=False).slots)
+
+
 # -- attributing a death to a champion ------------------------------------
 
 
@@ -336,6 +383,73 @@ def test_a_named_casualty_missing_from_the_tracks_clears_nobody() -> None:
 
     result = run(pipeline, dead=(SELF_SLOT,), markers=(), frames=1, start=2.0)
     assert all(row.alive is None for row in result.observations)
+
+
+# -- the clock as proof the HUD is on screen ------------------------------
+
+
+class ScriptedClock:
+    """Stands in for a ClockReader: the test says what the frame shows."""
+
+    def __init__(self) -> None:
+        self.reading: GameClock | None = None
+
+    def read(self, frame: np.ndarray) -> GameClock | None:
+        return self.reading
+
+
+def test_a_recording_that_starts_before_the_game_still_reads_deaths() -> None:
+    """The session that motivated the gate began in queue: splash art where
+    the portraits would be, no timer anywhere. Learning from those frames
+    anchored every slot so high that the real HUD read dead all session, which
+    attribution rightly refused to resolve -- so no row ever said False and no
+    death was ever derived. The timer resolving is the pipeline's proof that
+    the HUD is on screen, and learning waits for it."""
+    clock = ScriptedClock()
+    pipeline = Pipeline(region=REGION, gallery=Gallery(), portraits=LAYOUT,
+                        clock=clock, resolution=FRAME_SIZE)
+
+    for i in range(10):
+        pipeline.process(splash_frame(), i * 0.1)
+    assert pipeline.liveness.baselines == {}, "queue frames taught nothing"
+
+    clock.reading = GameClock(0, 1.0)   # the game starts; the HUD appears
+    run(pipeline, frames=5, start=2.0)
+    result = run(pipeline, dead=("ally1",), frames=1, start=2.5)
+    assert result.liveness.dead_count == 1
+    assert all(row.allies_dead == 1 for row in result.observations)
+
+
+def test_a_torn_clock_starts_the_baselines_over() -> None:
+    """A different game spliced into the same capture puts different champions
+    in the same boxes, and art drabber than the old set would read dead
+    against the old baselines. The clock resyncing is the one moment that says
+    the footage tore, so it is when the slots relearn."""
+    clock = ScriptedClock()
+    pipeline = Pipeline(region=REGION, gallery=Gallery(), portraits=LAYOUT,
+                        clock=clock, resolution=FRAME_SIZE)
+    clock.reading = GameClock(600, 1.0)
+    run(pipeline, frames=3)                        # game one, vivid champions
+    vivid = pipeline.liveness.baselines["ally1"]
+
+    drab = np.zeros((FRAME_SIZE[1], FRAME_SIZE[0], 3), np.uint8)
+    for index in range(LAYOUT.ally_count):
+        cx, cy = LAYOUT.ally_center(index)
+        cv2.circle(drab, (int(cx), int(cy)), LAYOUT.ally_radius,
+                   (85, 128, 128), -1)
+    cv2.circle(drab, (int(LAYOUT.self_center_x), int(LAYOUT.self_center_y)),
+               LAYOUT.self_radius, (85, 128, 128), -1)
+
+    clock.reading = GameClock(30, 1.0)             # game two, mid-splice
+    pipeline.process(drab, 1.0)                    # disagreement begins...
+    result = pipeline.process(drab, 5.0)           # ...and outlasts the filter
+    assert result.clock.observed
+
+    assert pipeline.liveness.baselines["ally1"] < vivid * DEAD_FRACTION, (
+        "the tear only matters if game two's living art would read dead "
+        "against game one's baseline"
+    )
+    assert all(s.alive for s in result.liveness.slots)
 
 
 def test_enemies_never_carry_a_verdict() -> None:
