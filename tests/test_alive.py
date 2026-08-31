@@ -452,6 +452,61 @@ def test_a_torn_clock_starts_the_baselines_over() -> None:
     assert all(s.alive for s in result.liveness.slots)
 
 
+# -- the death-cam does not get a vote ------------------------------------
+
+
+def viewport_frame(*, dead: tuple[str, ...] = ()) -> np.ndarray:
+    """A frame whose camera rectangle is centred on the first ally marker,
+    which is how the pipeline decides who the local player is."""
+    image = frame(dead=dead, markers=ALLIES)
+    cx, cy = REGION.x + ALLIES[0].x, REGION.y + ALLIES[0].y
+    cv2.rectangle(image, (cx - 40, cy - 25), (cx + 40, cy + 25),
+                  (235, 235, 235), 1)
+    return image
+
+
+def test_a_dead_players_camera_does_not_vote() -> None:
+    """The camera names the player only while it is credibly locked on them,
+    and death is the departure the pipeline can prove: the death-cam watches a
+    corpse or a teammate for the whole respawn timer, which on a real session
+    poured 72 seconds of votes at a stretch onto the wrong champion."""
+    pipeline = build_pipeline()
+    run(pipeline, frames=5)
+    name_tracks(pipeline, "Zilean", "Ryze")
+
+    result = pipeline.process(viewport_frame(), 2.0)
+    assert result.self_track is not None, "the viewport must resolve to bite"
+    voted = sum(pipeline._self_evidence.values())
+    assert voted == 1, "a living frame votes"
+
+    pipeline.process(viewport_frame(dead=(SELF_SLOT,)), 2.1)
+    assert sum(pipeline._self_evidence.values()) == voted, (
+        "a death-cam frame does not"
+    )
+
+
+def test_an_unproven_hud_does_not_vote_either() -> None:
+    """Pre-game frames are not a game: whatever sits at the camera centre
+    before the portraits have proven themselves is not the player."""
+    pipeline = build_pipeline()
+    everyone = ("ally1", "ally2", "ally3", "ally4", SELF_SLOT)
+    for i in range(5):
+        pipeline.process(viewport_frame(dead=everyone), i * 0.1)
+    name_tracks(pipeline, "Zilean", "Ryze")
+    pipeline.process(viewport_frame(dead=everyone), 1.0)
+    assert pipeline._self_evidence == {}
+
+
+def test_without_portraits_the_camera_still_votes() -> None:
+    """No portrait calibration means no gate to apply; naming the player from
+    the viewport predates liveness and keeps working without it."""
+    pipeline = Pipeline(region=REGION, gallery=Gallery(), resolution=FRAME_SIZE)
+    run(pipeline, frames=5)
+    name_tracks(pipeline, "Zilean", "Ryze")
+    pipeline.process(viewport_frame(), 2.0)
+    assert sum(pipeline._self_evidence.values()) == 1
+
+
 def test_enemies_never_carry_a_verdict() -> None:
     """No HUD panel names them, and fog means their absence says nothing."""
     pipeline = build_pipeline()

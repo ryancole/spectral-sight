@@ -211,7 +211,13 @@ class Pipeline:
 
         The player is one champion for the whole game, so this is the same move
         the tracker makes for a marker's identity: let the evidence pile up and
-        a handful of bad frames cannot outvote it."""
+        a handful of bad frames cannot outvote it.
+
+        Frames vote only while the self portrait reads alive -- see the gate in
+        `process`. The camera is assumed locked on the player, and death is the
+        one departure from that the pipeline can prove: the death-cam watches a
+        corpse or a teammate for the whole respawn timer, which is minutes of
+        wrong votes over a session, not a handful."""
 
     @property
     def self_champion(self) -> str | None:
@@ -353,7 +359,19 @@ class Pipeline:
                 key=lambda t: t.distance_to(self_blip.x, self_blip.y),
                 default=None,
             )
-        if self_track is not None and self_track.identity is not None:
+        # The champion at the camera centre is only a witness to who the
+        # player is while the camera is credibly locked on them, and the one
+        # violation this pipeline can prove is death: a dead player's camera
+        # sits on their corpse or roams teammates for the whole respawn timer,
+        # and on a real session those frames poured up to 72 seconds of votes
+        # at a stretch onto whoever was being watched. So the self portrait
+        # must read alive for a frame to vote. An unproven portrait withholds
+        # the vote too -- pre-game frames are not a game -- and a run with no
+        # portrait calibration keeps the old behaviour, having no gate to
+        # apply.
+        me = None if liveness is None else liveness.slot(SELF_SLOT)
+        witnessed = liveness is None or (me is not None and me.alive is True)
+        if witnessed and self_track is not None and self_track.identity is not None:
             name = self_track.identity
             self._self_evidence[name] = self._self_evidence.get(name, 0) + 1
 
