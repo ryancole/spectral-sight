@@ -18,6 +18,17 @@ rather than two mechanisms that can disagree.
 Identity does the rest of the work. A reappearing marker that the gallery reads
 as Swain is drawn toward the dormant track that has been accumulating Swain
 evidence, and pushed away from one that has not.
+
+Crossings -- two teammates walking through each other's gates -- get their own
+treatment, from two sides. Association is solved exactly within each tangle of
+mutually reachable markers and tracks, so the pairing is the best explanation
+of the whole tangle rather than whatever the single nearest pair left behind.
+And when a swap slips through anyway, the mutual contradiction it produces in
+later gallery reads is recognised and the identities exchanged outright
+(`_repair_swaps`), instead of waiting for fresh evidence to outvote a long
+track's history. Downstream death attribution is keyed entirely by name, so a
+name quietly riding the wrong marker is the failure mode worth this much
+machinery.
 """
 
 from __future__ import annotations
@@ -32,6 +43,11 @@ from spectral_sight.types import Blip, Team
 UNITS_PER_PIXEL = 46.0
 """Game units per minimap pixel, measured: a ~14800-unit map across a 325px
 minimap. Used only to keep the speed limits below interpretable."""
+
+_EXACT_LIMIT = 6
+"""Component size (either side) up to which assignment is enumerated exactly.
+Six covers every tangle five champions and stage 1's surplus can form while
+capping the enumeration at 6! = 720 pairings."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,6 +111,14 @@ class TrackerConfig:
     prefer the same champion, and weighting by similarity let three concurrent
     tracks all accumulate enough evidence to claim it. Margin asks how decisive
     the match was, which is the question that matters."""
+
+    swap_contradictions: int = 3
+    """Consecutive disagreeing reads, on each of two tracks and naming each
+    other's champion, before the pair is judged to have traded markers -- see
+    `_repair_swaps`. More than one, because a single read is exactly the
+    occlusion error the evidence system exists to outvote; small, because a
+    genuine swap contradicts every confident read from then on and each frame
+    it stands is a frame the wrong champion wears the name."""
 
 
 class Tracker:
@@ -172,6 +196,7 @@ class Tracker:
             t for t in self.tracks
             if t.age(timestamp) < self.config.forget_after
         ]
+        self._repair_swaps()
         self._resolve_duplicate_identities()
         for team in (Team.BLUE, Team.RED):
             self._cap_team(team, self.config.max_tracks_per_team)
@@ -222,6 +247,38 @@ class Tracker:
         )
         doomed = {id(t) for t in confirmed[limit:]}
         self.tracks = [t for t in self.tracks if id(t) not in doomed]
+
+    def _repair_swaps(self) -> None:
+        """Exchange identities between two tracks that traded markers.
+
+        Association keeps a crossing from swapping tracks when there is
+        anything to decide by, but two teammates fully overlapped can merge
+        into a single marker, and when they part again geometry alone cannot
+        say which is which. If that guess goes wrong, every later confident
+        read tells each track it is the *other* champion -- and waiting for
+        the ordinary outvote is wrong twice over. It is slow, because each
+        track sits on a mountain of support for its old name. And the moment
+        one track does flip, `_resolve_duplicate_identities` sides with the
+        other track's stale mountain and strikes the freshly correct name.
+
+        So a swap is recognised as a swap: when each of two teammates' tracks
+        has accumulated `swap_contradictions` reads naming precisely the
+        other's champion, the evidence changes places. Mutuality is the
+        safeguard -- a lookalike icon can misread one champion persistently,
+        but not two champions as each other, in both directions, at once.
+        """
+        threshold = self.config.swap_contradictions
+        for a, b in itertools.combinations(self.tracks, 2):
+            if a.team is not b.team:
+                continue
+            ours, theirs = a.identity, b.identity
+            if ours is None or theirs is None or ours == theirs:
+                continue
+            if (a.contradictions.get(theirs, 0) >= threshold
+                    and b.contradictions.get(ours, 0) >= threshold):
+                a.evidence, b.evidence = b.evidence, a.evidence
+                a.contradictions = {}
+                b.contradictions = {}
 
     def _resolve_duplicate_identities(self) -> None:
         """Stop two tracks from both claiming the same champion.
@@ -278,24 +335,109 @@ class Tracker:
         matches: list[Match | None],
         timestamp: float,
     ) -> list[tuple[int, Track]]:
-        """Greedy lowest-cost pairing of detections to existing tracks.
+        """Pair detections with existing tracks, tangle by tangle.
 
-        Greedy rather than optimal: there are at most ten champions, tracks are
-        well separated relative to the gate, and an explainable association is
-        worth more here than a marginally better one.
+        The feasible pairings split into connected components: a champion off
+        on their own can pair only with the marker in front of them, and
+        nothing outside a component can affect anything inside it. Most frames
+        every component is trivial. A crossing is a component with several
+        tracks and several markers, and there the assignment is solved exactly
+        (`_solve`) -- nearest-first is how the single closest pair gets to
+        decide two champions' fates, which is how tracks trade markers.
         """
-        candidates: list[tuple[float, int, Track]] = []
+        edges: list[tuple[float, int, Track]] = []
         for index, detection in enumerate(detections):
             for track in self.tracks:
                 cost = self._cost(track, detection, matches[index], timestamp)
                 if cost is not None:
-                    candidates.append((cost, index, track))
-        candidates.sort(key=lambda c: c[0])
+                    edges.append((cost, index, track))
 
+        pairs: list[tuple[int, Track]] = []
+        for component in self._components(edges):
+            pairs.extend(self._solve(component))
+        return pairs
+
+    @staticmethod
+    def _components(
+        edges: list[tuple[float, int, Track]],
+    ) -> list[list[tuple[float, int, Track]]]:
+        """Split the feasible pairings into independent groups.
+
+        Two pairings belong together when they share a detection or a track,
+        transitively -- plain union-find over the bipartite feasibility graph.
+        """
+        roots: dict[tuple[str, int], tuple[str, int]] = {}
+
+        def find(node: tuple[str, int]) -> tuple[str, int]:
+            while roots[node] != node:
+                roots[node] = roots[roots[node]]
+                node = roots[node]
+            return node
+
+        for _, index, track in edges:
+            detection_node, track_node = ("d", index), ("t", id(track))
+            roots.setdefault(detection_node, detection_node)
+            roots.setdefault(track_node, track_node)
+            a, b = find(detection_node), find(track_node)
+            if a != b:
+                roots[b] = a
+
+        grouped: dict[tuple[str, int], list[tuple[float, int, Track]]] = {}
+        for edge in edges:
+            grouped.setdefault(find(("d", edge[1])), []).append(edge)
+        return list(grouped.values())
+
+    def _solve(
+        self, edges: list[tuple[float, int, Track]]
+    ) -> list[tuple[int, Track]]:
+        """Best assignment within one component: most pairs, then least cost.
+
+        Solved by enumeration, since a component is a handful of champions at
+        most. Counting pairs before summing cost matters: a marker inside the
+        tangle belongs to one of the tracks already there, and leaving a track
+        unmatched so another can take its nearest marker both orphans an
+        established champion and spawns a phantom from the marker left over.
+
+        A component too big to enumerate falls back to greedy nearest-first;
+        with five champions a side, it does not occur.
+        """
+        det_indices = sorted({index for _, index, _ in edges})
+        tracks = list({id(track): track for _, _, track in edges}.values())
+        small = len(det_indices) <= _EXACT_LIMIT and len(tracks) <= _EXACT_LIMIT
+        if len(det_indices) == 1 or len(tracks) == 1 or not small:
+            return self._greedy(edges)
+
+        cost_of = {(index, id(track)): cost for cost, index, track in edges}
+        track_major = len(tracks) <= len(det_indices)
+        rows = tracks if track_major else det_indices
+        columns = det_indices if track_major else tracks
+
+        best_key: tuple[int, float] | None = None
+        best: list[tuple[int, Track]] = []
+        for permutation in itertools.permutations(columns, len(rows)):
+            paired: list[tuple[int, Track]] = []
+            total = 0.0
+            for row, column in zip(rows, permutation):
+                track, index = (row, column) if track_major else (column, row)
+                cost = cost_of.get((index, id(track)))
+                if cost is None:
+                    continue
+                paired.append((index, track))
+                total += cost
+            key = (-len(paired), total)
+            if best_key is None or key < best_key:
+                best_key, best = key, paired
+        return best
+
+    @staticmethod
+    def _greedy(
+        edges: list[tuple[float, int, Track]],
+    ) -> list[tuple[int, Track]]:
+        ordered = sorted(edges, key=lambda e: e[0])
         pairs: list[tuple[int, Track]] = []
         used_detections: set[int] = set()
         used_tracks: set[int] = set()
-        for _, index, track in candidates:
+        for _, index, track in ordered:
             if index in used_detections or id(track) in used_tracks:
                 continue
             pairs.append((index, track))

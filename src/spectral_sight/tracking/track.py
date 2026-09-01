@@ -52,6 +52,11 @@ class Track:
     evidence: dict[str, float] = field(default_factory=dict)
     """Accumulated identification support, keyed by champion name."""
 
+    contradictions: dict[str, int] = field(default_factory=dict)
+    """Confident reads disagreeing with the settled identity since it last
+    agreed, keyed by the name the gallery offered instead. This is the
+    signature a swapped track leaves -- see `Tracker._repair_swaps`."""
+
     # -- motion -----------------------------------------------------------
 
     def predict(self, dt: float) -> tuple[float, float]:
@@ -99,6 +104,12 @@ class Track:
 
     def observe_identity(self, name: str, weight: float) -> None:
         """Add support for `name` being this champion."""
+        settled = self.identity
+        if settled is not None:
+            if name == settled:
+                self.contradictions.clear()
+            else:
+                self.contradictions[name] = self.contradictions.get(name, 0) + 1
         self.evidence[name] = self.evidence.get(name, 0.0) + weight
 
     @property

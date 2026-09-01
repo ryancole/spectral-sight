@@ -67,6 +67,20 @@ but still far less than the map. Frame-to-frame association and
 re-identification after fog are therefore the same operation with the same
 parameters, rather than two mechanisms that can disagree.
 
+Two teammates crossing paths is the case the gate cannot arbitrate, and it is
+handled from two sides. Association is solved exactly within each tangle of
+mutually reachable markers and tracks rather than greedily nearest-first, so
+the single closest pair cannot decide two champions' fates. And a swap that
+slips through anyway — two allies merged into one marker, parting on a guess —
+is recognised by the signature it leaves: each track's later confident reads
+name the other's champion, and after three such reads on both sides the
+identities are exchanged outright rather than waiting for fresh evidence to
+outvote a long track's history. Death attribution is keyed entirely by name,
+so this is what it protects: re-extracting the 17-minute sample session turned
+three reported deaths — one under a teammate's name — into six, every one
+under the local player's correct name and each matching a span the HUD showed
+an ally down.
+
 Identity evidence is weighted by each match's *margin* over its runner-up, not
 by raw similarity. Similarity alone let popular icons act as a sink: many
 markers weakly prefer the same champion, and three concurrent tracks each

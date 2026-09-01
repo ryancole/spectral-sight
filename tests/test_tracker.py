@@ -194,6 +194,95 @@ def test_identified_reports_one_track_per_champion() -> None:
     assert list(tracker.identified()) == ["Swain"]
 
 
+# -- crossings --------------------------------------------------------------
+
+
+def test_a_tangle_is_solved_for_both_champions_not_first_come() -> None:
+    """Greedy's failure mode: the single nearest pair eats the one marker the
+    other track could reach, orphaning it and spawning a phantom."""
+    tracker = Tracker()
+    run(tracker, [
+        ([blip(100, 100), blip(112, 100)], [None, None]) for _ in range(4)
+    ])
+    a, b = sorted(tracker.confirmed, key=lambda t: t.x)
+
+    # The marker at 101 is nearest to a, but b can reach only it -- the one
+    # at 97 is outside b's gate. Both champions must come out matched.
+    tracker.update([blip(101, 100), blip(97, 100)], 0.4)
+
+    assert len(tracker.tracks) == 2
+    assert a.hits == b.hits == 5
+    assert a.x < b.x
+
+
+def test_two_allies_merging_and_parting_keep_two_tracks() -> None:
+    """Fully overlapped teammates read as one marker; parting again must
+    resume both tracks rather than starting a stranger."""
+    tracker = Tracker()
+    run(tracker, [
+        ([blip(100, 100), blip(108, 100)], [None, None]) for _ in range(4)
+    ])
+
+    for i in range(3):
+        tracker.update([blip(104, 100)], 0.4 + i * DT)
+    tracker.update([blip(100, 100), blip(108, 100)], 0.7)
+
+    assert len(tracker.tracks) == 2
+    left, right = sorted(tracker.tracks, key=lambda t: t.x)
+    assert left.distance_to(100, 100) < 4
+    assert right.distance_to(108, 100) < 4
+
+
+def test_a_swap_that_slipped_through_is_repaired() -> None:
+    """Once two tracks trade markers, each one's reads name the other; the
+    identities are exchanged outright instead of waiting for the outvote."""
+    tracker = Tracker()
+    run(tracker, [
+        ([blip(100, 100), blip(200, 200)], [match("Swain"), match("Galio")])
+        for _ in range(6)
+    ])
+    # Each track now sits on 1.2 evidence -- twice what the three
+    # contradicting frames below will accumulate, so an outvote alone could
+    # not flip either name.
+    run(tracker, [
+        ([blip(100, 100), blip(200, 200)], [match("Galio"), match("Swain")])
+        for _ in range(3)
+    ], start=0.6)
+
+    identified = tracker.identified()
+    assert identified["Galio"].distance_to(100, 100) < 1
+    assert identified["Swain"].distance_to(200, 200) < 1
+
+
+def test_a_one_sided_misread_does_not_swap_identities() -> None:
+    """A lookalike icon can misread one champion persistently, but only a
+    real swap contradicts both tracks toward each other."""
+    tracker = Tracker()
+    run(tracker, [
+        ([blip(100, 100), blip(200, 200)], [match("Swain"), match("Galio")])
+        for _ in range(6)
+    ])
+    run(tracker, [
+        ([blip(100, 100), blip(200, 200)], [match("Galio"), match("Galio")])
+        for _ in range(3)
+    ], start=0.6)
+
+    identified = tracker.identified()
+    assert identified["Swain"].distance_to(100, 100) < 1
+    assert identified["Galio"].distance_to(200, 200) < 1
+
+
+def test_an_agreeing_read_resets_the_contradiction_streak() -> None:
+    track = Track(id=1, team=Team.BLUE, x=0.0, y=0.0, last_seen=0.0)
+    for _ in range(4):
+        track.observe_identity("Swain", 0.2)
+    track.observe_identity("Galio", 0.2)
+    track.observe_identity("Galio", 0.2)
+    track.observe_identity("Swain", 0.2)
+    track.observe_identity("Galio", 0.2)
+    assert track.contradictions == {"Galio": 1}
+
+
 # -- interface --------------------------------------------------------------
 
 
