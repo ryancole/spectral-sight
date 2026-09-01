@@ -510,12 +510,43 @@ taking the latest value attributed the player's second death to two champions
 who were alive throughout. Accumulating instead is the same move the tracker
 makes for a marker's identity, and Zilean beat the runner-up 1,926 to 133.
 
-A frame therefore resolves when every dead portrait is one that can be named,
-which covers two cases and most of the footage: nobody dead, which needs no
-naming at all and is four frames in five; and only the local player dead, which
-names the casualty and so clears everyone else. A teammate down alongside — or
-instead — leaves a death nobody can attribute, and those rows report `alive:
-null` while `allies_dead` still carries the count. That is 2.5% of ally rows.
+That closed the local player's deaths and nothing else — a teammate down was a
+death nobody could attribute. The other four slots are named by
+`perception/hud/naming.py`, which turns the counting failure above into an
+accumulation problem. The one measurement that makes it possible: across 388
+frames of the local player's own deaths — a champion known to be off the map —
+the gallery never once confidently matched the absent champion's icon. So a
+champion confidently matched while a slot reads dead is not that slot's corpse,
+and each unnamed slot accrues a table of who was matched, for how long, across
+every second it has ever spent dead. Portrait order is fixed for the match, so
+the evidence compounds death over death.
+
+The subtlety is what "unmatched" is allowed to mean. Match rates vary
+enormously by champion — Leblanc was vouched for every few frames all session
+while Leona, parked on her carry, went unmatched for most of a minute at a
+stretch, and was occasionally matched *as Shaco* — so a candidate is judged
+against their own running rate, not a fixed bar. A candidate proves themselves
+alive during a slot's dead footage by being matched for a second in absolute
+terms and a quarter of what their own rate predicts; a slot locks when exactly
+one candidate has failed to do so. Two quiet candidates is an ambiguity and the
+slot waits, because locks cascade: Leona dying cleanly named her own slot,
+which struck her from the pool and immediately settled the slot where she and
+the phantom-ridden Shaco had been indistinguishable — and when three slots are
+named, the fourth locks by elimination without ever having died. On the
+2026-08-30 session all four slots were named correctly by game 5:33, after
+three ally deaths.
+
+Slot liveness also stops being taken raw at this point — the local player's
+included. The raw reading flaps in places a count can shrug off but a named
+event cannot: the HUD warming up read four teammates dead for under a second,
+and the post-game screen flaps every slot sub-second indefinitely, which the
+raw self portrait emitted as five sub-two-second deaths. So a slot's state
+must hold for a second of clock-proven footage before it is believed,
+symmetrically on death and respawn — every event lands about a second late and
+`down_for` is unchanged, while flicker becomes structurally unable to reach
+the timeline. What cannot be named — a death before the slots lock, a corpse
+whose name no track carries yet — still reports `alive: null` with
+`allies_dead` carrying the count.
 
 ### Reading a champion's bars, and what that says about abilities
 
@@ -776,13 +807,13 @@ coherent ones.
 - **Nothing handles the absence of a clock.** Loading screens and the
   pre-game lobby have no timer, and the reader simply returns nothing there
   rather than knowing why.
-- **A teammate's death cannot be attributed to a champion.** The HUD says
-  someone is down and the count is reliable; naming them needs a slot-to-champion
-  mapping that does not exist yet. Matching each portrait against just the five
-  locked roster icons is the obvious route — a five-way closed-set assignment
-  rather than the 173-way one, with the local player already pinned by the
-  viewport and skinned slots recoverable by elimination — and it would close the
-  last 2.5% of ally rows. That is the next thing to fix.
+- **Ally deaths before the slots lock go unnamed.** The slot-to-champion
+  mapping is learned from the deaths themselves, so the first ally death of a
+  session — and any others that finish before enough evidence accrues — emit
+  no named event; on the 2026-08-30 session that cost one death of fourteen.
+  Matching each portrait against the five locked roster icons could name the
+  slots before anyone dies, but only for base skins, which is why it was not
+  built on: several teammates in that session were visibly skinned.
 - **Health is read as alive or dead, not as a number.** The bars carry an exact
   figure and the local player's even carries it as text, but nothing reads it,
   so "low and retreating" is not expressible.
@@ -1186,6 +1217,7 @@ src/spectral_sight/
   perception/hud/
     portraits.py              where the friendly portraits sit
     alive.py                  who is dead, from portrait desaturation
+    naming.py                 which champion each ally slot belongs to
     clock.py                  the match timer
     resources.py              the player's own health and mana, as numbers
   perception/nameplates/

@@ -14,6 +14,7 @@ from spectral_sight.perception.hud.clock import (
     GlyphSet,
     load_clock_reader,
 )
+from spectral_sight.perception.hud.naming import SlotNaming
 from spectral_sight.perception.hud.portraits import PortraitLayout
 
 __all__ = [
@@ -26,6 +27,7 @@ __all__ = [
     "GlyphSet",
     "Liveness",
     "PortraitLayout",
+    "SlotNaming",
     "SlotState",
     "load_clock_reader",
 ]

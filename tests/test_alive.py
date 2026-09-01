@@ -319,7 +319,8 @@ def test_the_local_players_death_is_attributed_by_name() -> None:
     name_tracks(pipeline, "Zilean", "Ryze")
     pipeline._self_evidence = {"Zilean": 50}
 
-    result = run(pipeline, dead=(SELF_SLOT,), markers=(), frames=1, start=2.0)
+    result = run(pipeline, dead=(SELF_SLOT,), markers=(), frames=12,
+                 start=2.0)
 
     verdicts = {row.champion: row.alive for row in result.observations}
     assert verdicts["Zilean"] is False
@@ -350,16 +351,22 @@ def test_too_few_sightings_is_not_enough_to_name_the_player() -> None:
     assert pipeline.self_champion is None
 
 
-def test_a_death_alongside_the_local_player_is_not_guessed() -> None:
-    """Two down and only one nameable: the other could be any teammate."""
+def test_a_death_alongside_the_local_player_names_only_the_player() -> None:
+    """Two down and only one nameable. The player's own slot answers for them
+    whatever the rest of the frame looks like, but the companion could be any
+    teammate -- so the player reads dead and everyone else stays unknown."""
     pipeline = build_pipeline()
     run(pipeline, frames=5)
     name_tracks(pipeline, "Zilean", "Ryze")
     pipeline._self_evidence = {"Zilean": 50}
 
-    result = run(pipeline, dead=(SELF_SLOT, "ally1"), markers=(), frames=1,
+    result = run(pipeline, dead=(SELF_SLOT, "ally1"), markers=(), frames=12,
                  start=2.0)
-    assert all(row.alive is None for row in result.observations)
+    verdicts = {row.champion: row.alive for row in result.observations}
+    assert verdicts["Zilean"] is False
+    assert verdicts["Ryze"] is None, (
+        "one unnamed casualty leaves every unnamed champion in doubt"
+    )
     assert all(row.allies_dead == 2 for row in result.observations)
 
 
@@ -371,7 +378,8 @@ def test_an_unnamed_local_player_cannot_attribute_their_own_death() -> None:
     name_tracks(pipeline, "Zilean", "Ryze")
     pipeline._self_evidence = {}
 
-    result = run(pipeline, dead=(SELF_SLOT,), markers=(), frames=1, start=2.0)
+    result = run(pipeline, dead=(SELF_SLOT,), markers=(), frames=12,
+                 start=2.0)
     assert all(row.alive is None for row in result.observations)
 
 
@@ -381,7 +389,8 @@ def test_a_named_casualty_missing_from_the_tracks_clears_nobody() -> None:
     name_tracks(pipeline, "Zilean", "Ryze")
     pipeline._self_evidence = {"Sejuani": 50}
 
-    result = run(pipeline, dead=(SELF_SLOT,), markers=(), frames=1, start=2.0)
+    result = run(pipeline, dead=(SELF_SLOT,), markers=(), frames=12,
+                 start=2.0)
     assert all(row.alive is None for row in result.observations)
 
 

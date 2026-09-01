@@ -32,10 +32,12 @@ naming them is useful; the viewport's job is to say *which* track is theirs,
 which no amount of matching can establish.
 
 Steps 2 and 7 are read from opposite ends of the screen and are joined in step
-8. The HUD knows how many teammates are dead but not which champions they are,
-since portrait art is skin-specific; the minimap knows exactly which champions
-are missing but not why. Neither is sufficient alone, and together they settle
-it -- see `_attribute_deaths`.
+8. The HUD knows which portrait slots are dead but not which champions they
+are, since portrait art is skin-specific; the minimap knows exactly which
+champions are missing but not why. Neither is sufficient alone. Together they
+settle it twice over: the local player's slot is named by the camera viewport,
+and the ally slots are named by `SlotNaming`, which learns the fixed
+slot-to-champion order from the deaths themselves -- see `_attribute_deaths`.
 
 The clock, the world transform, the HUD portraits and the nameplate layout are
 all optional and each needs a calibration step of its own, so `for_resolution`
@@ -64,6 +66,7 @@ from spectral_sight.perception.hud.clock import (
     GameClock,
     load_clock_reader,
 )
+from spectral_sight.perception.hud.naming import SELF_SLOT, SlotNaming
 from spectral_sight.perception.hud.portraits import PortraitLayout
 from spectral_sight.perception.identity import Gallery, Match, load_icon_gallery
 from spectral_sight.perception.identity.roster import Roster
@@ -94,10 +97,6 @@ SELF_RADIUS = 12.0
 The nearest marker measures 5-7px on real footage with the runner-up 38-88px
 away, so this threshold sits comfortably inside a very wide gap."""
 
-SELF_SLOT = "self"
-"""The HUD portrait slot holding the local player's own champion, as named by
-`PortraitLayout.all_crops`."""
-
 SELF_MIN_SIGHTINGS = 10
 SELF_MIN_LEAD = 2.0
 """How much the viewport must favour one champion before it is called the local
@@ -124,8 +123,9 @@ class PipelineResult:
 
     liveness: Liveness | None = None
     """What the HUD portraits say about which teammates are alive, when they
-    are calibrated. Slot-indexed, so it says how many are dead but not which
-    champions they are -- see `_attribute_deaths` for how that is closed."""
+    are calibrated. Slot-indexed, so on its own it says how many are dead but
+    not which champions they are -- see `_attribute_deaths` for the two routes
+    that close the gap."""
 
     plates: list[Nameplate] = field(default_factory=list)
     """Champion nameplates read from the world view this frame, if calibrated.
@@ -179,6 +179,9 @@ class Pipeline:
         self.world = world
         self.portraits = portraits
         self.liveness = None if portraits is None else AliveReader(portraits)
+        self.naming = None if portraits is None else SlotNaming()
+        """Learns which champion each ally portrait slot belongs to, so their
+        deaths can be attributed by name -- see `_attribute_deaths`."""
         self.nameplates = nameplates
         self.projection = (
             None if nameplates is None
@@ -317,6 +320,7 @@ class Pipeline:
                 # boxes may hold different champions now, so what the slots
                 # learned is evidence about footage that ended.
                 self.liveness.reset()
+                self.naming.reset()
             # Baselines learn only from frames the timer resolves on, because
             # the timer is the one HUD element that proves the in-game HUD is
             # on screen at all. A recording that starts in queue otherwise
@@ -325,8 +329,8 @@ class Pipeline:
             # real HUD would read dead from its first frame onward. With no
             # clock calibration there is no such proof to wait for, and
             # learning from every frame is the behaviour that predates it.
-            learn = self.clock is None or (clock is not None and clock.observed)
-            liveness = self.liveness.read(frame, learn=learn)
+            trusted = self.clock is None or (clock is not None and clock.observed)
+            liveness = self.liveness.read(frame, learn=trusted)
 
         minimap = self.region.crop(frame)
         blips = self.detector.detect(minimap)
@@ -374,6 +378,21 @@ class Pipeline:
         if witnessed and self_track is not None and self_track.identity is not None:
             name = self_track.identity
             self._self_evidence[name] = self._self_evidence.get(name, 0) + 1
+
+        if self.naming is not None and liveness is not None:
+            # An ally is drawn on the minimap exactly while alive, so the
+            # champions the gallery matched with confidence this frame are
+            # proven living -- the negative space is what names a dead slot.
+            seen = {
+                match.name
+                for blip, match in zip(blips, matches)
+                if match is not None and match.confident
+                and blip.team is Team.BLUE
+            }
+            self.naming.update(
+                liveness, seen, self.roster.locked(Team.BLUE),
+                self.self_champion, timestamp, trusted=trusted,
+            )
 
         plates, pairing, casts = self._read_plates(
             frame, tracks, viewport, timestamp
@@ -483,59 +502,91 @@ class Pipeline:
         spread across three champions who were never dead at all.
 
         So deaths are only attributed to champions that can be named outright,
-        and there is exactly one such route: the local player, who is resolved
-        from the camera viewport rather than by appearance. Their own portrait
-        is a known slot, so when it greys out, the champion at the centre of the
-        camera is the one who died -- no counting involved. It has to be
-        `self_champion`, the accumulated answer, rather than this frame's: the
-        viewport finds the player by the marker at the camera centre, and a dead
-        player has no marker, so `self_track` resolves in none of the frames in
-        which the self portrait reads dead.
+        and there are exactly two such routes:
 
-        A frame is then resolved when every dead portrait is one that can be
-        named. Two cases qualify and between them they cover most of the
-        footage:
+        - **The local player**, who is resolved from the camera viewport
+          rather than by appearance. Their own portrait is a known slot, so
+          when it greys out, the champion at the centre of the camera is the
+          one who died -- no counting involved. It has to be `self_champion`,
+          the accumulated answer, rather than this frame's: the viewport finds
+          the player by the marker at the camera centre, and a dead player has
+          no marker, so `self_track` resolves in none of the frames in which
+          the self portrait reads dead.
+        - **An ally slot `SlotNaming` has locked onto a champion.** The
+          counting that fails per frame works integrated over a whole death:
+          across the seconds a slot stays dead, the living allies keep being
+          confidently matched on the minimap and the casualty does not, and
+          the slot-to-champion pairing that survives that evidence is locked
+          for the match -- portrait order is fixed. See `naming` for the
+          voting; here a locked slot simply names its dead champion the way
+          the self slot always has.
 
-        - **Nobody dead** needs no naming at all: every ally track is alive,
-          whatever the minimap did. Measured, four frames in five. This is where
-          the HUD earns its place, because it is the only thing that can tell a
-          champion the tracker lost from a champion who died, and those rows
-          come out `visible=False, alive=True` -- a state the timeline
-          previously had no way to say.
-        - **Only the local player is dead**, which names the casualty and
-          therefore clears everyone else.
+        Every slot -- the local player's included -- is judged on
+        `SlotNaming`'s *debounced* state rather than this frame's raw
+        reading, which is what keeps the HUD warm-up flicker and the
+        post-game flapping -- both sub-second -- from ever reaching the
+        timeline as deaths. Measured, the post-game screen flapped the self
+        portrait into five sub-two-second "deaths" that the old raw reading
+        emitted as real; the cost of the hold is each event landing a second
+        late, symmetrically, so `down_for` is unchanged.
 
-        Anything else -- a teammate down, or the player down alongside one --
-        leaves at least one death unattributable, and the frame reports None for
-        every ally rather than guessing which. `allies_dead` still carries the
-        count, so a consumer knows someone was down even when nobody can say
-        who.
+        A champion whose own slot is known answers for themselves: their
+        verdict is that slot's state, whatever the rest of the frame looks
+        like. Everyone else is cleared collectively, and only when the frame
+        is resolved end to end -- every slot has a definite state, every dead
+        slot has a name, and every named casualty is among the ally tracks'
+        identities (otherwise a track about to be called alive could be the
+        corpse under a name that has not settled yet). An unresolved remainder
+        reports None rather than guessing, and `allies_dead` still carries the
+        raw count, so a consumer knows someone was down even when nobody can
+        say who.
 
         Enemies are always None. Fog means their absence says nothing, and no
         HUD panel names them.
         """
         verdicts: dict[int, bool | None] = {t.id: None for t in tracks}
-        dead_count = None if liveness is None else liveness.dead_count
-        if dead_count is None:
+        if liveness is None:
             return verdicts
 
-        named_dead = set()
-        me = liveness.slot(SELF_SLOT)
-        if me is not None and me.alive is False and self.self_champion:
-            named_dead.add(self.self_champion)
-        if len(named_dead) != dead_count:
-            return verdicts
+        states: dict[str, bool | None] = {}
+        names: dict[str, str | None] = {}
+        for slot in liveness.slots:
+            states[slot.slot] = (
+                None if self.naming is None else self.naming.state(slot.slot)
+            )
+            if slot.slot == SELF_SLOT:
+                names[slot.slot] = self.self_champion or None
+            else:
+                names[slot.slot] = (
+                    None if self.naming is None else self.naming.name(slot.slot)
+                )
+
+        by_name = {
+            name: states[slot]
+            for slot, name in names.items()
+            if name is not None
+        }
+        named_dead = {name for name, state in by_name.items() if state is False}
 
         allies = [t for t in tracks if t.team is Team.BLUE]
         identities = {t.identity for t in allies}
-        if not named_dead <= identities:
-            # The champion known to be dead is not among the tracks that would
-            # be cleared, so one of the tracks about to be called alive could
-            # be them under a name that has not settled yet.
-            return verdicts
+        resolved = (
+            all(state is not None for state in states.values())
+            and all(
+                names[slot] is not None
+                for slot, state in states.items() if state is False
+            )
+            and named_dead <= identities
+        )
 
         for track in allies:
-            verdicts[track.id] = track.identity not in named_dead
+            verdict = (
+                None if track.identity is None
+                else by_name.get(track.identity)
+            )
+            if verdict is None and resolved:
+                verdict = True
+            verdicts[track.id] = verdict
         return verdicts
 
     def _observe(
