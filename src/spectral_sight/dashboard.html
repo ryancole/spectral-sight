@@ -258,6 +258,12 @@ stream.onerror = () => { $("status").textContent = "reconnecting…"; $("status"
 // mind-control's coaching feedback: a separate, optional process publishing
 // its own SSE stream. The panel and the map crosshair light up when it runs;
 // while it does not, EventSource just keeps retrying quietly.
+//
+// Two kinds of feedback share the log. A `glance` is attention -- somewhere on
+// the map worth looking, so it moves the crosshair too. A `cue` is execution
+// -- what the player's own cast or a bolt at them came to -- which the log can
+// say and the map cannot show. Unrecognized kinds are ignored on purpose: this
+// panel is optional and must never break on a coach that knows more than it.
 function coachLine(m) {
   const line = document.createElement("div");
   const when = document.createElement("span");
@@ -284,6 +290,12 @@ coachStream.onmessage = e => {
     ghost = { nx: m.nx, ny: m.ny, at: Date.now() };
   } else if (m.t === "glance") {
     ghost = { nx: m.nx, ny: m.ny, at: Date.now() };
+    coachLine(m);
+  } else if (m.t === "cue") {
+    // Coaching with nowhere to look. A glance says "watch the top lane" and
+    // moves the crosshair; a cue says "that Q went 210px wide of them", which
+    // is about the player's own execution and has no place on the map. The
+    // ghost is deliberately left where it is.
     coachLine(m);
   } else if (m.t === "status") {
     const status = $("coach-status");
