@@ -165,6 +165,107 @@ class Threat:
 
 
 @dataclass(frozen=True, slots=True)
+class Skillshot:
+    """One skillshot the player threw, and what became of it.
+
+    Local player only, like `AbilityUse` and `Threat`: the cast comes off
+    their own cooldown HUD and the bolt is born at their own model. See
+    `perception.screen.aim` for how each field is measured, and for the one
+    measurement that says the geometry and the health agree."""
+
+    slot: str
+    """Q, W, E or R -- the button, which with the row's `champion` names the
+    ability."""
+
+    at: float
+    """`video_time` of the cast, from the HUD cooldown veil."""
+
+    launched: float | None
+    """`video_time` the bolt was first seen. None when the cast launched
+    nothing this stage could find -- a blink, a self-buff, or a bolt it
+    missed."""
+
+    speed: float | None
+    """px/s, chord over duration."""
+
+    heading: tuple[float, float] | None
+    """Unit vector of travel, world-view pixels."""
+
+    miss: float | None
+    """Closest approach of the bolt's line to the target's model, px -- the
+    aim error, and the number this stage exists to produce. None when no
+    enemy was on screen in front of the bolt to aim at, which is most of a
+    lane phase. The target is whichever enemy the line passed nearest, ahead
+    of the bolt and inside a plausible flight."""
+
+    flight: float | None
+    """Seconds from the bolt's first sighting to reaching the target."""
+
+    outcome: str
+    """`hit`, `missed`, or `unknown`.
+
+    Decided by geometry -- whether `miss` came inside the stage's hit radius
+    -- and not by the target's health. That is a measured choice and the
+    module explains it: on the footage this project has, an enemy's bar falls
+    in half of all windows of the length involved, so a fall after a shot is
+    barely evidence. `unknown` means the frame could not say at all: the cast
+    launched no bolt, or no enemy was on screen in front of it."""
+
+    fall: float | None
+    """Fraction of the target's health bar that went in the arrival window,
+    when any did -- carried on hits and misses alike, as corroboration for a
+    consumer to weigh rather than as the verdict.
+
+    A bar fraction and not an absolute, unlike `Threat.damage`: nobody's
+    maximum health is printed but the local player's."""
+
+    lead: float | None
+    """Signed offset of the shot past the target, px: positive means it went
+    by on the side they were walking toward, negative behind them. None when
+    the target was not moving fast enough for the direction to mean
+    anything. This is the one field the footage has not scored -- see the
+    module."""
+
+    def to_dict(self) -> dict[str, object]:
+        out: dict[str, object] = {
+            "slot": self.slot,
+            "at": round(float(self.at), 3),
+            "outcome": self.outcome,
+        }
+        if self.launched is not None:
+            out["launched"] = round(float(self.launched), 3)
+        if self.speed is not None:
+            out["speed"] = round(float(self.speed), 0)
+        if self.heading is not None:
+            out["heading"] = [round(float(self.heading[0]), 3),
+                              round(float(self.heading[1]), 3)]
+        if self.miss is not None:
+            out["miss"] = round(float(self.miss), 1)
+        if self.flight is not None:
+            out["flight"] = round(float(self.flight), 3)
+        if self.fall is not None:
+            out["fall"] = round(float(self.fall), 3)
+        if self.lead is not None:
+            out["lead"] = round(float(self.lead), 1)
+        return out
+
+    @classmethod
+    def from_dict(cls, d: dict) -> Skillshot:
+        heading = d.get("heading")
+        return cls(
+            slot=str(d["slot"]), at=float(d["at"]),
+            launched=None if d.get("launched") is None else float(d["launched"]),
+            speed=None if d.get("speed") is None else float(d["speed"]),
+            heading=None if heading is None else (float(heading[0]), float(heading[1])),
+            miss=None if d.get("miss") is None else float(d["miss"]),
+            flight=None if d.get("flight") is None else float(d["flight"]),
+            outcome=str(d["outcome"]),
+            fall=None if d.get("fall") is None else float(d["fall"]),
+            lead=None if d.get("lead") is None else float(d["lead"]),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class Observation:
     """One champion at one instant.
 
@@ -294,6 +395,13 @@ class Observation:
     only, like `abilities`, and for the same reason: the outcome is read off
     the player's own printed health and the response off their own camera."""
 
+    skillshots: tuple[Skillshot, ...] | None = None
+    """Skillshots the local player threw that resolved on this frame -- the
+    self row only. The mirror of `threats`: the same bolts, judged from the
+    other end. A cast resolves a second or two after it happened, once the
+    bolt has flown and the target's bar has had a chance to move, so these
+    ride a later row than the `abilities` entry naming the same cast."""
+
     allies_dead: int | None = None
     """How many of your five teammates were dead on this frame.
 
@@ -350,6 +458,8 @@ class Observation:
             row["abilities"] = [use.to_dict() for use in self.abilities]
         if self.threats:
             row["threats"] = [threat.to_dict() for threat in self.threats]
+        if self.skillshots:
+            row["skillshots"] = [shot.to_dict() for shot in self.skillshots]
         return row
 
     @classmethod
@@ -395,6 +505,10 @@ class Observation:
             threats=(
                 tuple(Threat.from_dict(t) for t in data["threats"])
                 if data.get("threats") else None
+            ),
+            skillshots=(
+                tuple(Skillshot.from_dict(t) for t in data["skillshots"])
+                if data.get("skillshots") else None
             ),
             allies_dead=(
                 None if data.get("allies_dead") is None
@@ -450,6 +564,11 @@ class TimelineMeta:
     """Whether the world view was read for projectiles at the player. Needs
     every frame, so it is on only for a run fed that way (`--coach`)."""
 
+    has_skillshots: bool = False
+    """Whether the player's own casts were followed to their bolts. Needs the
+    world view, the ability HUD and nameplates all at once, so it is on only
+    for a `--coach` run with each of them calibrated."""
+
     world_bounds: dict[str, float] | None = None
     world_units_per_pixel: list[float] | None = None
     """The world calibration in force, or None if positions are crop pixels
@@ -471,6 +590,7 @@ class TimelineMeta:
             "has_nameplates": self.has_nameplates,
             "has_abilities": self.has_abilities,
             "has_threats": self.has_threats,
+            "has_skillshots": self.has_skillshots,
             "world_bounds": self.world_bounds,
             "world_units_per_pixel": self.world_units_per_pixel,
         }
@@ -488,6 +608,7 @@ class TimelineMeta:
             has_nameplates=bool(data.get("has_nameplates", False)),
             has_abilities=bool(data.get("has_abilities", False)),
             has_threats=bool(data.get("has_threats", False)),
+            has_skillshots=bool(data.get("has_skillshots", False)),
             world_bounds=data.get("world_bounds"),
             world_units_per_pixel=data.get("world_units_per_pixel"),
             schema=int(data.get("schema", SCHEMA)),
@@ -509,6 +630,7 @@ class TimelineMeta:
             has_nameplates=self.has_nameplates,
             has_abilities=self.has_abilities,
             has_threats=self.has_threats,
+            has_skillshots=self.has_skillshots,
             world_bounds=self.world_bounds,
             world_units_per_pixel=self.world_units_per_pixel,
             schema=self.schema,

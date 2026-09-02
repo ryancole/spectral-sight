@@ -145,10 +145,15 @@ sampled every `--stride`.
 ### Phase 4 — aim coaching
 
 Phase 1 says which skillshot the player cast and when; Phase 2 catches the
-projectile leaving the player anchor; the outcome is an enemy nameplate HP
-drop coinciding with the track ending on that plate. Emits `skillshot` events
-with hit/miss and target lead/lag. `Recording 2026-08-30 200315` is the
+projectile leaving the player anchor; the outcome was to be an enemy nameplate
+HP drop coinciding with the track ending on that plate. Emits `skillshot`
+events with hit/miss and target lead/lag. `Recording 2026-08-30 200315` is the
 validation clip — a human Ezreal is as skillshot-dense as footage gets.
+
+*Built, and the outcome half of that paragraph did not survive the footage —
+see the status below. The track's end is useless and the health drop is not a
+label while anything else on the map is dealing damage, so the verdict is the
+bolt's geometry and the health fall rides along as corroboration.*
 
 ### Phase 5 — enemy ability naming (later)
 
@@ -205,4 +210,45 @@ rather than blocking anything.
   was dropped as unmeasurable at that warning; `moved_across` replaces it.
   The origin gate (bolt launched at an enemy plate) is on, the end gate off.
   What a threat lacks is a label — Phase 0 footage and the classifier.
-- Phases 4–5: not started
+- **Phase 4: built.** `perception/screen/aim.py` joins the cast, the bolt it
+  launched and the enemy plate it went at; `skillshots` ride the self row, a
+  `skillshot` event flows through feed and replay, and `has_skillshots` is on
+  for a `--coach` run with the ability HUD and nameplates calibrated. Measured
+  on 150-700 s of `Recording 2026-08-30 200315`: **111 casts, 72 launching a
+  bolt, 24 with an enemy on screen in front of it** -- 17 called hits, 7
+  misses, at a median miss of 77 px. `tools/detect_skillshots.py --sweep`.
+
+  **The phase changed shape once measured, and the reason is worth carrying
+  forward.** The plan above said the outcome was "an enemy nameplate HP drop
+  coinciding with the track ending on that plate". Neither half survived
+  contact with the footage. Where a track *ends* is useless, the same finding
+  the threat stage records from the other direction: a bolt's track stops when
+  its residual fades, at a median 0.62 of the way to its target, and the
+  near/wide split on that is 0.75 against 0.52. And the health drop is **not a
+  label on this footage at all**: an enemy's bar falls in **52% of every
+  0.65-second window they are on screen** (1,327 windows, 62 plate tracks),
+  because a bot-game lane trade is continuous damage from minions, the turret,
+  autos and the player's other abilities. No window or threshold fixes it --
+  tightening until the baseline is informative drops the near-miss rate to
+  chance with it.
+
+  So the verdict is geometric -- did the bolt's line pass within a hit radius
+  of the target's model -- and the health fall is carried as `fall`,
+  corroboration rather than answer. It leans the right way (82% of the 17
+  called hits, 43% of the 7 called misses) but seven wide shots is not a
+  result. The hit radius sits in a gap in the measured miss distances (nothing
+  between 124 px and 183 px) and is the least settled number in the module.
+
+  Two smaller things measured along the way. A bolt is claimed by one cast
+  only: without that, three of twenty-four shots were two casts within half a
+  second both credited with the same bolt. And the miss is measured against
+  where the target stood at the *launch* rather than at arrival -- the two
+  differ by a median 12 px and disagreed on 1 verdict in 24, and the launch
+  position is available on every shot where the arrival position is available
+  on five sixths of them.
+
+  **This makes Phase 0 the critical path for Phase 4 as well as Phase 3.** One
+  enemy, one skillshot, nothing else dealing damage: then the baseline is zero,
+  the bar is the label it was supposed to be, and the hit radius can be swept
+  against it instead of chosen in a gap.
+- Phase 5: not started

@@ -868,7 +868,8 @@ it is a tuning signal, not a substitute for labelled positions.
 ## Toward dodge and aim coaching
 
 The plan of record is [docs/dodge-coaching-plan.md](docs/dodge-coaching-plan.md).
-Two of its stages exist.
+Four of its stages exist: the player's own abilities, projectiles on the world
+view, the bolts that came at them, and the bolts they threw.
 
 **The player's own abilities, named.** The nameplate route says *that* a cost
 was paid; the HUD says *which button*. When an ability is used its slot stops
@@ -953,6 +954,40 @@ player's movement across the line measured on every one. Fourteen is a
 sample, not a rate, and the hit/dodge split of `moved_across` on it (40 px
 against 21) means nothing yet; it is the number the labelled footage will
 make mean something.
+
+**Your own skillshots, and where they went.** The same bolts from the other
+end. `perception/screen/aim.py` joins the three stages a shot needs -- the
+HUD says which button, the world view says a bolt left your model in the half
+second after it, and an enemy nameplate says how near that bolt passed them.
+There is no per-champion table of which abilities are skillshots: a blink or
+a self-buff launches nothing, so it excludes itself, and a champion this
+project has never seen needs no entry. Over 150-700 s of the 2026-08-30
+session: **111 casts, 72 of which launched a bolt, and 24 of those with an
+enemy on screen in front of it to have been aimed at** -- 17 passed within
+130 px of them and 7 went wide, at a median miss of 77 px.
+
+The interesting part is what the outcome had to be built on. The plan
+expected the target's health bar to be the label, the way the player's own
+printed health labels a threat. It is not one on this footage, and the number
+is the reason: **an enemy's bar falls in 52% of all 0.65-second windows they
+are on screen at all** -- 1,327 windows across 62 plate tracks. A lane trade
+against bots is continuous damage from minions, the turret, auto-attacks and
+your other abilities, so "the bar moved after your Q" is barely better than a
+coin toss, and no window or threshold makes it better: tightening it until
+the baseline is informative drops the near-miss rate to chance with it.
+
+So the verdict is geometric -- did the bolt's line pass within a hit radius
+of the target's model -- measured from the stabilised residual and the plate,
+with the bar carried alongside as `fall` for a consumer to weigh rather than
+as the answer. It does lean the right way: the bar fell after **82% of the 17
+shots called hits against 43% of the 7 called misses**, on that 52% baseline.
+Seven wide shots is not a result; it is the direction one would point. The
+hit radius itself sits in a gap in the measured miss distances (nothing
+between 124 px and 183 px) and is the least settled number in the module,
+which says so at length. What settles it is the plan's Phase 0: one enemy,
+one skillshot, and nothing else on the map dealing damage, so the bar becomes
+the label it was supposed to be. `tools/detect_skillshots.py --sweep` reports
+all of it.
 
 ## Input assumptions
 

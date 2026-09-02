@@ -58,11 +58,19 @@ from pathlib import Path
 
 import numpy as np
 
-from spectral_sight.export import AbilityUse, Observation, Threat, TimelineMeta
+from spectral_sight.export import (
+    AbilityUse,
+    Observation,
+    Skillshot,
+    Threat,
+    TimelineMeta,
+)
 from spectral_sight.perception.hud.abilities import AbilityLayout, AbilityReader
 from spectral_sight.perception.hud.resources import ResourceReader, load_resource_reader
 from spectral_sight.perception.nameplates.plates import Side
 from spectral_sight.perception.screen import (
+    AimDetector,
+    EnemyPlate,
     ProjectileTracker,
     ThreatDetector,
     WorldView,
@@ -264,10 +272,15 @@ class Pipeline:
         # a bolt is judged against.
         self.projectiles: ProjectileTracker | None = None
         self.threats: ThreatDetector | None = None
+        self.aim: AimDetector | None = None
         self.resources: ResourceReader | None = None
         if coach and nameplates is not None:
             self.projectiles = ProjectileTracker()
             self.threats = ThreatDetector()
+            # The other end of the same bolts: what the player threw. Needs
+            # the ability HUD as well, since a skillshot begins with a cast
+            # and an unattributed bolt beside the player is not one.
+            self.aim = None if abilities is None else AimDetector()
             if resolution is not None and clock is not None:
                 self.resources = load_resource_reader(
                     resolution[0], resolution[1], clock.glyphs
@@ -279,6 +292,9 @@ class Pipeline:
         the plates read on the last sampled frame and held until the next.
         Plates move a few pixels between samples; a bolt moves a hundred."""
         self._pending_threats: list[Threat] = []
+        self._pending_skillshots: list[Skillshot] = []
+        """Resolved shots waiting for a self row, held for the same reason
+        the abilities are: the row is the carrier, not the clock."""
 
         self.levels = LevelBook()
         self.casts = CastBook()
@@ -447,17 +463,21 @@ class Pipeline:
             portrait = None if liveness is None else liveness.slot(SELF_SLOT)
             dead = portrait is not None and portrait.alive is False
             if trusted and not dead:
-                self._pending_abilities.extend(
-                    AbilityUse(
+                for cast in self.ability_reader.read(frame, timestamp):
+                    self._pending_abilities.append(AbilityUse(
                         slot=cast.slot,
                         at=cast.at,
                         countdown=cast.countdown,
                         confirmed=cast.confirmed,
-                    )
-                    for cast in self.ability_reader.read(frame, timestamp)
-                )
+                    ))
+                    if self.aim is not None:
+                        self.aim.observe_cast(cast.slot, cast.at)
             elif dead:
                 self.ability_reader.reset()
+                if self.aim is not None:
+                    # Death veils every slot; whatever the aim stage was
+                    # holding was cast in a life that has ended.
+                    self.aim.reset()
 
         if self.projectiles is not None and self.threats is not None:
             self._watch_world(frame, timestamp, trusted)
@@ -560,6 +580,7 @@ class Pipeline:
                 tracks, timestamp, clock, self_track, liveness, plates,
                 pairing, casts, self._take_abilities(self_track),
                 self._take_threats(self_track),
+                self._take_skillshots(self_track),
             ),
         )
 
@@ -584,11 +605,20 @@ class Pipeline:
         motion = self.projectiles.last_motion
         if motion is not None:
             self.threats.observe_motion(timestamp, motion)
+            if self.aim is not None:
+                self.aim.observe_motion(timestamp, motion)
         if trusted:
             self.threats.consider(candidates, self._anchor, self._enemies)
+            if self.aim is not None:
+                self.aim.consider(candidates, self._anchor)
         self._pending_threats.extend(self.threats.resolve(timestamp))
+        if self.aim is not None:
+            self._pending_skillshots.extend(self.aim.resolve(timestamp))
 
-    def _hold_models(self, plates: list[Nameplate], frame_size: tuple[int, int]) -> None:
+    def _hold_models(
+        self, plates: list[Nameplate], frame_size: tuple[int, int],
+        timestamp: float,
+    ) -> None:
         """Remember where the player and the enemies stand on the world view,
         from this sampled frame's plates, for the frames until the next."""
         vx, vy, _, _ = self._view.box(*frame_size)
@@ -599,13 +629,27 @@ class Pipeline:
 
         mine = [p for p in plates if p.side is Side.SELF]
         self._anchor = model(mine[0]) if len(mine) == 1 else None
-        self._enemies = [model(p) for p in plates if p.hostile]
+        hostile = [p for p in plates if p.hostile]
+        self._enemies = [model(p) for p in hostile]
+        if self.aim is not None:
+            # The aim stage needs the bar as well as the position: an enemy
+            # is a target to hit, not just a place a bolt came from.
+            self.aim.observe_enemies(timestamp, [
+                EnemyPlate(*model(p), health=p.health) for p in hostile
+            ])
 
     def _take_threats(self, self_track: Track | None) -> tuple[Threat, ...]:
         if self_track is None or not self._pending_threats:
             return ()
         taken = tuple(self._pending_threats)
         self._pending_threats.clear()
+        return taken
+
+    def _take_skillshots(self, self_track: Track | None) -> tuple[Skillshot, ...]:
+        if self_track is None or not self._pending_skillshots:
+            return ()
+        taken = tuple(self._pending_skillshots)
+        self._pending_skillshots.clear()
         return taken
 
     def _take_abilities(
@@ -647,7 +691,7 @@ class Pipeline:
         plates = self.plate_reader.read(frame)
         height, width = frame.shape[:2]
         if self.threats is not None:
-            self._hold_models(plates, (width, height))
+            self._hold_models(plates, (width, height), timestamp)
         pairing: dict[int, int] = {}
         for team, hostile in ((Team.RED, True), (Team.BLUE, False)):
             indices = [i for i, p in enumerate(plates) if p.hostile is hostile]
@@ -814,6 +858,7 @@ class Pipeline:
         casts: dict[int, Cast] | None = None,
         abilities: tuple[AbilityUse, ...] = (),
         threats: tuple[Threat, ...] = (),
+        skillshots: tuple[Skillshot, ...] = (),
     ) -> list[Observation]:
         """Flatten this frame's tracks into rows.
 
@@ -870,6 +915,13 @@ class Pipeline:
                         and track.id == self_track.id
                         else None
                     ),
+                    skillshots=(
+                        skillshots
+                        if skillshots
+                        and self_track is not None
+                        and track.id == self_track.id
+                        else None
+                    ),
                     allies_dead=None if liveness is None else liveness.dead_count,
                 )
             )
@@ -910,6 +962,7 @@ class Pipeline:
             and self.projection is not None,
             has_abilities=self.ability_reader is not None,
             has_threats=self.threats is not None,
+            has_skillshots=self.aim is not None,
             world_bounds=bounds,
             world_units_per_pixel=scale,
         )

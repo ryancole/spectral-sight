@@ -15,7 +15,13 @@ from pathlib import Path
 import pytest
 
 from spectral_sight.events import EventDeriver
-from spectral_sight.export import AbilityUse, Observation, Threat, TimelineMeta
+from spectral_sight.export import (
+    AbilityUse,
+    Observation,
+    Skillshot,
+    Threat,
+    TimelineMeta,
+)
 from spectral_sight.feed import FrameState, JsonlSink, read_frames
 from spectral_sight.types import Team
 
@@ -111,6 +117,32 @@ class TestThreat:
         assert threats[0].detail["outcome"] == "dodged"
         assert threats[0].detail["moved_across"] == 31.0
         assert "damage" not in threats[0].detail
+
+
+class TestSkillshot:
+    def test_each_resolved_skillshot_is_one_event(self) -> None:
+        shot = Skillshot(slot="Q", at=9.9, launched=10.0, speed=1200.0,
+                         heading=(1.0, 0.0), miss=42.0, flight=0.3,
+                         outcome="hit", fall=0.12, lead=None)
+        events = derive(state(0, [row(champion="Ezreal", is_self=True,
+                                      skillshots=(shot,))]))
+        shots = [e for e in events if e.kind == "skillshot"]
+        assert len(shots) == 1
+        assert shots[0].detail["slot"] == "Q"
+        assert shots[0].detail["outcome"] == "hit"
+        assert shots[0].detail["miss"] == 42.0
+        # A target who was not moving carries no lead, rather than a zero.
+        assert "lead" not in shots[0].detail
+
+    def test_a_cast_that_launched_nothing_still_reports(self) -> None:
+        shot = Skillshot(slot="R", at=9.9, launched=None, speed=None,
+                         heading=None, miss=None, flight=None,
+                         outcome="unknown", fall=None, lead=None)
+        events = derive(state(0, [row(champion="Ezreal", is_self=True,
+                                      skillshots=(shot,))]))
+        detail = [e for e in events if e.kind == "skillshot"][0].detail
+        assert detail["outcome"] == "unknown"
+        assert "launched" not in detail
 
 
 class TestLiveness:

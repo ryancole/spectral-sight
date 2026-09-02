@@ -17,8 +17,9 @@ import numpy as np
 import pytest
 
 from spectral_sight.export import (
-    SCHEMA,
     Observation,
+    SCHEMA,
+    Skillshot,
     TimelineMeta,
     TimelineWriter,
     iter_timeline,
@@ -95,6 +96,22 @@ def test_an_observation_round_trips() -> None:
     finer is rounded on the way out and is not expected back -- see below."""
     original = sample_observation()
     assert Observation.from_dict(original.to_dict()) == original
+
+
+def test_a_row_carrying_skillshots_round_trips() -> None:
+    original = sample_observation(skillshots=(
+        Skillshot(slot="Q", at=9.9, launched=10.0, speed=1200.0,
+                  heading=(0.6, -0.8), miss=42.5, flight=0.3, outcome="hit",
+                  fall=0.12, lead=-42.5),
+        Skillshot(slot="W", at=10.0, launched=None, speed=None, heading=None,
+                  miss=None, flight=None, outcome="unknown", fall=None,
+                  lead=None),
+    ))
+    assert Observation.from_dict(original.to_dict()) == original
+
+
+def test_a_row_with_no_skillshots_omits_the_key() -> None:
+    assert "skillshots" not in sample_observation().to_dict()
 
 
 def test_a_row_with_no_world_omits_the_keys_entirely() -> None:

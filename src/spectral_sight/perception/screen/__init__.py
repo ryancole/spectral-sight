@@ -7,6 +7,7 @@ from spectral_sight.perception.screen.motion import (
     MotionConfig,
     WorldView,
 )
+from spectral_sight.perception.screen.aim import AimConfig, AimDetector, EnemyPlate
 from spectral_sight.perception.screen.threats import ThreatConfig, ThreatDetector
 from spectral_sight.perception.screen.projectiles import (
     Blob,
@@ -16,9 +17,12 @@ from spectral_sight.perception.screen.projectiles import (
 )
 
 __all__ = [
+    "AimConfig",
+    "AimDetector",
     "Blob",
     "CameraMotion",
     "CameraTracker",
+    "EnemyPlate",
     "MotionConfig",
     "ProjectileConfig",
     "ProjectileTrack",

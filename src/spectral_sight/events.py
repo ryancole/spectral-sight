@@ -28,6 +28,11 @@ The kinds, and what each is grounded in:
 - `threat` -- a row carrying `threats`: a bolt that came at the local player,
   with its outcome read off their printed health and their response off the
   camera. One event per entry.
+- `skillshot` -- a row carrying `skillshots`: one of the player's own casts
+  followed to the bolt it launched and to whether that bolt reached anyone.
+  Arrives a second or two after the `ability` event naming the same cast,
+  because the answer is not in yet when the cast is -- the bolt has to fly and
+  the target's bar has to move.
 - `ability` -- a row carrying `abilities`. The local player's own cast, read
   off the HUD cooldown veil and named to a slot -- what `cast` cannot give,
   since it infers an anonymous resource drop that works for enemies too. One
@@ -67,6 +72,7 @@ KINDS = (
     "cast",
     "ability",
     "threat",
+    "skillshot",
     "death",
     "respawn",
     "vanished",
@@ -257,6 +263,9 @@ class EventDeriver:
         # Same rule as abilities: a threat rides the row it resolved on, once.
         for threat in row.threats or ():
             events.append(event("threat", **threat.to_dict()))
+
+        for shot in row.skillshots or ():
+            events.append(event("skillshot", **shot.to_dict()))
 
         return events
 
