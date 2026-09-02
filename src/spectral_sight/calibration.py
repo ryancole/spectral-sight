@@ -61,6 +61,8 @@ from spectral_sight.perception.hud.clock import (
     save_calibration,
     tighten,
 )
+from spectral_sight.perception.hud.abilities import LAYOUT_DIR as ABILITY_DIR
+from spectral_sight.perception.hud.abilities import AbilityLayout
 from spectral_sight.perception.hud.clock import CLOCK_DIR as _CLOCK_DIR
 from spectral_sight.perception.hud.portraits import LAYOUT_DIR as PORTRAIT_DIR
 from spectral_sight.perception.hud.portraits import PortraitLayout
@@ -205,6 +207,26 @@ def _derive_resources(fit: LayoutFit, source: ResourceLayout) -> ResourceLayout:
     return replace(source, health=move(source.health), mana=move(source.mana))
 
 
+def _derive_abilities(fit: LayoutFit, source: AbilityLayout) -> AbilityLayout:
+    ability_x, ability_y = fit.point(source.ability_first_x, source.ability_y)
+    summoner_x, summoner_y = fit.point(
+        source.summoner_first_x, source.summoner_y
+    )
+    return replace(
+        source,
+        ability_first_x=ability_x,
+        ability_y=ability_y,
+        ability_width=fit.across(source.ability_width),
+        ability_height=fit.down(source.ability_height),
+        ability_spacing=fit.across(source.ability_spacing),
+        summoner_first_x=summoner_x,
+        summoner_y=summoner_y,
+        summoner_width=fit.across(source.summoner_width),
+        summoner_height=fit.down(source.summoner_height),
+        summoner_spacing=fit.across(source.summoner_spacing),
+    )
+
+
 def _derive_nameplates(fit: LayoutFit, source: NameplateLayout) -> NameplateLayout:
     # `exclude` is fractions of the frame and the projection coefficients act on
     # normalised positions, so both are already scale-free and carry over as
@@ -324,6 +346,8 @@ PIECES: tuple[Piece, ...] = (
           _derive_nameplates),
     Piece("player bars", RESOURCE_DIR, ResourceLayout.for_resolution,
           _derive_resources),
+    Piece("abilities", ABILITY_DIR, AbilityLayout.for_resolution,
+          _derive_abilities),
 )
 """Every calibration, by the name a person would use for what it buys them."""
 

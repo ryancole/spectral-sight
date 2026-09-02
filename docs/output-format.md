@@ -59,6 +59,7 @@ disagree with the body.
 | `has_game_time` | bool | Clock calibrated. When false, every `game_time` is null. |
 | `has_liveness` | bool | HUD portraits calibrated. When false, every `alive` is null because nothing was read — distinct from the null meaning "read and inconclusive". |
 | `has_nameplates` | bool | Nameplates read. When false, `health`/`resource`/`level` are absent because nothing looked — distinct from "champion not on screen". |
+| `has_abilities` | bool | Local player's ability slots read. When false, no row carries `abilities` because nothing looked — distinct from "nothing was cast". |
 | `world_bounds` | object \| null | World calibration in force, or null if positions are crop pixels only. |
 | `world_units_per_pixel` | [float, float] \| null | X and Y scale of that calibration. |
 
@@ -101,6 +102,10 @@ them (an enemy is on screen far less often than on the minimap):
 | `cast_confirmed` | bool | Whether the post-drop level held on a continuous follow-up. False means the champion left view before it could be checked, not that it was contradicted. |
 
 The five `cast_*` fields travel as a group.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `abilities` | array of objects | HUD ability casts that settled on this frame, present only on the `is_self` row and only when any settled. Each object is `{slot, at, confirmed, countdown?}`: `slot` is `"Q"`/`"W"`/`"E"`/`"R"` for abilities or `"D"`/`"F"` for summoner spells; `at` (float, 3 dp) is the `video_time` the slot first read as on cooldown, a frame or two before this row; `confirmed` (bool) is whether the cooldown veil held on the following reading; `countdown` (int, seconds) is the cooldown printed on the veil when the digits could be read, omitted otherwise. This is the only place a cast is named to a button — `cast_*` knows a cost was paid, `abilities` knows which ability paid it, and unlike `cast_*` it also sees summoner spells and zero-mana casts. Local player only: the client draws nobody else's cooldowns. |
 
 ## The frame envelope
 
@@ -158,6 +163,7 @@ Kind-specific fields are flattened onto the same object:
 | `vanished` | `x`, `y`; `world_x`, `world_y` when calibrated | `visible` turning false, already debounced by the tracker. Suppressed when a death explains it: a corpse leaving the minimap is not fog. |
 | `reappeared` | `gone_for` (float, seconds since last actually seen; omitted without a prior vanish) | `visible` turning true. Suppressed when a respawn explains it. |
 | `cast` | `drop`, `at`, `span`, `continuous`, `confirmed` — the row's `cast_*` fields under shorter names | The row carrying `cast_drop`; the deriver adds only the wrapping. |
+| `ability` | `slot`, `at`, `confirmed`, `countdown` (int, omitted when unread) — one entry of the row's `abilities` | The local player's own cast, named to a slot from the HUD cooldown veil. One event per entry, always `is_self`. Distinct from `cast`: `cast` is an anonymous resource drop (and works for enemies), `ability` names the button (and sees summoner spells and zero-mana casts). |
 | `roster` | `champions` (sorted array of 5 strings) | A team showing five distinct named champions at once. Re-emitted if the set later changes. |
 
 Two rules a consumer must not re-derive incorrectly:

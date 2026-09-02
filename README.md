@@ -1220,6 +1220,7 @@ src/spectral_sight/
     naming.py                 which champion each ally slot belongs to
     clock.py                  the match timer
     resources.py              the player's own health and mana, as numbers
+    abilities.py              the player's own casts, named, from the cooldown HUD
   perception/nameplates/
     plates.py                 health, resource and level over a champion
     levels.py                 level held steady across misreads
@@ -1240,6 +1241,7 @@ etc/world/                    map area and world bounds per resolution
 etc/hud/                      friendly portrait positions per resolution
 etc/nameplates/               bar geometry and screen projection per resolution
 etc/resources/                player health and mana text boxes per resolution
+etc/abilities/                player ability slot geometry per resolution
 ```
 
 ## Testing

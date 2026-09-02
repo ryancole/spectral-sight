@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from spectral_sight.events import EventDeriver
-from spectral_sight.export import Observation, TimelineMeta
+from spectral_sight.export import AbilityUse, Observation, TimelineMeta
 from spectral_sight.feed import FrameState, JsonlSink, read_frames
 from spectral_sight.types import Team
 
@@ -73,6 +73,30 @@ class TestCast:
             "drop": 0.133, "at": 10.0, "span": 0.1,
             "continuous": True, "confirmed": True,
         }
+
+
+class TestAbility:
+    def test_each_ability_use_is_one_event(self) -> None:
+        """An ability rides exactly the row it settled on and is never carried,
+        so a Q and a W in one interval are two events, no diffing involved."""
+        events = derive(state(0, [row(
+            champion="Ezreal", is_self=True,
+            abilities=(
+                AbilityUse(slot="Q", at=9.9, countdown=5, confirmed=True),
+                AbilityUse(slot="W", at=9.95, countdown=None, confirmed=True),
+            ),
+        )]))
+        abilities = [e for e in events if e.kind == "ability"]
+        assert [e.detail["slot"] for e in abilities] == ["Q", "W"]
+        assert abilities[0].detail == {
+            "slot": "Q", "at": 9.9, "countdown": 5, "confirmed": True,
+        }
+        # An unread countdown is carried as None, not dropped.
+        assert abilities[1].detail["countdown"] is None
+
+    def test_a_row_without_abilities_emits_none(self) -> None:
+        events = derive(state(0, [row(champion="Ezreal", is_self=True)]))
+        assert "ability" not in kinds(events)
 
 
 class TestLiveness:

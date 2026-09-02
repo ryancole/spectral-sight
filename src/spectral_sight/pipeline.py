@@ -58,7 +58,8 @@ from pathlib import Path
 
 import numpy as np
 
-from spectral_sight.export import Observation, TimelineMeta
+from spectral_sight.export import AbilityUse, Observation, TimelineMeta
+from spectral_sight.perception.hud.abilities import AbilityLayout, AbilityReader
 from spectral_sight.perception.hud.alive import AliveReader, Liveness
 from spectral_sight.perception.hud.clock import (
     ClockFilter,
@@ -162,6 +163,7 @@ class Pipeline:
         world: WorldTransform | None = None,
         portraits: PortraitLayout | None = None,
         nameplates: NameplateLayout | None = None,
+        abilities: AbilityLayout | None = None,
         resolution: tuple[int, int] | None = None,
     ) -> None:
         self.region = region
@@ -195,6 +197,21 @@ class Pipeline:
         )
         """Levels ride on the clock's glyph set, so a run with no clock
         calibration reads plates without them rather than not at all."""
+
+        self.ability_reader = (
+            None if abilities is None
+            else AbilityReader(
+                abilities, None if clock is None else clock.glyphs
+            )
+        )
+        """The local player's own ability slots. Countdown digits ride on the
+        clock's glyph set, so a run with no clock calibration still gets the
+        casts, just without the seconds printed on them."""
+        self._pending_abilities: list[AbilityUse] = []
+        """Casts waiting for a self row to ride out on. A cast settles on
+        whatever frame confirmed it, and the self track is occasionally
+        unresolved on exactly that frame -- holding the cast until the next
+        self row loses nothing, where dropping it loses the cast."""
 
         self.levels = LevelBook()
         self.casts = CastBook()
@@ -303,6 +320,7 @@ class Pipeline:
             world=world,
             portraits=portraits,
             nameplates=nameplates,
+            abilities=AbilityLayout.for_resolution(width, height),
             resolution=(width, height),
         )
 
@@ -312,25 +330,62 @@ class Pipeline:
         if self.clock is not None:
             clock = self._clock_filter.update(self.clock.read(frame), timestamp)
 
-        liveness = None
-        if self.liveness is not None:
-            if self._clock_filter.resynced:
-                # The clock just contradicted its own prediction: a seek, or a
-                # different game spliced into the same capture. The portrait
-                # boxes may hold different champions now, so what the slots
-                # learned is evidence about footage that ended.
+        # Whether this frame provably shows the in-game HUD: the timer is the
+        # one element that can prove it, so with a clock calibrated, trust
+        # follows the clock resolving. With none there is no proof to wait
+        # for, and every frame is taken at its word -- the behaviour that
+        # predates the clock.
+        trusted = self.clock is None or (clock is not None and clock.observed)
+
+        if self._clock_filter.resynced:
+            # The clock just contradicted its own prediction: a seek, or a
+            # different game spliced into the same capture. What every HUD
+            # reader has accumulated is evidence about footage that ended --
+            # the portrait boxes may hold different champions now, and an
+            # ability slot's last clear reading describes pixels from another
+            # game.
+            if self.liveness is not None:
                 self.liveness.reset()
                 self.naming.reset()
-            # Baselines learn only from frames the timer resolves on, because
-            # the timer is the one HUD element that proves the in-game HUD is
-            # on screen at all. A recording that starts in queue otherwise
-            # teaches the portraits splash art, which out-saturates any living
-            # champion -- and a running maximum never comes back down, so the
-            # real HUD would read dead from its first frame onward. With no
-            # clock calibration there is no such proof to wait for, and
-            # learning from every frame is the behaviour that predates it.
-            trusted = self.clock is None or (clock is not None and clock.observed)
+            if self.ability_reader is not None:
+                self.ability_reader.reset()
+                self._pending_abilities.clear()
+
+        liveness = None
+        if self.liveness is not None:
+            # Baselines learn only from trusted frames. A recording that
+            # starts in queue otherwise teaches the portraits splash art,
+            # which out-saturates any living champion -- and a running
+            # maximum never comes back down, so the real HUD would read dead
+            # from its first frame onward.
             liveness = self.liveness.read(frame, learn=trusted)
+
+        if self.ability_reader is not None:
+            # Two gates, both structural. An untrusted frame is not read at all
+            # -- this reader has no baseline to fall back on, only transitions,
+            # and the one thing that matters is never deriving a transition
+            # from a screen that is not the game. And a dead player casts
+            # nothing: death greys every slot at once, which without this reads
+            # as a burst of simultaneous casts as each ready ability veils. The
+            # self portrait is the death signal the pipeline already trusts, so
+            # ability reading stops the moment it reads dead and resumes -- from
+            # a clean slate, since the on-screen cooldowns are stale -- when it
+            # does not. A frame where the portrait is merely unreadable (None)
+            # is not proof of death, so it is still read.
+            me = None if liveness is None else liveness.slot(SELF_SLOT)
+            dead = me is not None and me.alive is False
+            if trusted and not dead:
+                self._pending_abilities.extend(
+                    AbilityUse(
+                        slot=cast.slot,
+                        at=cast.at,
+                        countdown=cast.countdown,
+                        confirmed=cast.confirmed,
+                    )
+                    for cast in self.ability_reader.read(frame, timestamp)
+                )
+            elif dead:
+                self.ability_reader.reset()
 
         minimap = self.region.crop(frame)
         blips = self.detector.detect(minimap)
@@ -411,9 +466,27 @@ class Pipeline:
             plate_tracks=pairing,
             observations=self._observe(
                 tracks, timestamp, clock, self_track, liveness, plates,
-                pairing, casts,
+                pairing, casts, self._take_abilities(self_track),
             ),
         )
+
+    def _take_abilities(
+        self, self_track: Track | None
+    ) -> tuple[AbilityUse, ...]:
+        """Casts to hang on this frame's self row, or an empty tuple.
+
+        Abilities belong to the local player, so they ride the self row. When
+        no self track resolved this frame the casts are held rather than
+        dropped -- the reader confirms a cast a frame after it happened, and
+        the self track occasionally blinks out on exactly that frame. Held,
+        they land on the next self row, seconds later at worst; dropped, the
+        cast is gone.
+        """
+        if self_track is None or not self._pending_abilities:
+            return ()
+        taken = tuple(self._pending_abilities)
+        self._pending_abilities.clear()
+        return taken
 
     def _read_plates(
         self,
@@ -599,6 +672,7 @@ class Pipeline:
         plates: list[Nameplate] | None = None,
         pairing: dict[int, int] | None = None,
         casts: dict[int, Cast] | None = None,
+        abilities: tuple[AbilityUse, ...] = (),
     ) -> list[Observation]:
         """Flatten this frame's tracks into rows.
 
@@ -641,6 +715,13 @@ class Pipeline:
                     cast_continuous=None if cast is None else cast.continuous,
                     cast_confirmed=None if cast is None else cast.confirmed,
                     alive=alive.get(track.id),
+                    abilities=(
+                        abilities
+                        if abilities
+                        and self_track is not None
+                        and track.id == self_track.id
+                        else None
+                    ),
                     allies_dead=None if liveness is None else liveness.dead_count,
                 )
             )
@@ -679,6 +760,7 @@ class Pipeline:
             has_liveness=self.liveness is not None,
             has_nameplates=self.plate_reader is not None
             and self.projection is not None,
+            has_abilities=self.ability_reader is not None,
             world_bounds=bounds,
             world_units_per_pixel=scale,
         )

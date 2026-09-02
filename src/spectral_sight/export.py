@@ -48,6 +48,53 @@ Adding an optional field does not count; removing or repurposing one does."""
 
 
 @dataclass(frozen=True, slots=True)
+class AbilityUse:
+    """One HUD ability slot observed going on cooldown -- a named cast.
+
+    Local player only: the client draws nobody else's cooldowns. The slot plus
+    the row's `champion` names the ability outright, which the `cast_*` fields
+    never can -- they know a cost was paid, not which button paid it.
+    """
+
+    slot: str
+    """Q, W, E or R for abilities; D or F for summoner spells, which the
+    resource route is entirely blind to -- they cost no mana."""
+
+    at: float
+    """`video_time` of the first frame the slot read as on cooldown. Earlier
+    than the row carrying it, which is the frame the reading was confirmed."""
+
+    countdown: int | None
+    """Seconds printed on the cooldown veil when they could be read -- at the
+    onset, the ability's cooldown. None when the digits did not resolve."""
+
+    confirmed: bool
+    """The veil held on the following reading. False only for a cast released
+    at the very end of a run, never one that was contradicted."""
+
+    def to_dict(self) -> dict[str, object]:
+        entry: dict[str, object] = {
+            "slot": self.slot,
+            "at": round(float(self.at), 3),
+            "confirmed": bool(self.confirmed),
+        }
+        if self.countdown is not None:
+            entry["countdown"] = int(self.countdown)
+        return entry
+
+    @classmethod
+    def from_dict(cls, data: dict) -> AbilityUse:
+        return cls(
+            slot=str(data["slot"]),
+            at=float(data["at"]),
+            countdown=(
+                None if data.get("countdown") is None else int(data["countdown"])
+            ),
+            confirmed=bool(data.get("confirmed", False)),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class Observation:
     """One champion at one instant.
 
@@ -164,6 +211,14 @@ class Observation:
     at all, so this never marks one the detector doubts, only one it could not
     finish checking."""
 
+    abilities: tuple[AbilityUse, ...] | None = None
+    """HUD ability casts that settled on this frame -- the self row only.
+
+    A tuple rather than a single group of scalars because two abilities cast
+    within one sampling interval land together, and dropping the second would
+    lose exactly the quick double-casts worth coaching on. Almost every
+    carrying row holds one entry."""
+
     allies_dead: int | None = None
     """How many of your five teammates were dead on this frame.
 
@@ -216,6 +271,8 @@ class Observation:
             row["cast_span"] = round(float(self.cast_span or 0.0), 3)
             row["cast_continuous"] = bool(self.cast_continuous)
             row["cast_confirmed"] = bool(self.cast_confirmed)
+        if self.abilities:
+            row["abilities"] = [use.to_dict() for use in self.abilities]
         return row
 
     @classmethod
@@ -253,6 +310,10 @@ class Observation:
             cast_confirmed=(
                 None if data.get("cast_confirmed") is None
                 else bool(data["cast_confirmed"])
+            ),
+            abilities=(
+                tuple(AbilityUse.from_dict(use) for use in data["abilities"])
+                if data.get("abilities") else None
             ),
             allies_dead=(
                 None if data.get("allies_dead") is None
@@ -299,6 +360,11 @@ class TimelineMeta:
     The distinction matters: a consumer measuring how often an enemy is
     observable would otherwise read a missing calibration as a quiet game."""
 
+    has_abilities: bool = False
+    """Whether the local player's ability slots were read for this run. When
+    False no row carries `abilities` because nothing looked -- as against the
+    usual case, where a row lacks them because nothing was cast."""
+
     world_bounds: dict[str, float] | None = None
     world_units_per_pixel: list[float] | None = None
     """The world calibration in force, or None if positions are crop pixels
@@ -318,6 +384,7 @@ class TimelineMeta:
             "has_game_time": self.has_game_time,
             "has_liveness": self.has_liveness,
             "has_nameplates": self.has_nameplates,
+            "has_abilities": self.has_abilities,
             "world_bounds": self.world_bounds,
             "world_units_per_pixel": self.world_units_per_pixel,
         }
@@ -333,6 +400,7 @@ class TimelineMeta:
             has_game_time=bool(data.get("has_game_time", False)),
             has_liveness=bool(data.get("has_liveness", False)),
             has_nameplates=bool(data.get("has_nameplates", False)),
+            has_abilities=bool(data.get("has_abilities", False)),
             world_bounds=data.get("world_bounds"),
             world_units_per_pixel=data.get("world_units_per_pixel"),
             schema=int(data.get("schema", SCHEMA)),
@@ -352,6 +420,7 @@ class TimelineMeta:
             has_game_time=self.has_game_time,
             has_liveness=self.has_liveness,
             has_nameplates=self.has_nameplates,
+            has_abilities=self.has_abilities,
             world_bounds=self.world_bounds,
             world_units_per_pixel=self.world_units_per_pixel,
             schema=self.schema,

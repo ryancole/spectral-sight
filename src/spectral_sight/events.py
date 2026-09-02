@@ -25,6 +25,11 @@ The kinds, and what each is grounded in:
 - `cast` -- a row carrying `cast_drop`. The pipeline already emits a cast on
   exactly one row, the one where the fall was confirmed to hold, so the row is
   the event and the deriver adds nothing but the wrapping.
+- `ability` -- a row carrying `abilities`. The local player's own cast, read
+  off the HUD cooldown veil and named to a slot -- what `cast` cannot give,
+  since it infers an anonymous resource drop that works for enemies too. One
+  event per entry, so a Q and a W in the same sampling interval are two. Self
+  only, always, because the client draws nobody else's cooldowns.
 - `death` / `respawn` -- `alive` turning definitely False / definitely True.
   Keyed by champion rather than track, because a corpse's track can be dropped
   and the respawn arrive on a fresh one. None never transitions anything: it
@@ -57,6 +62,7 @@ from spectral_sight.types import Team
 
 KINDS = (
     "cast",
+    "ability",
     "death",
     "respawn",
     "vanished",
@@ -230,6 +236,18 @@ class EventDeriver:
                 ),
                 continuous=row.cast_continuous,
                 confirmed=row.cast_confirmed,
+            ))
+
+        # No remembered state: an ability rides exactly the row it settled on,
+        # never carried or repeated, so each is news the first and only time it
+        # appears -- unlike a level or a name, which persist and must be diffed.
+        for use in row.abilities or ():
+            events.append(event(
+                "ability",
+                slot=use.slot,
+                at=round(float(use.at), 3),
+                countdown=use.countdown,
+                confirmed=use.confirmed,
             ))
 
         return events
