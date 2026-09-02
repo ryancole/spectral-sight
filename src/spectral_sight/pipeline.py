@@ -58,7 +58,23 @@ from pathlib import Path
 
 import numpy as np
 
-from spectral_sight.export import Observation, TimelineMeta
+from spectral_sight.export import (
+    AbilityUse,
+    Observation,
+    Skillshot,
+    Threat,
+    TimelineMeta,
+)
+from spectral_sight.perception.hud.abilities import AbilityLayout, AbilityReader
+from spectral_sight.perception.hud.resources import ResourceReader, load_resource_reader
+from spectral_sight.perception.nameplates.plates import Side
+from spectral_sight.perception.screen import (
+    AimDetector,
+    EnemyPlate,
+    ProjectileTracker,
+    ThreatDetector,
+    WorldView,
+)
 from spectral_sight.perception.hud.alive import AliveReader, Liveness
 from spectral_sight.perception.hud.clock import (
     ClockFilter,
@@ -96,6 +112,16 @@ SELF_RADIUS = 12.0
 """How close to the viewport centre a marker must sit to be the local player.
 The nearest marker measures 5-7px on real footage with the runner-up 38-88px
 away, so this threshold sits comfortably inside a very wide gap."""
+
+SELF_CLEARANCE = 20.0
+"""How far the nearest blue marker must be from the viewport centre before the
+player's marker is taken to be hidden rather than merely off-centre, and one is
+placed at the centre in its stead. Wider than SELF_RADIUS so a marker that is
+there but a few pixels out is used rather than doubled."""
+
+PLATE_ABOVE_MODEL = 95.0
+"""Pixels from a nameplate's bar down to the champion's model, measured on the
+2026-08-30 session. The model is what a bolt comes from and goes to."""
 
 SELF_MIN_SIGHTINGS = 10
 SELF_MIN_LEAD = 2.0
@@ -142,6 +168,13 @@ class PipelineResult:
     `tracks`, converted to game time and world units and stripped of the
     tracker's internals. This is what gets written out."""
 
+    sampled: bool = True
+    """Whether the minimap stages ran on this frame. False on the frames
+    between samples when the pipeline is fed faster than it samples -- see
+    `Pipeline.every` -- and then `tracks` and `observations` are empty
+    because nothing looked, not because nothing was there. A caller
+    publishing rows skips those frames."""
+
     def named(self) -> dict[str, Track]:
         """Confirmed tracks that have settled on a champion."""
         return {t.identity: t for t in self.tracks if t.identity is not None}
@@ -162,10 +195,30 @@ class Pipeline:
         world: WorldTransform | None = None,
         portraits: PortraitLayout | None = None,
         nameplates: NameplateLayout | None = None,
+        abilities: AbilityLayout | None = None,
         resolution: tuple[int, int] | None = None,
+        place_self: bool = True,
+        every: int = 1,
+        coach: bool = False,
     ) -> None:
         self.region = region
         self.gallery = gallery
+        self.every = max(1, every)
+        """Run the minimap stages on every Nth call, the HUD stages on all.
+
+        Different signals have different natural rates. Minimap positions do
+        not need more than 10 Hz -- champions have a speed cap -- and the
+        gallery pass that identifies them cannot afford more. The world view
+        does: a projectile is four to six frames long at the recording's own
+        rate, so anything reading it has to see every frame. Feeding every
+        frame and sampling the slow stages here, rather than decimating at
+        the source, is what lets both run in one pass. Rows are produced on
+        sampled frames only, so the timeline's cadence is unchanged."""
+        self._calls = 0
+        self.place_self = place_self
+        """Whether to place the player's marker at the viewport centre when
+        stage 1 cannot see it -- see `_find_self`. A switch so the two can be
+        measured against each other."""
         # Frame size this pipeline was calibrated for. Not derivable from the
         # region, which knows only the crop rectangle, and needed only to
         # describe a run in a timeline header.
@@ -195,6 +248,53 @@ class Pipeline:
         )
         """Levels ride on the clock's glyph set, so a run with no clock
         calibration reads plates without them rather than not at all."""
+
+        self.ability_reader = (
+            None if abilities is None
+            else AbilityReader(
+                abilities, None if clock is None else clock.glyphs
+            )
+        )
+        """The local player's own ability slots. Countdown digits ride on the
+        clock's glyph set, so a run with no clock calibration still gets the
+        casts, just without the seconds printed on them."""
+        self._pending_abilities: list[AbilityUse] = []
+        """Casts waiting for a self row to ride out on. A cast settles on
+        whatever frame confirmed it, and the self track is occasionally
+        unresolved on exactly that frame -- holding the cast until the next
+        self row loses nothing, where dropping it loses the cast."""
+
+        # The world-view stage: projectiles at every frame, threats to the
+        # player resolved against their printed health. Only when asked for
+        # (`coach`), because it costs a frame's worth of work on every frame
+        # and needs every frame to be fed -- see `every` -- and only with a
+        # nameplate calibration, since the player's own plate is the anchor
+        # a bolt is judged against.
+        self.projectiles: ProjectileTracker | None = None
+        self.threats: ThreatDetector | None = None
+        self.aim: AimDetector | None = None
+        self.resources: ResourceReader | None = None
+        if coach and nameplates is not None:
+            self.projectiles = ProjectileTracker()
+            self.threats = ThreatDetector()
+            # The other end of the same bolts: what the player threw. Needs
+            # the ability HUD as well, since a skillshot begins with a cast
+            # and an unattributed bolt beside the player is not one.
+            self.aim = None if abilities is None else AimDetector()
+            if resolution is not None and clock is not None:
+                self.resources = load_resource_reader(
+                    resolution[0], resolution[1], clock.glyphs
+                )
+        self._view = WorldView()
+        self._anchor: tuple[float, float] | None = None
+        self._enemies: list[tuple[float, float]] = []
+        """The player's model and the enemy models on the world view, from
+        the plates read on the last sampled frame and held until the next.
+        Plates move a few pixels between samples; a bolt moves a hundred."""
+        self._pending_threats: list[Threat] = []
+        self._pending_skillshots: list[Skillshot] = []
+        """Resolved shots waiting for a self row, held for the same reason
+        the abilities are: the row is the carrier, not the clock."""
 
         self.levels = LevelBook()
         self.casts = CastBook()
@@ -271,7 +371,8 @@ class Pipeline:
 
     @classmethod
     def for_resolution(
-        cls, width: int, height: int, icons: str | Path
+        cls, width: int, height: int, icons: str | Path, *,
+        every: int = 1, coach: bool = False,
     ) -> Pipeline:
         """Build from the calibrated region for a resolution plus an icon set.
 
@@ -303,44 +404,111 @@ class Pipeline:
             world=world,
             portraits=portraits,
             nameplates=nameplates,
+            abilities=AbilityLayout.for_resolution(width, height),
             resolution=(width, height),
+            every=every,
+            coach=coach,
         )
 
     def process(self, frame: np.ndarray, timestamp: float) -> PipelineResult:
         """Run one frame. `timestamp` is in seconds and must increase."""
+        sampled = self._calls % self.every == 0
+        self._calls += 1
         clock = None
         if self.clock is not None:
             clock = self._clock_filter.update(self.clock.read(frame), timestamp)
 
-        liveness = None
-        if self.liveness is not None:
-            if self._clock_filter.resynced:
-                # The clock just contradicted its own prediction: a seek, or a
-                # different game spliced into the same capture. The portrait
-                # boxes may hold different champions now, so what the slots
-                # learned is evidence about footage that ended.
+        # Whether this frame provably shows the in-game HUD: the timer is the
+        # one element that can prove it, so with a clock calibrated, trust
+        # follows the clock resolving. With none there is no proof to wait
+        # for, and every frame is taken at its word -- the behaviour that
+        # predates the clock.
+        trusted = self.clock is None or (clock is not None and clock.observed)
+
+        if self._clock_filter.resynced:
+            # The clock just contradicted its own prediction: a seek, or a
+            # different game spliced into the same capture. What every HUD
+            # reader has accumulated is evidence about footage that ended --
+            # the portrait boxes may hold different champions now, and an
+            # ability slot's last clear reading describes pixels from another
+            # game.
+            if self.liveness is not None:
                 self.liveness.reset()
                 self.naming.reset()
-            # Baselines learn only from frames the timer resolves on, because
-            # the timer is the one HUD element that proves the in-game HUD is
-            # on screen at all. A recording that starts in queue otherwise
-            # teaches the portraits splash art, which out-saturates any living
-            # champion -- and a running maximum never comes back down, so the
-            # real HUD would read dead from its first frame onward. With no
-            # clock calibration there is no such proof to wait for, and
-            # learning from every frame is the behaviour that predates it.
-            trusted = self.clock is None or (clock is not None and clock.observed)
+            if self.ability_reader is not None:
+                self.ability_reader.reset()
+                self._pending_abilities.clear()
+
+        liveness = None
+        if self.liveness is not None:
+            # Baselines learn only from trusted frames. A recording that
+            # starts in queue otherwise teaches the portraits splash art,
+            # which out-saturates any living champion -- and a running
+            # maximum never comes back down, so the real HUD would read dead
+            # from its first frame onward.
             liveness = self.liveness.read(frame, learn=trusted)
+
+        if self.ability_reader is not None:
+            # Two gates, both structural. An untrusted frame is not read at all
+            # -- this reader has no baseline to fall back on, only transitions,
+            # and the one thing that matters is never deriving a transition
+            # from a screen that is not the game. And a dead player casts
+            # nothing: death greys every slot at once, which without this reads
+            # as a burst of simultaneous casts as each ready ability veils. The
+            # self portrait is the death signal the pipeline already trusts, so
+            # ability reading stops the moment it reads dead and resumes -- from
+            # a clean slate, since the on-screen cooldowns are stale -- when it
+            # does not. A frame where the portrait is merely unreadable (None)
+            # is not proof of death, so it is still read.
+            portrait = None if liveness is None else liveness.slot(SELF_SLOT)
+            dead = portrait is not None and portrait.alive is False
+            if trusted and not dead:
+                for cast in self.ability_reader.read(frame, timestamp):
+                    self._pending_abilities.append(AbilityUse(
+                        slot=cast.slot,
+                        at=cast.at,
+                        countdown=cast.countdown,
+                        confirmed=cast.confirmed,
+                    ))
+                    if self.aim is not None:
+                        self.aim.observe_cast(cast.slot, cast.at)
+            elif dead:
+                self.ability_reader.reset()
+                if self.aim is not None:
+                    # Death veils every slot; whatever the aim stage was
+                    # holding was cast in a life that has ended.
+                    self.aim.reset()
+
+        if self.projectiles is not None and self.threats is not None:
+            self._watch_world(frame, timestamp, trusted)
+
+        if not sampled:
+            return PipelineResult(clock=clock, liveness=liveness, sampled=False)
 
         minimap = self.region.crop(frame)
         blips = self.detector.detect(minimap)
 
         viewport = find_viewport(minimap)
-        self_blip = self._find_self(blips, viewport)
+        me = None if liveness is None else liveness.slot(SELF_SLOT)
+        self_blip, placed = self._find_self(
+            blips, viewport,
+            # Placing a marker asserts the camera is on a living player on
+            # an in-game frame; each of those is something the pipeline can
+            # check, so each is required rather than assumed.
+            place=self.place_self and trusted
+            and (me is None or me.alive is not False),
+        )
+        if placed:
+            blips = [*blips, self_blip]
 
         matches: list[Match | None] = [None] * len(blips)
         for team in (Team.BLUE, Team.RED):
-            indices = [i for i, b in enumerate(blips) if b.team is team]
+            # A placed marker is kept away from the gallery: whatever is
+            # drawn at the centre is the thing covering the player's icon,
+            # most often an enemy's, and a confident match there would hand
+            # an enemy's name to the blue roster.
+            indices = [i for i, b in enumerate(blips)
+                       if b.team is team and not (placed and b is self_blip)]
             if not indices:
                 continue
             gallery = self._gallery_for(team)
@@ -373,7 +541,6 @@ class Pipeline:
         # the vote too -- pre-game frames are not a game -- and a run with no
         # portrait calibration keeps the old behaviour, having no gate to
         # apply.
-        me = None if liveness is None else liveness.slot(SELF_SLOT)
         witnessed = liveness is None or (me is not None and me.alive is True)
         if witnessed and self_track is not None and self_track.identity is not None:
             name = self_track.identity
@@ -411,9 +578,97 @@ class Pipeline:
             plate_tracks=pairing,
             observations=self._observe(
                 tracks, timestamp, clock, self_track, liveness, plates,
-                pairing, casts,
+                pairing, casts, self._take_abilities(self_track),
+                self._take_threats(self_track),
+                self._take_skillshots(self_track),
             ),
         )
+
+    def _watch_world(
+        self, frame: np.ndarray, timestamp: float, trusted: bool
+    ) -> None:
+        """The every-frame stage: bolts, and what became of the ones aimed
+        at the player. Runs before the sampled stages so a frame between
+        samples still advances it."""
+        assert self.projectiles is not None and self.threats is not None
+        if self.resources is not None:
+            reading = self.resources.read_line(frame, self.resources.layout.health)
+            if reading is not None and reading.plausible:
+                self.threats.observe_health(timestamp, reading.current)
+        # Only bolt-shaped tracks are judged; the tracker finishes every
+        # mover it followed, and a walking minion is not a threat however
+        # straight it walks.
+        candidates = [
+            track for track in self.projectiles.update(frame, timestamp)
+            if track.is_projectile(self.projectiles.config)
+        ]
+        motion = self.projectiles.last_motion
+        if motion is not None:
+            self.threats.observe_motion(timestamp, motion)
+            if self.aim is not None:
+                self.aim.observe_motion(timestamp, motion)
+        if trusted:
+            self.threats.consider(candidates, self._anchor, self._enemies)
+            if self.aim is not None:
+                self.aim.consider(candidates, self._anchor)
+        self._pending_threats.extend(self.threats.resolve(timestamp))
+        if self.aim is not None:
+            self._pending_skillshots.extend(self.aim.resolve(timestamp))
+
+    def _hold_models(
+        self, plates: list[Nameplate], frame_size: tuple[int, int],
+        timestamp: float,
+    ) -> None:
+        """Remember where the player and the enemies stand on the world view,
+        from this sampled frame's plates, for the frames until the next."""
+        vx, vy, _, _ = self._view.box(*frame_size)
+
+        def model(plate: Nameplate) -> tuple[float, float]:
+            cx, cy = plate.center
+            return cx - vx, cy - vy + PLATE_ABOVE_MODEL
+
+        mine = [p for p in plates if p.side is Side.SELF]
+        self._anchor = model(mine[0]) if len(mine) == 1 else None
+        hostile = [p for p in plates if p.hostile]
+        self._enemies = [model(p) for p in hostile]
+        if self.aim is not None:
+            # The aim stage needs the bar as well as the position: an enemy
+            # is a target to hit, not just a place a bolt came from.
+            self.aim.observe_enemies(timestamp, [
+                EnemyPlate(*model(p), health=p.health) for p in hostile
+            ])
+
+    def _take_threats(self, self_track: Track | None) -> tuple[Threat, ...]:
+        if self_track is None or not self._pending_threats:
+            return ()
+        taken = tuple(self._pending_threats)
+        self._pending_threats.clear()
+        return taken
+
+    def _take_skillshots(self, self_track: Track | None) -> tuple[Skillshot, ...]:
+        if self_track is None or not self._pending_skillshots:
+            return ()
+        taken = tuple(self._pending_skillshots)
+        self._pending_skillshots.clear()
+        return taken
+
+    def _take_abilities(
+        self, self_track: Track | None
+    ) -> tuple[AbilityUse, ...]:
+        """Casts to hang on this frame's self row, or an empty tuple.
+
+        Abilities belong to the local player, so they ride the self row. When
+        no self track resolved this frame the casts are held rather than
+        dropped -- the reader confirms a cast a frame after it happened, and
+        the self track occasionally blinks out on exactly that frame. Held,
+        they land on the next self row, seconds later at worst; dropped, the
+        cast is gone.
+        """
+        if self_track is None or not self._pending_abilities:
+            return ()
+        taken = tuple(self._pending_abilities)
+        self._pending_abilities.clear()
+        return taken
 
     def _read_plates(
         self,
@@ -435,6 +690,8 @@ class Pipeline:
 
         plates = self.plate_reader.read(frame)
         height, width = frame.shape[:2]
+        if self.threats is not None:
+            self._hold_models(plates, (width, height), timestamp)
         pairing: dict[int, int] = {}
         for team, hostile in ((Team.RED, True), (Team.BLUE, False)):
             indices = [i for i, p in enumerate(plates) if p.hostile is hostile]
@@ -599,6 +856,9 @@ class Pipeline:
         plates: list[Nameplate] | None = None,
         pairing: dict[int, int] | None = None,
         casts: dict[int, Cast] | None = None,
+        abilities: tuple[AbilityUse, ...] = (),
+        threats: tuple[Threat, ...] = (),
+        skillshots: tuple[Skillshot, ...] = (),
     ) -> list[Observation]:
         """Flatten this frame's tracks into rows.
 
@@ -641,6 +901,27 @@ class Pipeline:
                     cast_continuous=None if cast is None else cast.continuous,
                     cast_confirmed=None if cast is None else cast.confirmed,
                     alive=alive.get(track.id),
+                    abilities=(
+                        abilities
+                        if abilities
+                        and self_track is not None
+                        and track.id == self_track.id
+                        else None
+                    ),
+                    threats=(
+                        threats
+                        if threats
+                        and self_track is not None
+                        and track.id == self_track.id
+                        else None
+                    ),
+                    skillshots=(
+                        skillshots
+                        if skillshots
+                        and self_track is not None
+                        and track.id == self_track.id
+                        else None
+                    ),
                     allies_dead=None if liveness is None else liveness.dead_count,
                 )
             )
@@ -679,19 +960,46 @@ class Pipeline:
             has_liveness=self.liveness is not None,
             has_nameplates=self.plate_reader is not None
             and self.projection is not None,
+            has_abilities=self.ability_reader is not None,
+            has_threats=self.threats is not None,
+            has_skillshots=self.aim is not None,
             world_bounds=bounds,
             world_units_per_pixel=scale,
         )
 
     @staticmethod
-    def _find_self(blips: list[Blip], viewport: Viewport | None) -> Blip | None:
+    def _find_self(
+        blips: list[Blip], viewport: Viewport | None, place: bool = False
+    ) -> tuple[Blip | None, bool]:
+        """The player's marker, and whether it had to be placed.
+
+        The marker nearest the viewport centre is the player's -- on the
+        locked-camera footage this was built on it sits 5-7px away with the
+        runner-up 38-88px off. But on a real game the player's marker is
+        *covered* much of the time: an enemy chasing them, or a support
+        standing on them, draws over the icon and its ring no longer fills.
+        Measured on the 2026-08-30 session, stage 1 had a blue marker within
+        12px of the centre on 24% of frames, and projecting the player's own
+        nameplate onto the minimap agreed with the centre to within 2px on
+        every frame checked -- so the position was never in doubt, only the
+        marker. When `place` is set and no blue marker is within
+        `SELF_CLEARANCE`, one is put at the centre with no score, so the
+        tracker keeps the player's track fed through the cover. It is the
+        viewport doing the detecting, which is what it was already trusted
+        to do for the identity; this extends that trust to the position.
+        """
         if viewport is None:
-            return None
+            return None, False
         cx, cy = viewport.center
         candidates = [b for b in blips if b.team is Team.BLUE]
-        if not candidates:
-            return None
-        nearest = min(candidates, key=lambda b: np.hypot(b.x - cx, b.y - cy))
-        if np.hypot(nearest.x - cx, nearest.y - cy) > SELF_RADIUS:
-            return None
-        return nearest
+        nearest = min(candidates, key=lambda b: np.hypot(b.x - cx, b.y - cy),
+                      default=None)
+        distance = (float("inf") if nearest is None
+                    else float(np.hypot(nearest.x - cx, nearest.y - cy)))
+        if distance <= SELF_RADIUS:
+            return nearest, False
+        if place and distance > SELF_CLEARANCE:
+            radius = (float(np.median([b.radius for b in blips]))
+                      if blips else 13.0)
+            return Blip(x=cx, y=cy, radius=radius, team=Team.BLUE, score=0.0), True
+        return None, False

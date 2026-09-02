@@ -44,6 +44,23 @@ with the runner-up 38–88px away, so it is effectively exact — found in 98% o
 frames and resolving the player in 85%. That route is immune to skins, gallery
 coverage and fog alike.
 
+It is not immune to the marker being **covered**, and on a real game it is
+covered most of the time: an enemy chasing the player, or a support standing
+on them, draws over the icon and its ring no longer fills, so stage 1 drops it.
+On the 2026-08-30 session a blue marker sat within 12px of the viewport centre
+on only 24% of frames, and the self row was on the timeline for 17%. The
+position was never in doubt — projecting the player's own green nameplate onto
+the minimap agreed with the viewport centre to within 2px on every frame
+checked — only the marker was missing. So when nothing blue is within 20px of
+the centre on a trusted frame with a living self portrait, a marker is placed
+there for the tracker, unscored and kept away from the gallery (whatever is
+drawn at the centre is the thing covering the player, usually an enemy, and a
+confident match there would hand an enemy's name to the blue roster). Measured
+over six minutes of that session: the self row rises from **17% to 72%** of
+frames and the frames naming the player as Ezreal from 536 to 2,402, with the
+accumulated self champion unchanged. `Pipeline(place_self=False)` restores
+the old behaviour for comparison.
+
 **Tracker.** Working, and it is where most of the identification accuracy
 actually comes from. Champions are followed across frames with a constant
 velocity model, and identity is accumulated over a track's life rather than
@@ -212,6 +229,21 @@ by one, which takes bad readings from 20.9% to zero. Plates are matched to track
 by a fitted screen-to-minimap projection accurate to ~12px p90 in a ~74px
 viewport — enough to gate on, not enough to decide alone. See *Reading a
 champion's bars* below.
+
+A plate has three colours, and the first version of this reader had two of
+them wrong. The client paints the local player's own health bar **green**, a
+teammate's **blue**, and an enemy's red — measured on the 2026-08-30 session at
+hues 54, 101 and 176. Green is therefore *self*, not "ally": on the bots
+footage the reader was built against the self plate was the only friendly one
+it ever saw, so the mislabel cost nothing until a real teammate appeared and
+was not read at all. Blue is the harder one, because an ally's health bar is
+the same hue as every champion's resource bar; it cannot be told apart by
+colour and does not need to be — the reader anchors on the resource run, a
+bar four pixels tall, and reads whatever health-coloured band sits a fixed
+distance above it, and an ally's health bar is thirteen. So a plate now carries
+its `side`, and the green one is the one thing on the world view that names
+the player with no geometry at all: on that session it was found at a fixed
+screen position — x 966–976, y 479–504 — on 73% of sampled frames.
 
 **Timeline output.** The pipeline now writes what it sees: one row per tracked
 champion per frame, as JSONL. Until this existed nothing downstream could be
@@ -833,6 +865,130 @@ thousands of frames for free, which is what stage 1 was retuned against.
 It measures recall, not precision — a false positive and a miss cancel out — so
 it is a tuning signal, not a substitute for labelled positions.
 
+## Toward dodge and aim coaching
+
+The plan of record is [docs/dodge-coaching-plan.md](docs/dodge-coaching-plan.md).
+Four of its stages exist: the player's own abilities, projectiles on the world
+view, the bolts that came at them, and the bolts they threw.
+
+**The player's own abilities, named.** The nameplate route says *that* a cost
+was paid; the HUD says *which button*. When an ability is used its slot stops
+showing the art and shows the cooldown, and `perception/hud/abilities.py`
+reads that transition -- Q W E R and the two summoner spells, plus the
+countdown printed on the veil when the clock's glyphs can read it. The signal
+is the *veil*, not a darkening: measured, Ezreal's W slot dims on cast and
+his Q slot does not (its art is blue-teal already), while both are replaced
+by the same flat saturated-blue field. Scored against the player's printed
+mana on the 2026-08-30 session: **90% of 196 mana-fall casts caught, about one
+false positive in a hundred**, and summoner spells and zero-mana casts seen
+that the mana route is blind to. `abilities` rides the self row; the `ability`
+event names the slot. `tools/detect_abilities.py --validate` reports it.
+
+**Projectiles on the world view.** Nothing labels a projectile, so
+`perception/screen/` finds what moves like one, at every distinct frame:
+
+- **The camera is estimated from the terrain**, by tracking a few hundred
+  corners and taking the median vector -- the ground outvotes whatever is
+  fighting on it. Phase correlation was tried first and beat doing nothing on
+  48% of moving frame pairs; the flow median halved the residual on all of
+  them. With the camera locked (the self nameplate holds at x 966-976,
+  y 479-504 for sixteen minutes) this is also the player's own motion at
+  30 Hz and sub-pixel precision, which the minimap cannot offer.
+- **A third of the frames are not frames.** Exact repeats change under a
+  hundred pixels; stale refreshes -- the world not redrawn, a cursor moved --
+  change a few thousand and show zero camera shift between frames that
+  shift ten or twenty. Both are skipped, with time accounted between distinct
+  frames. A bolt is four to six of those.
+- **Candidates are fast, straight and brief tracks** of stabilised residual:
+  Ezreal's Q crosses at ~2,300 px/s and W at 1,000-1,700, against ~600 for
+  anything walking. The tracker's enemy is not champions but chance chains
+  through a field of 40-100 blobs, so links are mutual and a track is born
+  only when its third point lands where the first two predict.
+
+Scored against the one free ground truth -- the player's Q and W, timestamped
+by the ability reader, each launching a bolt from the player's own nameplate
+-- **24 of 25 casts on a three-minute stretch launched a candidate, at about
+210 candidates a minute** overall. Most of the rest are real: minion and
+turret bolts are projectiles too. Telling a threat from lane traffic is the
+classifier's job and needs the labelled footage the plan's Phase 0
+describes. `tools/detect_projectiles.py --sweep` reports recall and rate
+across the gate.
+
+**Threats, and what came of them.** A candidate whose line passes within
+120 px of the player's model, moving toward it, is judged as a threat by
+`perception/screen/threats.py`: when it would arrive, whether the player's
+own printed health fell in the window around that moment (a hit; no fall, a
+dodge; no reading, unknown -- the health text reads on half the frames at
+full rate), and how far the camera track says the player moved *across* the
+bolt's line between its first sighting and its arrival. That last number is
+the one that separates a dodge from standing still and not being hit.
+
+Three measurements shaped it, all on the 2026-08-30 session:
+
+- **A bolt gives a quarter of a second's warning.** It is first seen
+  150-400 px out and arrives a median 0.26 s later. That is the edge of
+  human reaction, so a player is not, in general, coachable to dodge *the
+  bolt*; they dodge the cast that launched it, which is the enemy-ability
+  work of the plan's Phase 5. What this stage measures honestly is whether
+  the player was already moving out of the line when it came.
+- **Most approaching candidates are lane traffic.** Thirty-five a minute
+  passed within 120 px, and health fell after 14% of them against an 8%
+  baseline for any window that long. Where the bolt *started* is the gate
+  that helps: the sixth of them launched within 160 px of an enemy
+  champion's plate were followed by a health fall 24% of the time, three
+  times the baseline. Where the track *ended* does not help at all -- 12%
+  for tracks ending on the player against 15% for tracks flying past -- a
+  hit ends inside the champion's own effects, not at a clean point.
+- **The remainder is still not labelled truth.** A threat on the timeline is
+  a candidate the frame could not rule out, with its outcome read off the
+  health text. The classifier the plan describes is what turns that into a
+  verdict, and it needs Phase 0's footage.
+
+Run it with `--coach`, which feeds every frame and samples the minimap
+stages every `--stride` instead of decimating the source; rows and the feed
+keep their 10 Hz cadence, and `threats` ride the self row like `abilities`
+with a `threat` event per entry. Through the whole pipeline on the same
+three minutes: **14 threats, 4.7 a minute -- 5 hit, 4 dodged, 5 unknown** --
+at a median closest approach of 42 px and 0.40 s of warning, with the
+player's movement across the line measured on every one. Fourteen is a
+sample, not a rate, and the hit/dodge split of `moved_across` on it (40 px
+against 21) means nothing yet; it is the number the labelled footage will
+make mean something.
+
+**Your own skillshots, and where they went.** The same bolts from the other
+end. `perception/screen/aim.py` joins the three stages a shot needs -- the
+HUD says which button, the world view says a bolt left your model in the half
+second after it, and an enemy nameplate says how near that bolt passed them.
+There is no per-champion table of which abilities are skillshots: a blink or
+a self-buff launches nothing, so it excludes itself, and a champion this
+project has never seen needs no entry. Over 150-700 s of the 2026-08-30
+session: **111 casts, 72 of which launched a bolt, and 24 of those with an
+enemy on screen in front of it to have been aimed at** -- 17 passed within
+130 px of them and 7 went wide, at a median miss of 77 px.
+
+The interesting part is what the outcome had to be built on. The plan
+expected the target's health bar to be the label, the way the player's own
+printed health labels a threat. It is not one on this footage, and the number
+is the reason: **an enemy's bar falls in 52% of all 0.65-second windows they
+are on screen at all** -- 1,327 windows across 62 plate tracks. A lane trade
+against bots is continuous damage from minions, the turret, auto-attacks and
+your other abilities, so "the bar moved after your Q" is barely better than a
+coin toss, and no window or threshold makes it better: tightening it until
+the baseline is informative drops the near-miss rate to chance with it.
+
+So the verdict is geometric -- did the bolt's line pass within a hit radius
+of the target's model -- measured from the stabilised residual and the plate,
+with the bar carried alongside as `fall` for a consumer to weigh rather than
+as the answer. It does lean the right way: the bar fell after **82% of the 17
+shots called hits against 43% of the 7 called misses**, on that 52% baseline.
+Seven wide shots is not a result; it is the direction one would point. The
+hit radius itself sits in a gap in the measured miss distances (nothing
+between 124 px and 183 px) and is the least settled number in the module,
+which says so at length. What settles it is the plan's Phase 0: one enemy,
+one skillshot, and nothing else on the map dealing damage, so the bar becomes
+the label it was supposed to be. `tools/detect_skillshots.py --sweep` reports
+all of it.
+
 ## Input assumptions
 
 The target input is a **VOD from a player's perspective** — not a Riot `.rofl`
@@ -1220,6 +1376,10 @@ src/spectral_sight/
     naming.py                 which champion each ally slot belongs to
     clock.py                  the match timer
     resources.py              the player's own health and mana, as numbers
+    abilities.py              the player's own casts, named, from the cooldown HUD
+  perception/screen/
+    motion.py                 camera motion from the terrain, and repeat frames
+    projectiles.py            fast, straight, brief movers on the world view
   perception/nameplates/
     plates.py                 health, resource and level over a champion
     levels.py                 level held steady across misreads
@@ -1240,6 +1400,7 @@ etc/world/                    map area and world bounds per resolution
 etc/hud/                      friendly portrait positions per resolution
 etc/nameplates/               bar geometry and screen projection per resolution
 etc/resources/                player health and mana text boxes per resolution
+etc/abilities/                player ability slot geometry per resolution
 ```
 
 ## Testing

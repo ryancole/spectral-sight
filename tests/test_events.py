@@ -15,7 +15,13 @@ from pathlib import Path
 import pytest
 
 from spectral_sight.events import EventDeriver
-from spectral_sight.export import Observation, TimelineMeta
+from spectral_sight.export import (
+    AbilityUse,
+    Observation,
+    Skillshot,
+    Threat,
+    TimelineMeta,
+)
 from spectral_sight.feed import FrameState, JsonlSink, read_frames
 from spectral_sight.types import Team
 
@@ -73,6 +79,70 @@ class TestCast:
             "drop": 0.133, "at": 10.0, "span": 0.1,
             "continuous": True, "confirmed": True,
         }
+
+
+class TestAbility:
+    def test_each_ability_use_is_one_event(self) -> None:
+        """An ability rides exactly the row it settled on and is never carried,
+        so a Q and a W in one interval are two events, no diffing involved."""
+        events = derive(state(0, [row(
+            champion="Ezreal", is_self=True,
+            abilities=(
+                AbilityUse(slot="Q", at=9.9, countdown=5, confirmed=True),
+                AbilityUse(slot="W", at=9.95, countdown=None, confirmed=True),
+            ),
+        )]))
+        abilities = [e for e in events if e.kind == "ability"]
+        assert [e.detail["slot"] for e in abilities] == ["Q", "W"]
+        assert abilities[0].detail == {
+            "slot": "Q", "at": 9.9, "countdown": 5, "confirmed": True,
+        }
+        # An unread countdown is carried as None, not dropped.
+        assert abilities[1].detail["countdown"] is None
+
+    def test_a_row_without_abilities_emits_none(self) -> None:
+        events = derive(state(0, [row(champion="Ezreal", is_self=True)]))
+        assert "ability" not in kinds(events)
+
+
+class TestThreat:
+    def test_each_resolved_threat_is_one_event(self) -> None:
+        threat = Threat(at=9.9, arrival=10.2, closest=12.5, speed=1500.0,
+                        heading=(1.0, 0.0), outcome="dodged", damage=None,
+                        moved_across=31.0, origin=140.0)
+        events = derive(state(0, [row(champion="Ezreal", is_self=True,
+                                      threats=(threat,))]))
+        threats = [e for e in events if e.kind == "threat"]
+        assert len(threats) == 1
+        assert threats[0].detail["outcome"] == "dodged"
+        assert threats[0].detail["moved_across"] == 31.0
+        assert "damage" not in threats[0].detail
+
+
+class TestSkillshot:
+    def test_each_resolved_skillshot_is_one_event(self) -> None:
+        shot = Skillshot(slot="Q", at=9.9, launched=10.0, speed=1200.0,
+                         heading=(1.0, 0.0), miss=42.0, flight=0.3,
+                         outcome="hit", fall=0.12, lead=None)
+        events = derive(state(0, [row(champion="Ezreal", is_self=True,
+                                      skillshots=(shot,))]))
+        shots = [e for e in events if e.kind == "skillshot"]
+        assert len(shots) == 1
+        assert shots[0].detail["slot"] == "Q"
+        assert shots[0].detail["outcome"] == "hit"
+        assert shots[0].detail["miss"] == 42.0
+        # A target who was not moving carries no lead, rather than a zero.
+        assert "lead" not in shots[0].detail
+
+    def test_a_cast_that_launched_nothing_still_reports(self) -> None:
+        shot = Skillshot(slot="R", at=9.9, launched=None, speed=None,
+                         heading=None, miss=None, flight=None,
+                         outcome="unknown", fall=None, lead=None)
+        events = derive(state(0, [row(champion="Ezreal", is_self=True,
+                                      skillshots=(shot,))]))
+        detail = [e for e in events if e.kind == "skillshot"][0].detail
+        assert detail["outcome"] == "unknown"
+        assert "launched" not in detail
 
 
 class TestLiveness:

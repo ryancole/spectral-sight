@@ -122,7 +122,10 @@ def open_target(args: argparse.Namespace) -> FrameSource:
     """The clip or the window, whichever was asked for."""
     if args.window:
         return WindowSource(args.window, target_fps=args.fps)
-    return open_source(args.input, stride=args.stride, start=args.start)
+    # Coaching reads the world view at every frame and samples the minimap
+    # stages inside the pipeline instead, so the source is not decimated.
+    stride = 1 if args.coach else args.stride
+    return open_source(args.input, stride=stride, start=args.start)
 
 
 SAMPLE_FRAMES = 8
@@ -251,6 +254,10 @@ def main() -> int:
     parser.add_argument("--stride", type=int, default=3,
                         help="process every Nth frame (3 = 10 Hz on 30 fps); "
                              "--input only")
+    parser.add_argument("--coach", action="store_true",
+                        help="feed every frame; sample the minimap stages every "
+                             "--stride frames instead of decimating the source. "
+                             "Needed by anything reading the world view at speed.")
     parser.add_argument("--fps", type=float, default=10.0,
                         help="frames per second to ask the window for; --window only")
     parser.add_argument("--zoom", type=float, default=2.5, help="preview upscale")
@@ -316,7 +323,10 @@ def main() -> int:
             if not calibrated:
                 return 1
         try:
-            pipeline = Pipeline.for_resolution(width, height, icons)
+            pipeline = Pipeline.for_resolution(
+                width, height, icons, every=args.stride if args.coach else 1,
+                coach=args.coach,
+            )
         except FileNotFoundError as exc:
             print(exc, file=sys.stderr)
             return 1
@@ -396,6 +406,10 @@ def main() -> int:
         session = Session(source)
         for frame in session:
             result = pipeline.process(frame.image, frame.timestamp)
+            if not result.sampled:
+                # A frame between samples: the world-view stages saw it, the
+                # minimap stages did not, and there is nothing to publish.
+                continue
             processed += 1
 
             if len(feed):

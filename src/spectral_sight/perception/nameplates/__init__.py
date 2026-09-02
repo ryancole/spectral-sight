@@ -10,6 +10,7 @@ from spectral_sight.perception.nameplates.levels import LevelBook, LevelFilter
 from spectral_sight.perception.nameplates.plates import (
     LAYOUT_DIR,
     Nameplate,
+    Side,
     NameplateConfig,
     NameplateLayout,
     NameplateReader,
@@ -31,6 +32,7 @@ __all__ = [
     "LevelBook",
     "LevelFilter",
     "Nameplate",
+    "Side",
     "NameplateConfig",
     "NameplateLayout",
     "NameplateReader",

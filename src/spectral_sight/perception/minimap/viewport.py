@@ -15,6 +15,15 @@ working regardless of skins, gallery coverage, or fog.
 
 The separation is not marginal. The nearest marker to the rectangle centre sits
 5-7px away while the runner-up is 38-88px away, so this is effectively exact.
+
+What is not guaranteed is that the marker is *there to find*. On a real game
+the player's icon spends much of its time covered -- an enemy chasing them, a
+support standing on them -- and a covered ring does not fill, so stage 1 drops
+it. Measured on the 2026-08-30 session a blue marker sat within 12px of the
+centre on only 24% of frames, while the centre itself agreed with the
+player's own nameplate projected onto the minimap to within 2px on every frame
+checked. The rectangle knows where the player is even when nothing is drawn
+there; the pipeline's `_find_self` acts on that.
 """
 
 from __future__ import annotations

@@ -36,6 +36,21 @@ by taking a connected component. The tick marks are the reason: they are gaps of
 two or three pixels *inside* the filled region, so a measurement that stops at
 the first gap reports the health at the first tick instead of the health.
 
+**Three colours, three sides.** The client draws the local player's own health
+bar green, a teammate's blue, and an enemy's red -- measured on the 2026-08-30
+session at hues 54, 101 and 176. Green is therefore not "ally" but *self*,
+and it is a strong signal: the one champion whose plate is green is the one
+being played, on every frame they are on screen, with no geometry involved.
+(The first version of this reader called green "ally", which was true of the
+bots footage it was built on only because the self plate was the only friendly
+one it ever saw.) Blue is the awkward one: an ally's health bar is the same
+hue as every champion's resource bar, so it cannot be told apart by colour at
+all. It does not need to be. The reader anchors on the *resource* run, a thin
+bar a few pixels high, and reads whatever health-coloured band sits the fixed
+distance above it -- and an ally's health bar is thirteen pixels tall where a
+resource bar is four, so the two never get confused for one another as
+anchors. Blue above a resource run is an ally's health.
+
 Two things are deliberately not read. A shield renders as a violet segment
 appended to the health bar, so `health` excludes it and a champion gaining one
 shows no change here. And champions on energy, rage, or no resource at all draw
@@ -46,6 +61,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 
 import cv2
@@ -62,6 +78,21 @@ from spectral_sight.perception.hud.clock import (
 LAYOUT_DIR = Path(__file__).resolve().parents[4] / "etc" / "nameplates"
 
 
+class Side(Enum):
+    """Whose plate it is, by the colour the client paints the health bar."""
+
+    SELF = "self"
+    """Green: the local player. Exactly one champion, always, and the one
+    thing on the world view that names the player without any geometry."""
+
+    ALLY = "ally"
+    """Blue: a teammate. Found by position rather than hue, since the blue is
+    the resource bar's blue."""
+
+    HOSTILE = "hostile"
+    """Red: an enemy champion, who only ever renders this way."""
+
+
 @dataclass(frozen=True, slots=True)
 class NameplateConfig:
     """Thresholds that do not depend on the resolution.
@@ -75,11 +106,17 @@ class NameplateConfig:
     same band the minimap's enemy ring sits in, and for the same reason: a naive
     0-10 red window mostly misses it."""
 
-    ally_hue: tuple[int, int] = (35, 85)
+    self_hue: tuple[int, int] = (35, 85)
+    """The local player's own bar is green -- measured at hue 54. Not an
+    ally's: see the module docstring."""
+
     resource_hue: tuple[int, int] = (94, 106)
+    """Every champion's resource bar, and an ally's health bar too -- measured
+    at 99-101 for both. One mask serves both; height and position tell them
+    apart."""
 
     min_saturation: int = 150
-    ally_min_saturation: int = 120
+    self_min_saturation: int = 120
     resource_min_saturation: int = 100
     min_value: int = 80
     resource_min_value: int = 60
@@ -245,8 +282,9 @@ class Nameplate:
     a plausible fill. A consumer watching for sharp drops cannot tell that from
     real damage, or from the resource step this module exists to find."""
 
-    hostile: bool
-    """Red bar rather than green. An enemy champion only ever renders hostile."""
+    side: Side
+    """Whose plate: the local player's (green), a teammate's (blue), or an
+    enemy's (red)."""
 
     occluded: bool = False
     """Another plate is drawn across this one."""
@@ -295,6 +333,11 @@ class Nameplate:
     frame."""
 
     @property
+    def hostile(self) -> bool:
+        """An enemy's plate. Self and ally are both friendly."""
+        return self.side is Side.HOSTILE
+
+    @property
     def center(self) -> tuple[float, float]:
         """Bar centre. The champion's model hangs below this point rather than
         sitting at it -- the plate floats overhead by a champion-dependent
@@ -327,8 +370,8 @@ class NameplateReader:
         red = (((h >= lo) & (h <= hi)) | (h <= 3)) & (s > cfg.min_saturation) & (
             v > cfg.min_value
         )
-        lo, hi = cfg.ally_hue
-        green = (h >= lo) & (h <= hi) & (s > cfg.ally_min_saturation) & (
+        lo, hi = cfg.self_hue
+        green = (h >= lo) & (h <= hi) & (s > cfg.self_min_saturation) & (
             v > cfg.min_value
         )
         lo, hi = cfg.resource_hue
@@ -474,22 +517,31 @@ class NameplateReader:
         for bx, by, bw, bh in self._merge_fragments(frame, bars):
             if self._excluded(bx, by, width, height):
                 continue
-            top = self._health_top(red | green, bx, by)
+            # Blue joins the health search: an ally's health bar is blue, and
+            # the rows searched lie strictly above the resource run, so the
+            # run itself cannot masquerade as its own health.
+            top = self._health_top(red | green | blue, bx, by)
             if top is None:
                 continue
             band = (
                 slice(top, top + layout.bar_height),
                 slice(bx, bx + layout.bar_width),
             )
-            red_fill = self._fill(red[band])
-            green_fill = self._fill(green[band])
-            if max(red_fill, green_fill) < cfg.min_health_pixels:
+            fills = {
+                Side.HOSTILE: self._fill(red[band]),
+                Side.SELF: self._fill(green[band]),
+                Side.ALLY: self._fill(blue[band]),
+            }
+            # Ties fall to hostile, then self -- the order the colours are
+            # listed in -- which only matters for a band with nothing in it.
+            side = max(fills, key=lambda s: (fills[s], -list(Side).index(s)))
+            health_fill = fills[side]
+            if health_fill < cfg.min_health_pixels:
                 continue
             resource = self._fill(
                 blue[slice(by, by + bh), slice(bx, bx + layout.bar_width)]
             )
             clipped = self._clipped(bx, top, width, height)
-            health_fill = max(red_fill, green_fill)
             obstructed = self._obstructed(health_fill, resource)
             unreadable = clipped or obstructed
             plates.append(
@@ -501,7 +553,7 @@ class NameplateReader:
                     else min(health_fill / layout.bar_width, 1.0),
                     resource=None if unreadable
                     else min(resource / layout.bar_width, 1.0),
-                    hostile=red_fill >= green_fill,
+                    side=side,
                     clipped=clipped,
                     obstructed=obstructed,
                     level=self.read_level(frame, bx, by),
@@ -611,7 +663,7 @@ class NameplateReader:
             out.append(
                 plate if not hidden else Nameplate(
                     x=plate.x, y=plate.y, width=plate.width,
-                    health=None, resource=None, hostile=plate.hostile,
+                    health=None, resource=None, side=plate.side,
                     occluded=True, clipped=plate.clipped,
                     obstructed=plate.obstructed, level=plate.level,
                 )

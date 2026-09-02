@@ -48,6 +48,224 @@ Adding an optional field does not count; removing or repurposing one does."""
 
 
 @dataclass(frozen=True, slots=True)
+class AbilityUse:
+    """One HUD ability slot observed going on cooldown -- a named cast.
+
+    Local player only: the client draws nobody else's cooldowns. The slot plus
+    the row's `champion` names the ability outright, which the `cast_*` fields
+    never can -- they know a cost was paid, not which button paid it.
+    """
+
+    slot: str
+    """Q, W, E or R for abilities; D or F for summoner spells, which the
+    resource route is entirely blind to -- they cost no mana."""
+
+    at: float
+    """`video_time` of the first frame the slot read as on cooldown. Earlier
+    than the row carrying it, which is the frame the reading was confirmed."""
+
+    countdown: int | None
+    """Seconds printed on the cooldown veil when they could be read -- at the
+    onset, the ability's cooldown. None when the digits did not resolve."""
+
+    confirmed: bool
+    """The veil held on the following reading. False only for a cast released
+    at the very end of a run, never one that was contradicted."""
+
+    def to_dict(self) -> dict[str, object]:
+        entry: dict[str, object] = {
+            "slot": self.slot,
+            "at": round(float(self.at), 3),
+            "confirmed": bool(self.confirmed),
+        }
+        if self.countdown is not None:
+            entry["countdown"] = int(self.countdown)
+        return entry
+
+    @classmethod
+    def from_dict(cls, data: dict) -> AbilityUse:
+        return cls(
+            slot=str(data["slot"]),
+            at=float(data["at"]),
+            countdown=(
+                None if data.get("countdown") is None else int(data["countdown"])
+            ),
+            confirmed=bool(data.get("confirmed", False)),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class Threat:
+    """One bolt that came at the player, resolved -- the self row's account.
+
+    Local player only, like `AbilityUse`: the threat is to the champion whose
+    health is printed on the HUD, and the response is the camera's motion,
+    which is theirs. Coordinates are world-view pixels; see
+    `perception.screen.threats` for how each field is measured."""
+
+    at: float
+    """`video_time` the bolt was first seen -- onset."""
+
+    arrival: float
+    """`video_time` it was estimated to reach the player."""
+
+    closest: float
+    """Closest approach of its line to the player's model, px."""
+
+    speed: float
+    """px/s."""
+
+    heading: tuple[float, float]
+    """Unit vector of travel, world-view pixels."""
+
+    outcome: str
+    """`hit`, `dodged`, or `unknown` (no health reading in the window)."""
+
+    damage: int | None
+    """The health fall attributed, when `hit`."""
+
+    moved_across: float | None
+    """Player displacement perpendicular to the heading between onset and
+    arrival, px, positive either way. None when no camera motion was
+    measured in that span."""
+
+    origin: float | None
+    """Distance from the track's start to the nearest enemy model, px, when
+    any enemy plate was on screen."""
+
+    def to_dict(self) -> dict[str, object]:
+        out: dict[str, object] = {
+            "at": round(float(self.at), 3),
+            "arrival": round(float(self.arrival), 3),
+            "closest": round(float(self.closest), 1),
+            "speed": round(float(self.speed), 0),
+            "heading": [round(float(self.heading[0]), 3), round(float(self.heading[1]), 3)],
+            "outcome": self.outcome,
+        }
+        if self.damage is not None:
+            out["damage"] = int(self.damage)
+        if self.moved_across is not None:
+            out["moved_across"] = round(float(self.moved_across), 1)
+        if self.origin is not None:
+            out["origin"] = round(float(self.origin), 0)
+        return out
+
+    @classmethod
+    def from_dict(cls, d: dict) -> Threat:
+        return cls(
+            at=float(d["at"]), arrival=float(d["arrival"]),
+            closest=float(d["closest"]), speed=float(d["speed"]),
+            heading=(float(d["heading"][0]), float(d["heading"][1])),
+            outcome=str(d["outcome"]),
+            damage=None if d.get("damage") is None else int(d["damage"]),
+            moved_across=(None if d.get("moved_across") is None
+                          else float(d["moved_across"])),
+            origin=None if d.get("origin") is None else float(d["origin"]),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class Skillshot:
+    """One skillshot the player threw, and what became of it.
+
+    Local player only, like `AbilityUse` and `Threat`: the cast comes off
+    their own cooldown HUD and the bolt is born at their own model. See
+    `perception.screen.aim` for how each field is measured, and for the one
+    measurement that says the geometry and the health agree."""
+
+    slot: str
+    """Q, W, E or R -- the button, which with the row's `champion` names the
+    ability."""
+
+    at: float
+    """`video_time` of the cast, from the HUD cooldown veil."""
+
+    launched: float | None
+    """`video_time` the bolt was first seen. None when the cast launched
+    nothing this stage could find -- a blink, a self-buff, or a bolt it
+    missed."""
+
+    speed: float | None
+    """px/s, chord over duration."""
+
+    heading: tuple[float, float] | None
+    """Unit vector of travel, world-view pixels."""
+
+    miss: float | None
+    """Closest approach of the bolt's line to the target's model, px -- the
+    aim error, and the number this stage exists to produce. None when no
+    enemy was on screen in front of the bolt to aim at, which is most of a
+    lane phase. The target is whichever enemy the line passed nearest, ahead
+    of the bolt and inside a plausible flight."""
+
+    flight: float | None
+    """Seconds from the bolt's first sighting to reaching the target."""
+
+    outcome: str
+    """`hit`, `missed`, or `unknown`.
+
+    Decided by geometry -- whether `miss` came inside the stage's hit radius
+    -- and not by the target's health. That is a measured choice and the
+    module explains it: on the footage this project has, an enemy's bar falls
+    in half of all windows of the length involved, so a fall after a shot is
+    barely evidence. `unknown` means the frame could not say at all: the cast
+    launched no bolt, or no enemy was on screen in front of it."""
+
+    fall: float | None
+    """Fraction of the target's health bar that went in the arrival window,
+    when any did -- carried on hits and misses alike, as corroboration for a
+    consumer to weigh rather than as the verdict.
+
+    A bar fraction and not an absolute, unlike `Threat.damage`: nobody's
+    maximum health is printed but the local player's."""
+
+    lead: float | None
+    """Signed offset of the shot past the target, px: positive means it went
+    by on the side they were walking toward, negative behind them. None when
+    the target was not moving fast enough for the direction to mean
+    anything. This is the one field the footage has not scored -- see the
+    module."""
+
+    def to_dict(self) -> dict[str, object]:
+        out: dict[str, object] = {
+            "slot": self.slot,
+            "at": round(float(self.at), 3),
+            "outcome": self.outcome,
+        }
+        if self.launched is not None:
+            out["launched"] = round(float(self.launched), 3)
+        if self.speed is not None:
+            out["speed"] = round(float(self.speed), 0)
+        if self.heading is not None:
+            out["heading"] = [round(float(self.heading[0]), 3),
+                              round(float(self.heading[1]), 3)]
+        if self.miss is not None:
+            out["miss"] = round(float(self.miss), 1)
+        if self.flight is not None:
+            out["flight"] = round(float(self.flight), 3)
+        if self.fall is not None:
+            out["fall"] = round(float(self.fall), 3)
+        if self.lead is not None:
+            out["lead"] = round(float(self.lead), 1)
+        return out
+
+    @classmethod
+    def from_dict(cls, d: dict) -> Skillshot:
+        heading = d.get("heading")
+        return cls(
+            slot=str(d["slot"]), at=float(d["at"]),
+            launched=None if d.get("launched") is None else float(d["launched"]),
+            speed=None if d.get("speed") is None else float(d["speed"]),
+            heading=None if heading is None else (float(heading[0]), float(heading[1])),
+            miss=None if d.get("miss") is None else float(d["miss"]),
+            flight=None if d.get("flight") is None else float(d["flight"]),
+            outcome=str(d["outcome"]),
+            fall=None if d.get("fall") is None else float(d["fall"]),
+            lead=None if d.get("lead") is None else float(d["lead"]),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class Observation:
     """One champion at one instant.
 
@@ -164,6 +382,26 @@ class Observation:
     at all, so this never marks one the detector doubts, only one it could not
     finish checking."""
 
+    abilities: tuple[AbilityUse, ...] | None = None
+    """HUD ability casts that settled on this frame -- the self row only.
+
+    A tuple rather than a single group of scalars because two abilities cast
+    within one sampling interval land together, and dropping the second would
+    lose exactly the quick double-casts worth coaching on. Almost every
+    carrying row holds one entry."""
+
+    threats: tuple[Threat, ...] | None = None
+    """Bolts at the local player that resolved on this frame -- the self row
+    only, like `abilities`, and for the same reason: the outcome is read off
+    the player's own printed health and the response off their own camera."""
+
+    skillshots: tuple[Skillshot, ...] | None = None
+    """Skillshots the local player threw that resolved on this frame -- the
+    self row only. The mirror of `threats`: the same bolts, judged from the
+    other end. A cast resolves a second or two after it happened, once the
+    bolt has flown and the target's bar has had a chance to move, so these
+    ride a later row than the `abilities` entry naming the same cast."""
+
     allies_dead: int | None = None
     """How many of your five teammates were dead on this frame.
 
@@ -216,6 +454,12 @@ class Observation:
             row["cast_span"] = round(float(self.cast_span or 0.0), 3)
             row["cast_continuous"] = bool(self.cast_continuous)
             row["cast_confirmed"] = bool(self.cast_confirmed)
+        if self.abilities:
+            row["abilities"] = [use.to_dict() for use in self.abilities]
+        if self.threats:
+            row["threats"] = [threat.to_dict() for threat in self.threats]
+        if self.skillshots:
+            row["skillshots"] = [shot.to_dict() for shot in self.skillshots]
         return row
 
     @classmethod
@@ -253,6 +497,18 @@ class Observation:
             cast_confirmed=(
                 None if data.get("cast_confirmed") is None
                 else bool(data["cast_confirmed"])
+            ),
+            abilities=(
+                tuple(AbilityUse.from_dict(use) for use in data["abilities"])
+                if data.get("abilities") else None
+            ),
+            threats=(
+                tuple(Threat.from_dict(t) for t in data["threats"])
+                if data.get("threats") else None
+            ),
+            skillshots=(
+                tuple(Skillshot.from_dict(t) for t in data["skillshots"])
+                if data.get("skillshots") else None
             ),
             allies_dead=(
                 None if data.get("allies_dead") is None
@@ -299,6 +555,20 @@ class TimelineMeta:
     The distinction matters: a consumer measuring how often an enemy is
     observable would otherwise read a missing calibration as a quiet game."""
 
+    has_abilities: bool = False
+    """Whether the local player's ability slots were read for this run. When
+    False no row carries `abilities` because nothing looked -- as against the
+    usual case, where a row lacks them because nothing was cast."""
+
+    has_threats: bool = False
+    """Whether the world view was read for projectiles at the player. Needs
+    every frame, so it is on only for a run fed that way (`--coach`)."""
+
+    has_skillshots: bool = False
+    """Whether the player's own casts were followed to their bolts. Needs the
+    world view, the ability HUD and nameplates all at once, so it is on only
+    for a `--coach` run with each of them calibrated."""
+
     world_bounds: dict[str, float] | None = None
     world_units_per_pixel: list[float] | None = None
     """The world calibration in force, or None if positions are crop pixels
@@ -318,6 +588,9 @@ class TimelineMeta:
             "has_game_time": self.has_game_time,
             "has_liveness": self.has_liveness,
             "has_nameplates": self.has_nameplates,
+            "has_abilities": self.has_abilities,
+            "has_threats": self.has_threats,
+            "has_skillshots": self.has_skillshots,
             "world_bounds": self.world_bounds,
             "world_units_per_pixel": self.world_units_per_pixel,
         }
@@ -333,6 +606,9 @@ class TimelineMeta:
             has_game_time=bool(data.get("has_game_time", False)),
             has_liveness=bool(data.get("has_liveness", False)),
             has_nameplates=bool(data.get("has_nameplates", False)),
+            has_abilities=bool(data.get("has_abilities", False)),
+            has_threats=bool(data.get("has_threats", False)),
+            has_skillshots=bool(data.get("has_skillshots", False)),
             world_bounds=data.get("world_bounds"),
             world_units_per_pixel=data.get("world_units_per_pixel"),
             schema=int(data.get("schema", SCHEMA)),
@@ -352,6 +628,9 @@ class TimelineMeta:
             has_game_time=self.has_game_time,
             has_liveness=self.has_liveness,
             has_nameplates=self.has_nameplates,
+            has_abilities=self.has_abilities,
+            has_threats=self.has_threats,
+            has_skillshots=self.has_skillshots,
             world_bounds=self.world_bounds,
             world_units_per_pixel=self.world_units_per_pixel,
             schema=self.schema,
