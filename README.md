@@ -44,6 +44,23 @@ with the runner-up 38–88px away, so it is effectively exact — found in 98% o
 frames and resolving the player in 85%. That route is immune to skins, gallery
 coverage and fog alike.
 
+It is not immune to the marker being **covered**, and on a real game it is
+covered most of the time: an enemy chasing the player, or a support standing
+on them, draws over the icon and its ring no longer fills, so stage 1 drops it.
+On the 2026-08-30 session a blue marker sat within 12px of the viewport centre
+on only 24% of frames, and the self row was on the timeline for 17%. The
+position was never in doubt — projecting the player's own green nameplate onto
+the minimap agreed with the viewport centre to within 2px on every frame
+checked — only the marker was missing. So when nothing blue is within 20px of
+the centre on a trusted frame with a living self portrait, a marker is placed
+there for the tracker, unscored and kept away from the gallery (whatever is
+drawn at the centre is the thing covering the player, usually an enemy, and a
+confident match there would hand an enemy's name to the blue roster). Measured
+over six minutes of that session: the self row rises from **17% to 72%** of
+frames and the frames naming the player as Ezreal from 536 to 2,402, with the
+accumulated self champion unchanged. `Pipeline(place_self=False)` restores
+the old behaviour for comparison.
+
 **Tracker.** Working, and it is where most of the identification accuracy
 actually comes from. Champions are followed across frames with a constant
 velocity model, and identity is accumulated over a track's life rather than
@@ -212,6 +229,21 @@ by one, which takes bad readings from 20.9% to zero. Plates are matched to track
 by a fitted screen-to-minimap projection accurate to ~12px p90 in a ~74px
 viewport — enough to gate on, not enough to decide alone. See *Reading a
 champion's bars* below.
+
+A plate has three colours, and the first version of this reader had two of
+them wrong. The client paints the local player's own health bar **green**, a
+teammate's **blue**, and an enemy's red — measured on the 2026-08-30 session at
+hues 54, 101 and 176. Green is therefore *self*, not "ally": on the bots
+footage the reader was built against the self plate was the only friendly one
+it ever saw, so the mislabel cost nothing until a real teammate appeared and
+was not read at all. Blue is the harder one, because an ally's health bar is
+the same hue as every champion's resource bar; it cannot be told apart by
+colour and does not need to be — the reader anchors on the resource run, a
+bar four pixels tall, and reads whatever health-coloured band sits a fixed
+distance above it, and an ally's health bar is thirteen. So a plate now carries
+its `side`, and the green one is the one thing on the world view that names
+the player with no geometry at all: on that session it was found at a fixed
+screen position — x 966–976, y 479–504 — on 73% of sampled frames.
 
 **Timeline output.** The pipeline now writes what it sees: one row per tracked
 champion per frame, as JSONL. Until this existed nothing downstream could be

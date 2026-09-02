@@ -26,7 +26,7 @@ import numpy as np
 from spectral_sight.capture import open_source
 from spectral_sight.perception.hud.abilities import load_ability_reader
 from spectral_sight.perception.hud.clock import load_clock_reader
-from spectral_sight.perception.nameplates import NameplateLayout, NameplateReader
+from spectral_sight.perception.nameplates import NameplateLayout, NameplateReader, Side
 from spectral_sight.perception.screen import (
     CameraTracker,
     MotionConfig,
@@ -94,7 +94,7 @@ def main() -> int:
                 for cast in abilities.read(frame.image, t):
                     if cast.slot in ("Q", "W"):
                         casts.append(cast)
-                        friendly = [p for p in plates.read(frame.image) if not p.hostile]
+                        friendly = [p for p in plates.read(frame.image) if p.side is Side.SELF]
                         if len(friendly) == 1:
                             cx, cy = friendly[0].center
                             anchors[cast.at] = (cx - vx, cy - vy + PLATE_ABOVE_MODEL)

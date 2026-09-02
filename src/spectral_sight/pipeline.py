@@ -98,6 +98,12 @@ SELF_RADIUS = 12.0
 The nearest marker measures 5-7px on real footage with the runner-up 38-88px
 away, so this threshold sits comfortably inside a very wide gap."""
 
+SELF_CLEARANCE = 20.0
+"""How far the nearest blue marker must be from the viewport centre before the
+player's marker is taken to be hidden rather than merely off-centre, and one is
+placed at the centre in its stead. Wider than SELF_RADIUS so a marker that is
+there but a few pixels out is used rather than doubled."""
+
 SELF_MIN_SIGHTINGS = 10
 SELF_MIN_LEAD = 2.0
 """How much the viewport must favour one champion before it is called the local
@@ -165,9 +171,14 @@ class Pipeline:
         nameplates: NameplateLayout | None = None,
         abilities: AbilityLayout | None = None,
         resolution: tuple[int, int] | None = None,
+        place_self: bool = True,
     ) -> None:
         self.region = region
         self.gallery = gallery
+        self.place_self = place_self
+        """Whether to place the player's marker at the viewport centre when
+        stage 1 cannot see it -- see `_find_self`. A switch so the two can be
+        measured against each other."""
         # Frame size this pipeline was calibrated for. Not derivable from the
         # region, which knows only the crop rectangle, and needed only to
         # describe a run in a timeline header.
@@ -372,8 +383,8 @@ class Pipeline:
             # a clean slate, since the on-screen cooldowns are stale -- when it
             # does not. A frame where the portrait is merely unreadable (None)
             # is not proof of death, so it is still read.
-            me = None if liveness is None else liveness.slot(SELF_SLOT)
-            dead = me is not None and me.alive is False
+            portrait = None if liveness is None else liveness.slot(SELF_SLOT)
+            dead = portrait is not None and portrait.alive is False
             if trusted and not dead:
                 self._pending_abilities.extend(
                     AbilityUse(
@@ -391,11 +402,26 @@ class Pipeline:
         blips = self.detector.detect(minimap)
 
         viewport = find_viewport(minimap)
-        self_blip = self._find_self(blips, viewport)
+        me = None if liveness is None else liveness.slot(SELF_SLOT)
+        self_blip, placed = self._find_self(
+            blips, viewport,
+            # Placing a marker asserts the camera is on a living player on
+            # an in-game frame; each of those is something the pipeline can
+            # check, so each is required rather than assumed.
+            place=self.place_self and trusted
+            and (me is None or me.alive is not False),
+        )
+        if placed:
+            blips = [*blips, self_blip]
 
         matches: list[Match | None] = [None] * len(blips)
         for team in (Team.BLUE, Team.RED):
-            indices = [i for i, b in enumerate(blips) if b.team is team]
+            # A placed marker is kept away from the gallery: whatever is
+            # drawn at the centre is the thing covering the player's icon,
+            # most often an enemy's, and a confident match there would hand
+            # an enemy's name to the blue roster.
+            indices = [i for i, b in enumerate(blips)
+                       if b.team is team and not (placed and b is self_blip)]
             if not indices:
                 continue
             gallery = self._gallery_for(team)
@@ -428,7 +454,6 @@ class Pipeline:
         # the vote too -- pre-game frames are not a game -- and a run with no
         # portrait calibration keeps the old behaviour, having no gate to
         # apply.
-        me = None if liveness is None else liveness.slot(SELF_SLOT)
         witnessed = liveness is None or (me is not None and me.alive is True)
         if witnessed and self_track is not None and self_track.identity is not None:
             name = self_track.identity
@@ -766,14 +791,38 @@ class Pipeline:
         )
 
     @staticmethod
-    def _find_self(blips: list[Blip], viewport: Viewport | None) -> Blip | None:
+    def _find_self(
+        blips: list[Blip], viewport: Viewport | None, place: bool = False
+    ) -> tuple[Blip | None, bool]:
+        """The player's marker, and whether it had to be placed.
+
+        The marker nearest the viewport centre is the player's -- on the
+        locked-camera footage this was built on it sits 5-7px away with the
+        runner-up 38-88px off. But on a real game the player's marker is
+        *covered* much of the time: an enemy chasing them, or a support
+        standing on them, draws over the icon and its ring no longer fills.
+        Measured on the 2026-08-30 session, stage 1 had a blue marker within
+        12px of the centre on 24% of frames, and projecting the player's own
+        nameplate onto the minimap agreed with the centre to within 2px on
+        every frame checked -- so the position was never in doubt, only the
+        marker. When `place` is set and no blue marker is within
+        `SELF_CLEARANCE`, one is put at the centre with no score, so the
+        tracker keeps the player's track fed through the cover. It is the
+        viewport doing the detecting, which is what it was already trusted
+        to do for the identity; this extends that trust to the position.
+        """
         if viewport is None:
-            return None
+            return None, False
         cx, cy = viewport.center
         candidates = [b for b in blips if b.team is Team.BLUE]
-        if not candidates:
-            return None
-        nearest = min(candidates, key=lambda b: np.hypot(b.x - cx, b.y - cy))
-        if np.hypot(nearest.x - cx, nearest.y - cy) > SELF_RADIUS:
-            return None
-        return nearest
+        nearest = min(candidates, key=lambda b: np.hypot(b.x - cx, b.y - cy),
+                      default=None)
+        distance = (float("inf") if nearest is None
+                    else float(np.hypot(nearest.x - cx, nearest.y - cy)))
+        if distance <= SELF_RADIUS:
+            return nearest, False
+        if place and distance > SELF_CLEARANCE:
+            radius = (float(np.median([b.radius for b in blips]))
+                      if blips else 13.0)
+            return Blip(x=cx, y=cy, radius=radius, team=Team.BLUE, score=0.0), True
+        return None, False

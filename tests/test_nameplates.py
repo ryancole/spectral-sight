@@ -27,6 +27,7 @@ from spectral_sight.perception.nameplates import (
     Nameplate,
     NameplateLayout,
     NameplateReader,
+    Side,
 )
 from tests.synthetic import (
     draw_minion_bar,
@@ -91,7 +92,7 @@ def scene(**plate) -> np.ndarray:
 def test_finds_a_champion_plate() -> None:
     plates = reader().read(scene(x=200, y=120, health=0.8, resource=0.6))
     assert len(plates) == 1
-    assert plates[0].hostile
+    assert plates[0].hostile and plates[0].side is Side.HOSTILE
 
 
 def test_reports_the_health_bars_top_left() -> None:
@@ -124,12 +125,26 @@ def test_hops_the_tick_marks() -> None:
     assert plate.health == pytest.approx(0.9, abs=TOLERANCE)
 
 
-def test_tells_an_ally_from_an_enemy() -> None:
+def test_a_green_bar_is_the_local_player() -> None:
     plates = reader().read(
         scene(x=180, y=100, health=0.9, resource=0.7, hostile=False)
     )
     assert len(plates) == 1
-    assert not plates[0].hostile
+    assert not plates[0].hostile and plates[0].side is Side.SELF
+
+
+def test_a_blue_bar_above_a_resource_bar_is_an_ally() -> None:
+    """An ally's health is the resource bar's own blue. It is told apart by
+    sitting a bar's height above the resource run, not by colour -- and the
+    fill must still be read off it."""
+    plates = reader().read(
+        scene(x=180, y=100, health=0.6, resource=0.7, hostile=False, ally=True)
+    )
+    assert len(plates) == 1
+    plate = plates[0]
+    assert plate.side is Side.ALLY and not plate.hostile
+    assert plate.health == pytest.approx(0.6, abs=TOLERANCE)
+    assert plate.resource == pytest.approx(0.7, abs=TOLERANCE)
 
 
 # -- rejecting things that are not champions ------------------------------
@@ -357,5 +372,5 @@ def test_the_shipped_calibration_loads() -> None:
 
 def test_plate_centre_uses_its_own_width() -> None:
     plate = Nameplate(x=100, y=50, width=117, health=1.0, resource=1.0,
-                      hostile=True)
+                      side=Side.HOSTILE)
     assert plate.center == (158.5, 50.0)

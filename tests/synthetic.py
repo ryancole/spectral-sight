@@ -57,10 +57,12 @@ DEFAULT_MARKERS: tuple[Marker, ...] = (
 # -- nameplates -----------------------------------------------------------
 #
 # Sampled from real footage the same way the marker colours were: the hostile
-# health bar is the same magenta-red as the enemy ring, the resource bar sits
-# near H~100, and the level box is dark enough to read as unlit.
+# health bar is the same magenta-red as the enemy ring, the local player's own
+# is green, a teammate's is the resource bar's blue (H~100 for both), and the
+# level box is dark enough to read as unlit.
 PLATE_HOSTILE_BGR = (40, 35, 190)
-PLATE_ALLY_BGR = (40, 190, 60)
+PLATE_SELF_BGR = (40, 190, 60)
+PLATE_ALLY_BGR = (210, 140, 60)
 PLATE_RESOURCE_BGR = (200, 150, 70)
 PLATE_BOX_BGR = (30, 25, 35)
 PLATE_INK = (238, 238, 238)
@@ -79,6 +81,7 @@ def draw_nameplate(
     health: float,
     resource: float,
     hostile: bool = True,
+    ally: bool = False,
     level: int | None = None,
     bar_width: int = 100,
     bar_height: int = 10,
@@ -90,6 +93,8 @@ def draw_nameplate(
     """A champion nameplate: level box, ticked health bar, resource bar.
 
     `x`, `y` are the health bar's top-left, matching what the reader reports.
+    Hostile paints the bar red; `ally` paints it blue; neither paints it green,
+    the local player's own.
     """
     box_right = x - 4
     cv2.rectangle(canvas, (box_right - box_width, y - 3),
@@ -104,7 +109,8 @@ def draw_nameplate(
             cv2.FONT_HERSHEY_SIMPLEX, 0.5, PLATE_INK, 1, cv2.LINE_AA,
         )
 
-    colour = PLATE_HOSTILE_BGR if hostile else PLATE_ALLY_BGR
+    colour = (PLATE_HOSTILE_BGR if hostile
+              else PLATE_ALLY_BGR if ally else PLATE_SELF_BGR)
     filled = int(round(bar_width * health))
     if filled > 0:
         cv2.rectangle(canvas, (x, y), (x + filled - 1, y + bar_height - 1),

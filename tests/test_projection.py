@@ -16,6 +16,7 @@ import pytest
 
 from spectral_sight.perception.minimap.viewport import Viewport
 from spectral_sight.perception.nameplates import (
+    Side,
     Nameplate,
     NameplateLayout,
     ScreenProjection,
@@ -45,7 +46,7 @@ class FakeTrack:
 
 
 def plate(x: int, y: int, width: int = 100) -> Nameplate:
-    return Nameplate(x=x, y=y, width=width, health=1.0, resource=1.0, hostile=True)
+    return Nameplate(x=x, y=y, width=width, health=1.0, resource=1.0, side=Side.HOSTILE)
 
 
 # -- projection -----------------------------------------------------------
