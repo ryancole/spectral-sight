@@ -60,6 +60,7 @@ disagree with the body.
 | `has_liveness` | bool | HUD portraits calibrated. When false, every `alive` is null because nothing was read — distinct from the null meaning "read and inconclusive". |
 | `has_nameplates` | bool | Nameplates read. When false, `health`/`resource`/`level` are absent because nothing looked — distinct from "champion not on screen". |
 | `has_abilities` | bool | Local player's ability slots read. When false, no row carries `abilities` because nothing looked — distinct from "nothing was cast". |
+| `has_threats` | bool | The world view was read for projectiles at the local player. Needs every source frame, so it is true only for a run made with `--coach`. When false, no row carries `threats` because nothing looked. |
 | `world_bounds` | object \| null | World calibration in force, or null if positions are crop pixels only. |
 | `world_units_per_pixel` | [float, float] \| null | X and Y scale of that calibration. |
 
@@ -105,6 +106,7 @@ The five `cast_*` fields travel as a group.
 
 | Field | Type | Meaning |
 |---|---|---|
+| `threats` | array of objects | Bolts at the local player that resolved on this frame, present only on the `is_self` row and only when any resolved. Each object: `at` (float, onset — the bolt's first sighting), `arrival` (float, estimated time it reached the player), `closest` (px, closest approach of its line to the player's model), `speed` (px/s), `heading` ([ux, uy], unit vector of travel), `outcome` (`"hit"` / `"dodged"` / `"unknown"` — from the player's printed health falling, not falling, or not being readable in the window around `arrival`), `damage` (int, only on `hit`), `moved_across` (px, the player's displacement perpendicular to the heading between onset and arrival, from the camera track; omitted when no motion was measured), `origin` (px from the bolt's start to the nearest enemy champion's model; omitted when no enemy plate was on screen). Pixels are world-view pixels — the 3D view with the HUD cut away. A threat is a *candidate* judged against the player, not a labelled truth; see the README's coaching section for what the numbers mean. |
 | `abilities` | array of objects | HUD ability casts that settled on this frame, present only on the `is_self` row and only when any settled. Each object is `{slot, at, confirmed, countdown?}`: `slot` is `"Q"`/`"W"`/`"E"`/`"R"` for abilities or `"D"`/`"F"` for summoner spells; `at` (float, 3 dp) is the `video_time` the slot first read as on cooldown, a frame or two before this row; `confirmed` (bool) is whether the cooldown veil held on the following reading; `countdown` (int, seconds) is the cooldown printed on the veil when the digits could be read, omitted otherwise. This is the only place a cast is named to a button — `cast_*` knows a cost was paid, `abilities` knows which ability paid it, and unlike `cast_*` it also sees summoner spells and zero-mana casts. Local player only: the client draws nobody else's cooldowns. |
 
 ## The frame envelope
@@ -163,6 +165,7 @@ Kind-specific fields are flattened onto the same object:
 | `vanished` | `x`, `y`; `world_x`, `world_y` when calibrated | `visible` turning false, already debounced by the tracker. Suppressed when a death explains it: a corpse leaving the minimap is not fog. |
 | `reappeared` | `gone_for` (float, seconds since last actually seen; omitted without a prior vanish) | `visible` turning true. Suppressed when a respawn explains it. |
 | `cast` | `drop`, `at`, `span`, `continuous`, `confirmed` — the row's `cast_*` fields under shorter names | The row carrying `cast_drop`; the deriver adds only the wrapping. |
+| `threat` | the fields of one entry of the row's `threats`: `at`, `arrival`, `closest`, `speed`, `heading`, `outcome`, and `damage` / `moved_across` / `origin` when present | A bolt that came at the local player, resolved. One event per entry, always on the `is_self` row. The outcome is perceptual — the printed health fell or it did not — and the event does not say whether the player *should* have moved; that is the coaching tool's reading of `closest`, `moved_across` and `arrival - at`. |
 | `ability` | `slot`, `at`, `confirmed`, `countdown` (int, omitted when unread) — one entry of the row's `abilities` | The local player's own cast, named to a slot from the HUD cooldown veil. One event per entry, always `is_self`. Distinct from `cast`: `cast` is an anonymous resource drop (and works for enemies), `ability` names the button (and sees summoner spells and zero-mana casts). |
 | `roster` | `champions` (sorted array of 5 strings) | A team showing five distinct named champions at once. Re-emitted if the set later changes. |
 

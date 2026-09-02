@@ -58,8 +58,15 @@ from pathlib import Path
 
 import numpy as np
 
-from spectral_sight.export import AbilityUse, Observation, TimelineMeta
+from spectral_sight.export import AbilityUse, Observation, Threat, TimelineMeta
 from spectral_sight.perception.hud.abilities import AbilityLayout, AbilityReader
+from spectral_sight.perception.hud.resources import ResourceReader, load_resource_reader
+from spectral_sight.perception.nameplates.plates import Side
+from spectral_sight.perception.screen import (
+    ProjectileTracker,
+    ThreatDetector,
+    WorldView,
+)
 from spectral_sight.perception.hud.alive import AliveReader, Liveness
 from spectral_sight.perception.hud.clock import (
     ClockFilter,
@@ -103,6 +110,10 @@ SELF_CLEARANCE = 20.0
 player's marker is taken to be hidden rather than merely off-centre, and one is
 placed at the centre in its stead. Wider than SELF_RADIUS so a marker that is
 there but a few pixels out is used rather than doubled."""
+
+PLATE_ABOVE_MODEL = 95.0
+"""Pixels from a nameplate's bar down to the champion's model, measured on the
+2026-08-30 session. The model is what a bolt comes from and goes to."""
 
 SELF_MIN_SIGHTINGS = 10
 SELF_MIN_LEAD = 2.0
@@ -149,6 +160,13 @@ class PipelineResult:
     `tracks`, converted to game time and world units and stripped of the
     tracker's internals. This is what gets written out."""
 
+    sampled: bool = True
+    """Whether the minimap stages ran on this frame. False on the frames
+    between samples when the pipeline is fed faster than it samples -- see
+    `Pipeline.every` -- and then `tracks` and `observations` are empty
+    because nothing looked, not because nothing was there. A caller
+    publishing rows skips those frames."""
+
     def named(self) -> dict[str, Track]:
         """Confirmed tracks that have settled on a champion."""
         return {t.identity: t for t in self.tracks if t.identity is not None}
@@ -172,9 +190,23 @@ class Pipeline:
         abilities: AbilityLayout | None = None,
         resolution: tuple[int, int] | None = None,
         place_self: bool = True,
+        every: int = 1,
+        coach: bool = False,
     ) -> None:
         self.region = region
         self.gallery = gallery
+        self.every = max(1, every)
+        """Run the minimap stages on every Nth call, the HUD stages on all.
+
+        Different signals have different natural rates. Minimap positions do
+        not need more than 10 Hz -- champions have a speed cap -- and the
+        gallery pass that identifies them cannot afford more. The world view
+        does: a projectile is four to six frames long at the recording's own
+        rate, so anything reading it has to see every frame. Feeding every
+        frame and sampling the slow stages here, rather than decimating at
+        the source, is what lets both run in one pass. Rows are produced on
+        sampled frames only, so the timeline's cadence is unchanged."""
+        self._calls = 0
         self.place_self = place_self
         """Whether to place the player's marker at the viewport centre when
         stage 1 cannot see it -- see `_find_self`. A switch so the two can be
@@ -223,6 +255,30 @@ class Pipeline:
         whatever frame confirmed it, and the self track is occasionally
         unresolved on exactly that frame -- holding the cast until the next
         self row loses nothing, where dropping it loses the cast."""
+
+        # The world-view stage: projectiles at every frame, threats to the
+        # player resolved against their printed health. Only when asked for
+        # (`coach`), because it costs a frame's worth of work on every frame
+        # and needs every frame to be fed -- see `every` -- and only with a
+        # nameplate calibration, since the player's own plate is the anchor
+        # a bolt is judged against.
+        self.projectiles: ProjectileTracker | None = None
+        self.threats: ThreatDetector | None = None
+        self.resources: ResourceReader | None = None
+        if coach and nameplates is not None:
+            self.projectiles = ProjectileTracker()
+            self.threats = ThreatDetector()
+            if resolution is not None and clock is not None:
+                self.resources = load_resource_reader(
+                    resolution[0], resolution[1], clock.glyphs
+                )
+        self._view = WorldView()
+        self._anchor: tuple[float, float] | None = None
+        self._enemies: list[tuple[float, float]] = []
+        """The player's model and the enemy models on the world view, from
+        the plates read on the last sampled frame and held until the next.
+        Plates move a few pixels between samples; a bolt moves a hundred."""
+        self._pending_threats: list[Threat] = []
 
         self.levels = LevelBook()
         self.casts = CastBook()
@@ -299,7 +355,8 @@ class Pipeline:
 
     @classmethod
     def for_resolution(
-        cls, width: int, height: int, icons: str | Path
+        cls, width: int, height: int, icons: str | Path, *,
+        every: int = 1, coach: bool = False,
     ) -> Pipeline:
         """Build from the calibrated region for a resolution plus an icon set.
 
@@ -333,10 +390,14 @@ class Pipeline:
             nameplates=nameplates,
             abilities=AbilityLayout.for_resolution(width, height),
             resolution=(width, height),
+            every=every,
+            coach=coach,
         )
 
     def process(self, frame: np.ndarray, timestamp: float) -> PipelineResult:
         """Run one frame. `timestamp` is in seconds and must increase."""
+        sampled = self._calls % self.every == 0
+        self._calls += 1
         clock = None
         if self.clock is not None:
             clock = self._clock_filter.update(self.clock.read(frame), timestamp)
@@ -397,6 +458,12 @@ class Pipeline:
                 )
             elif dead:
                 self.ability_reader.reset()
+
+        if self.projectiles is not None and self.threats is not None:
+            self._watch_world(frame, timestamp, trusted)
+
+        if not sampled:
+            return PipelineResult(clock=clock, liveness=liveness, sampled=False)
 
         minimap = self.region.crop(frame)
         blips = self.detector.detect(minimap)
@@ -492,8 +559,54 @@ class Pipeline:
             observations=self._observe(
                 tracks, timestamp, clock, self_track, liveness, plates,
                 pairing, casts, self._take_abilities(self_track),
+                self._take_threats(self_track),
             ),
         )
+
+    def _watch_world(
+        self, frame: np.ndarray, timestamp: float, trusted: bool
+    ) -> None:
+        """The every-frame stage: bolts, and what became of the ones aimed
+        at the player. Runs before the sampled stages so a frame between
+        samples still advances it."""
+        assert self.projectiles is not None and self.threats is not None
+        if self.resources is not None:
+            reading = self.resources.read_line(frame, self.resources.layout.health)
+            if reading is not None and reading.plausible:
+                self.threats.observe_health(timestamp, reading.current)
+        # Only bolt-shaped tracks are judged; the tracker finishes every
+        # mover it followed, and a walking minion is not a threat however
+        # straight it walks.
+        candidates = [
+            track for track in self.projectiles.update(frame, timestamp)
+            if track.is_projectile(self.projectiles.config)
+        ]
+        motion = self.projectiles.last_motion
+        if motion is not None:
+            self.threats.observe_motion(timestamp, motion)
+        if trusted:
+            self.threats.consider(candidates, self._anchor, self._enemies)
+        self._pending_threats.extend(self.threats.resolve(timestamp))
+
+    def _hold_models(self, plates: list[Nameplate], frame_size: tuple[int, int]) -> None:
+        """Remember where the player and the enemies stand on the world view,
+        from this sampled frame's plates, for the frames until the next."""
+        vx, vy, _, _ = self._view.box(*frame_size)
+
+        def model(plate: Nameplate) -> tuple[float, float]:
+            cx, cy = plate.center
+            return cx - vx, cy - vy + PLATE_ABOVE_MODEL
+
+        mine = [p for p in plates if p.side is Side.SELF]
+        self._anchor = model(mine[0]) if len(mine) == 1 else None
+        self._enemies = [model(p) for p in plates if p.hostile]
+
+    def _take_threats(self, self_track: Track | None) -> tuple[Threat, ...]:
+        if self_track is None or not self._pending_threats:
+            return ()
+        taken = tuple(self._pending_threats)
+        self._pending_threats.clear()
+        return taken
 
     def _take_abilities(
         self, self_track: Track | None
@@ -533,6 +646,8 @@ class Pipeline:
 
         plates = self.plate_reader.read(frame)
         height, width = frame.shape[:2]
+        if self.threats is not None:
+            self._hold_models(plates, (width, height))
         pairing: dict[int, int] = {}
         for team, hostile in ((Team.RED, True), (Team.BLUE, False)):
             indices = [i for i, p in enumerate(plates) if p.hostile is hostile]
@@ -698,6 +813,7 @@ class Pipeline:
         pairing: dict[int, int] | None = None,
         casts: dict[int, Cast] | None = None,
         abilities: tuple[AbilityUse, ...] = (),
+        threats: tuple[Threat, ...] = (),
     ) -> list[Observation]:
         """Flatten this frame's tracks into rows.
 
@@ -747,6 +863,13 @@ class Pipeline:
                         and track.id == self_track.id
                         else None
                     ),
+                    threats=(
+                        threats
+                        if threats
+                        and self_track is not None
+                        and track.id == self_track.id
+                        else None
+                    ),
                     allies_dead=None if liveness is None else liveness.dead_count,
                 )
             )
@@ -786,6 +909,7 @@ class Pipeline:
             has_nameplates=self.plate_reader is not None
             and self.projection is not None,
             has_abilities=self.ability_reader is not None,
+            has_threats=self.threats is not None,
             world_bounds=bounds,
             world_units_per_pixel=scale,
         )

@@ -123,13 +123,24 @@ stay in the gate.
 Screen space only. A projectile track whose extrapolated path passes within a
 threat radius of the player anchor is a `threat`. Outcome from the printed HP
 text — the same signal that was the training label, now the scorer: a fall in
-the window around closest approach is a hit; passage without one is a dodge.
-The player's response comes from the camera-motion track: reaction latency
-from threat onset to velocity change, movement direction against the
-projectile's perpendicular.
+the window around arrival is a hit; none is a dodge; no reading is unknown.
+The player's response comes from the camera-motion track, as displacement
+across the bolt's line between onset and arrival.
 
-New event kinds (`threat`, resolved hit/dodged, carrying reaction ms) join
-`docs/output-format.md` and flow through feed, replay and dashboard unchanged.
+Two things the footage changed. **Reaction latency is not measurable as
+planned**: a bolt gives ~0.26 s of warning from first sighting, the edge of
+human reaction, so "onset to velocity change" is not a coaching number — the
+dodge is a response to the enemy's *cast*, which is Phase 5's signal. What is
+measurable is whether the player was already moving across the line. And
+**the origin gate is what makes a threat mean anything**: a candidate that
+launched within 160 px of an enemy champion's plate is followed by a health
+fall three times as often as the baseline; where the track ended is useless.
+
+The `threat` event (with `at`, `arrival`, `closest`, `speed`, `heading`,
+`outcome`, `damage`, `moved_across`, `origin`) is in `docs/output-format.md`
+and rides the self row through feed, replay and dashboard unchanged. The
+pipeline gained a two-rate mode (`--coach`): every frame fed, minimap stages
+sampled every `--stride`.
 
 ### Phase 4 — aim coaching
 
@@ -185,4 +196,13 @@ rather than blocking anything.
   overall, ~20/min heading for the player. Not yet on the wire — what a
   consumer needs (a `threat`, not a track) is Phase 3's decision. The ML
   gate waits on Phase 0 footage. `tools/detect_projectiles.py --sweep`.
-- Phases 3–5: not started
+- **Phase 3: built.** `perception/screen/threats.py` judges candidates
+  against the player's model, resolves outcomes off the printed health and
+  the response off the camera track; `threats` ride the self row, `threat`
+  events flow through feed/replay; `--coach` is the two-rate pipeline mode.
+  Measured on 150–330s of `Recording 2026-08-30 200315`: 4.7 threats/min
+  (14: 5 hit, 4 dodged, 5 unknown), 0.40 s median warning. Reaction latency
+  was dropped as unmeasurable at that warning; `moved_across` replaces it.
+  The origin gate (bolt launched at an enemy plate) is on, the end gate off.
+  What a threat lacks is a label — Phase 0 footage and the classifier.
+- Phases 4–5: not started

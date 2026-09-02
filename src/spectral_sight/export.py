@@ -95,6 +95,76 @@ class AbilityUse:
 
 
 @dataclass(frozen=True, slots=True)
+class Threat:
+    """One bolt that came at the player, resolved -- the self row's account.
+
+    Local player only, like `AbilityUse`: the threat is to the champion whose
+    health is printed on the HUD, and the response is the camera's motion,
+    which is theirs. Coordinates are world-view pixels; see
+    `perception.screen.threats` for how each field is measured."""
+
+    at: float
+    """`video_time` the bolt was first seen -- onset."""
+
+    arrival: float
+    """`video_time` it was estimated to reach the player."""
+
+    closest: float
+    """Closest approach of its line to the player's model, px."""
+
+    speed: float
+    """px/s."""
+
+    heading: tuple[float, float]
+    """Unit vector of travel, world-view pixels."""
+
+    outcome: str
+    """`hit`, `dodged`, or `unknown` (no health reading in the window)."""
+
+    damage: int | None
+    """The health fall attributed, when `hit`."""
+
+    moved_across: float | None
+    """Player displacement perpendicular to the heading between onset and
+    arrival, px, positive either way. None when no camera motion was
+    measured in that span."""
+
+    origin: float | None
+    """Distance from the track's start to the nearest enemy model, px, when
+    any enemy plate was on screen."""
+
+    def to_dict(self) -> dict[str, object]:
+        out: dict[str, object] = {
+            "at": round(float(self.at), 3),
+            "arrival": round(float(self.arrival), 3),
+            "closest": round(float(self.closest), 1),
+            "speed": round(float(self.speed), 0),
+            "heading": [round(float(self.heading[0]), 3), round(float(self.heading[1]), 3)],
+            "outcome": self.outcome,
+        }
+        if self.damage is not None:
+            out["damage"] = int(self.damage)
+        if self.moved_across is not None:
+            out["moved_across"] = round(float(self.moved_across), 1)
+        if self.origin is not None:
+            out["origin"] = round(float(self.origin), 0)
+        return out
+
+    @classmethod
+    def from_dict(cls, d: dict) -> Threat:
+        return cls(
+            at=float(d["at"]), arrival=float(d["arrival"]),
+            closest=float(d["closest"]), speed=float(d["speed"]),
+            heading=(float(d["heading"][0]), float(d["heading"][1])),
+            outcome=str(d["outcome"]),
+            damage=None if d.get("damage") is None else int(d["damage"]),
+            moved_across=(None if d.get("moved_across") is None
+                          else float(d["moved_across"])),
+            origin=None if d.get("origin") is None else float(d["origin"]),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class Observation:
     """One champion at one instant.
 
@@ -219,6 +289,11 @@ class Observation:
     lose exactly the quick double-casts worth coaching on. Almost every
     carrying row holds one entry."""
 
+    threats: tuple[Threat, ...] | None = None
+    """Bolts at the local player that resolved on this frame -- the self row
+    only, like `abilities`, and for the same reason: the outcome is read off
+    the player's own printed health and the response off their own camera."""
+
     allies_dead: int | None = None
     """How many of your five teammates were dead on this frame.
 
@@ -273,6 +348,8 @@ class Observation:
             row["cast_confirmed"] = bool(self.cast_confirmed)
         if self.abilities:
             row["abilities"] = [use.to_dict() for use in self.abilities]
+        if self.threats:
+            row["threats"] = [threat.to_dict() for threat in self.threats]
         return row
 
     @classmethod
@@ -314,6 +391,10 @@ class Observation:
             abilities=(
                 tuple(AbilityUse.from_dict(use) for use in data["abilities"])
                 if data.get("abilities") else None
+            ),
+            threats=(
+                tuple(Threat.from_dict(t) for t in data["threats"])
+                if data.get("threats") else None
             ),
             allies_dead=(
                 None if data.get("allies_dead") is None
@@ -365,6 +446,10 @@ class TimelineMeta:
     False no row carries `abilities` because nothing looked -- as against the
     usual case, where a row lacks them because nothing was cast."""
 
+    has_threats: bool = False
+    """Whether the world view was read for projectiles at the player. Needs
+    every frame, so it is on only for a run fed that way (`--coach`)."""
+
     world_bounds: dict[str, float] | None = None
     world_units_per_pixel: list[float] | None = None
     """The world calibration in force, or None if positions are crop pixels
@@ -385,6 +470,7 @@ class TimelineMeta:
             "has_liveness": self.has_liveness,
             "has_nameplates": self.has_nameplates,
             "has_abilities": self.has_abilities,
+            "has_threats": self.has_threats,
             "world_bounds": self.world_bounds,
             "world_units_per_pixel": self.world_units_per_pixel,
         }
@@ -401,6 +487,7 @@ class TimelineMeta:
             has_liveness=bool(data.get("has_liveness", False)),
             has_nameplates=bool(data.get("has_nameplates", False)),
             has_abilities=bool(data.get("has_abilities", False)),
+            has_threats=bool(data.get("has_threats", False)),
             world_bounds=data.get("world_bounds"),
             world_units_per_pixel=data.get("world_units_per_pixel"),
             schema=int(data.get("schema", SCHEMA)),
@@ -421,6 +508,7 @@ class TimelineMeta:
             has_liveness=self.has_liveness,
             has_nameplates=self.has_nameplates,
             has_abilities=self.has_abilities,
+            has_threats=self.has_threats,
             world_bounds=self.world_bounds,
             world_units_per_pixel=self.world_units_per_pixel,
             schema=self.schema,

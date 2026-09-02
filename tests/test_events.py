@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from spectral_sight.events import EventDeriver
-from spectral_sight.export import AbilityUse, Observation, TimelineMeta
+from spectral_sight.export import AbilityUse, Observation, Threat, TimelineMeta
 from spectral_sight.feed import FrameState, JsonlSink, read_frames
 from spectral_sight.types import Team
 
@@ -97,6 +97,20 @@ class TestAbility:
     def test_a_row_without_abilities_emits_none(self) -> None:
         events = derive(state(0, [row(champion="Ezreal", is_self=True)]))
         assert "ability" not in kinds(events)
+
+
+class TestThreat:
+    def test_each_resolved_threat_is_one_event(self) -> None:
+        threat = Threat(at=9.9, arrival=10.2, closest=12.5, speed=1500.0,
+                        heading=(1.0, 0.0), outcome="dodged", damage=None,
+                        moved_across=31.0, origin=140.0)
+        events = derive(state(0, [row(champion="Ezreal", is_self=True,
+                                      threats=(threat,))]))
+        threats = [e for e in events if e.kind == "threat"]
+        assert len(threats) == 1
+        assert threats[0].detail["outcome"] == "dodged"
+        assert threats[0].detail["moved_across"] == 31.0
+        assert "damage" not in threats[0].detail
 
 
 class TestLiveness:

@@ -25,6 +25,9 @@ The kinds, and what each is grounded in:
 - `cast` -- a row carrying `cast_drop`. The pipeline already emits a cast on
   exactly one row, the one where the fall was confirmed to hold, so the row is
   the event and the deriver adds nothing but the wrapping.
+- `threat` -- a row carrying `threats`: a bolt that came at the local player,
+  with its outcome read off their printed health and their response off the
+  camera. One event per entry.
 - `ability` -- a row carrying `abilities`. The local player's own cast, read
   off the HUD cooldown veil and named to a slot -- what `cast` cannot give,
   since it infers an anonymous resource drop that works for enemies too. One
@@ -63,6 +66,7 @@ from spectral_sight.types import Team
 KINDS = (
     "cast",
     "ability",
+    "threat",
     "death",
     "respawn",
     "vanished",
@@ -249,6 +253,10 @@ class EventDeriver:
                 countdown=use.countdown,
                 confirmed=use.confirmed,
             ))
+
+        # Same rule as abilities: a threat rides the row it resolved on, once.
+        for threat in row.threats or ():
+            events.append(event("threat", **threat.to_dict()))
 
         return events
 

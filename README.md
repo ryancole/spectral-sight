@@ -913,6 +913,47 @@ classifier's job and needs the labelled footage the plan's Phase 0
 describes. `tools/detect_projectiles.py --sweep` reports recall and rate
 across the gate.
 
+**Threats, and what came of them.** A candidate whose line passes within
+120 px of the player's model, moving toward it, is judged as a threat by
+`perception/screen/threats.py`: when it would arrive, whether the player's
+own printed health fell in the window around that moment (a hit; no fall, a
+dodge; no reading, unknown -- the health text reads on half the frames at
+full rate), and how far the camera track says the player moved *across* the
+bolt's line between its first sighting and its arrival. That last number is
+the one that separates a dodge from standing still and not being hit.
+
+Three measurements shaped it, all on the 2026-08-30 session:
+
+- **A bolt gives a quarter of a second's warning.** It is first seen
+  150-400 px out and arrives a median 0.26 s later. That is the edge of
+  human reaction, so a player is not, in general, coachable to dodge *the
+  bolt*; they dodge the cast that launched it, which is the enemy-ability
+  work of the plan's Phase 5. What this stage measures honestly is whether
+  the player was already moving out of the line when it came.
+- **Most approaching candidates are lane traffic.** Thirty-five a minute
+  passed within 120 px, and health fell after 14% of them against an 8%
+  baseline for any window that long. Where the bolt *started* is the gate
+  that helps: the sixth of them launched within 160 px of an enemy
+  champion's plate were followed by a health fall 24% of the time, three
+  times the baseline. Where the track *ended* does not help at all -- 12%
+  for tracks ending on the player against 15% for tracks flying past -- a
+  hit ends inside the champion's own effects, not at a clean point.
+- **The remainder is still not labelled truth.** A threat on the timeline is
+  a candidate the frame could not rule out, with its outcome read off the
+  health text. The classifier the plan describes is what turns that into a
+  verdict, and it needs Phase 0's footage.
+
+Run it with `--coach`, which feeds every frame and samples the minimap
+stages every `--stride` instead of decimating the source; rows and the feed
+keep their 10 Hz cadence, and `threats` ride the self row like `abilities`
+with a `threat` event per entry. Through the whole pipeline on the same
+three minutes: **14 threats, 4.7 a minute -- 5 hit, 4 dodged, 5 unknown** --
+at a median closest approach of 42 px and 0.40 s of warning, with the
+player's movement across the line measured on every one. Fourteen is a
+sample, not a rate, and the hit/dodge split of `moved_across` on it (40 px
+against 21) means nothing yet; it is the number the labelled footage will
+make mean something.
+
 ## Input assumptions
 
 The target input is a **VOD from a player's perspective** — not a Riot `.rofl`
