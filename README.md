@@ -833,6 +833,54 @@ thousands of frames for free, which is what stage 1 was retuned against.
 It measures recall, not precision — a false positive and a miss cancel out — so
 it is a tuning signal, not a substitute for labelled positions.
 
+## Toward dodge and aim coaching
+
+The plan of record is [docs/dodge-coaching-plan.md](docs/dodge-coaching-plan.md).
+Two of its stages exist.
+
+**The player's own abilities, named.** The nameplate route says *that* a cost
+was paid; the HUD says *which button*. When an ability is used its slot stops
+showing the art and shows the cooldown, and `perception/hud/abilities.py`
+reads that transition -- Q W E R and the two summoner spells, plus the
+countdown printed on the veil when the clock's glyphs can read it. The signal
+is the *veil*, not a darkening: measured, Ezreal's W slot dims on cast and
+his Q slot does not (its art is blue-teal already), while both are replaced
+by the same flat saturated-blue field. Scored against the player's printed
+mana on the 2026-08-30 session: **90% of 196 mana-fall casts caught, about one
+false positive in a hundred**, and summoner spells and zero-mana casts seen
+that the mana route is blind to. `abilities` rides the self row; the `ability`
+event names the slot. `tools/detect_abilities.py --validate` reports it.
+
+**Projectiles on the world view.** Nothing labels a projectile, so
+`perception/screen/` finds what moves like one, at every distinct frame:
+
+- **The camera is estimated from the terrain**, by tracking a few hundred
+  corners and taking the median vector -- the ground outvotes whatever is
+  fighting on it. Phase correlation was tried first and beat doing nothing on
+  48% of moving frame pairs; the flow median halved the residual on all of
+  them. With the camera locked (the self nameplate holds at x 966-976,
+  y 479-504 for sixteen minutes) this is also the player's own motion at
+  30 Hz and sub-pixel precision, which the minimap cannot offer.
+- **A third of the frames are not frames.** Exact repeats change under a
+  hundred pixels; stale refreshes -- the world not redrawn, a cursor moved --
+  change a few thousand and show zero camera shift between frames that
+  shift ten or twenty. Both are skipped, with time accounted between distinct
+  frames. A bolt is four to six of those.
+- **Candidates are fast, straight and brief tracks** of stabilised residual:
+  Ezreal's Q crosses at ~2,300 px/s and W at 1,000-1,700, against ~600 for
+  anything walking. The tracker's enemy is not champions but chance chains
+  through a field of 40-100 blobs, so links are mutual and a track is born
+  only when its third point lands where the first two predict.
+
+Scored against the one free ground truth -- the player's Q and W, timestamped
+by the ability reader, each launching a bolt from the player's own nameplate
+-- **24 of 25 casts on a three-minute stretch launched a candidate, at about
+210 candidates a minute** overall. Most of the rest are real: minion and
+turret bolts are projectiles too. Telling a threat from lane traffic is the
+classifier's job and needs the labelled footage the plan's Phase 0
+describes. `tools/detect_projectiles.py --sweep` reports recall and rate
+across the gate.
+
 ## Input assumptions
 
 The target input is a **VOD from a player's perspective** — not a Riot `.rofl`
@@ -1221,6 +1269,9 @@ src/spectral_sight/
     clock.py                  the match timer
     resources.py              the player's own health and mana, as numbers
     abilities.py              the player's own casts, named, from the cooldown HUD
+  perception/screen/
+    motion.py                 camera motion from the terrain, and repeat frames
+    projectiles.py            fast, straight, brief movers on the world view
   perception/nameplates/
     plates.py                 health, resource and level over a champion
     levels.py                 level held steady across misreads

@@ -13,7 +13,13 @@ it does not strictly need.
 
 **The camera is locked to the player.** The pipeline already depends on this —
 it is how the viewport names the local player — and it has two consequences
-that shape everything below:
+that shape everything below. It was checked rather than assumed, because a
+human player might unlock it: on `Recording 2026-08-30 200315` the player's own
+nameplate sits at x 966–976, y 479–504 across sixteen minutes, which is a
+locked camera and nothing else. (The minimap viewport route resolved the player
+on only 20% of that clip's frames — a weakness of that route, not of the
+camera, and the green self nameplate is the better anchor; see the spawned
+follow-ups.)
 
 1. **The player does not move on screen; the world does.** A dodge is
    invisible as player motion but shows up as global camera translation.
@@ -36,15 +42,17 @@ for v1.
 
 ## Sampling rate
 
-10 Hz is not enough for projectiles. A skillshot crosses the camera view in
-well under a second — 7–10 samples at 10 Hz, with 100 ms timing granularity
-against human reactions of ~200 ms. The recordings are 30 fps, so the VOD path
-(`--input --stride 1`) already carries the needed rate; 33 ms granularity and
-20–30 frames per projectile are adequate. The consequence is accepted rather
-than fought: **this feature is offline-VOD first.** Identification already
-does not run live, and the projectile stage will not either. The live-window
-path can later run the projectile stage on a center crop, or the receiver can
-play at reduced speed.
+10 Hz is not enough for projectiles. Measured, a bolt is *briefer* than the
+plan first guessed: Ezreal's Q crosses the view at ~2,300 px/s and is gone in
+a quarter of a second. The recordings are 30 fps, but about 30% of frames are
+repeats or stale refreshes (the world view not redrawn — see
+`perception/screen/motion.py`), so the effective distinct rate is ~20 fps and a
+bolt is **four to six distinct frames**. That is enough to track; 10 Hz would
+have seen two. The consequence is accepted rather than fought: **this feature
+is offline-VOD first** (`--input --stride 1`). Identification already does not
+run live, and the projectile stage will not either. The live-window path can
+later run the projectile stage on a center crop, or the receiver can play at
+reduced speed.
 
 ## Phases
 
@@ -85,19 +93,26 @@ Output: `cast` events gain the slot, and self casts stop being anonymous.
 
 ### Phase 2 — projectile detection: classical candidates, ML gate
 
-Runs at full VOD rate on the main screen minus the existing exclusion rects.
+Runs at full VOD rate on the world view (`perception/screen/`).
 
-1. **Stabilize** — estimate camera translation per frame pair (phase
-   correlation on terrain). This also *is* the player-motion measurement
-   Phase 3 consumes.
-2. **Candidates** — frame-difference the stabilized pair; moving blobs.
-3. **Tracks** — constant-velocity association, the tracker's existing
-   playbook at smaller scale. Keep tracks that are fast and linearly
-   coherent; champions, minions and camera jitter do not survive that filter.
-4. **ML gate** — the survivors still over-produce (autoattacks, pets, wards
-   flying, particles). A small CNN classifies track chips projectile / not,
-   trained on Phase 0's auto-labeled clips. Train in PyTorch offline; ship
-   inference on ONNX Runtime so the package grows one wheel, not a framework.
+1. **Stabilize** — camera translation per distinct frame pair. Planned as
+   phase correlation; built as sparse Lucas-Kanade flow with a median, because
+   measured on footage phase correlation beat doing nothing on 48% of moving
+   pairs (a fight's foreground outvotes the terrain) while the flow median
+   halved the residual on every one. This also *is* the player-motion
+   measurement Phase 3 consumes.
+2. **Candidates** — difference the stabilized pair; moving blobs, with the
+   previous frame's foreground cleared so every mover is not painted twice.
+3. **Tracks** — constant-velocity association with mutual-nearest-neighbour
+   links and a step-relative birth test, because with 40–100 blobs a frame
+   the enemy is not champions but chance chains. Keep tracks that are fast
+   (≥ 800 px/s; champions and effects top out ~600, Ezreal's W starts at
+   ~800), straight and brief.
+4. **ML gate** — the survivors still over-produce, and many of them are
+   *real* (minion and turret bolts are projectiles). A small CNN classifies
+   track chips, trained on Phase 0's auto-labeled clips. Train in PyTorch
+   offline; ship inference on ONNX Runtime so the package grows one wheel,
+   not a framework.
 
 Escalate to a full learned detector only if candidate *recall* — measured on
 clips where every cast is known — proves insufficient. Precision problems
@@ -160,4 +175,14 @@ rather than blocking anything.
   false-positive rate.** Inspect/score with `tools/detect_abilities.py`. Known
   residual: a long re-press flash on an already-cooling slot can emit a phantom
   (documented in the module).
-- Phases 2–5: not started
+- **Phase 2: classical stage done, ML gate pending footage.**
+  `perception/screen/motion.py` (camera motion by sparse-flow median, repeat
+  and stale-frame skipping) and `perception/screen/projectiles.py`
+  (stabilised residual → ghost-suppressed blobs → mutual-nearest-neighbour
+  constant-velocity tracks → fast/straight/brief gate). Measured on
+  150–330s of `Recording 2026-08-30 200315` against the player's own Q/W
+  casts: **24 of 25 casts launched a candidate, ~210 candidates/min**
+  overall, ~20/min heading for the player. Not yet on the wire — what a
+  consumer needs (a `threat`, not a track) is Phase 3's decision. The ML
+  gate waits on Phase 0 footage. `tools/detect_projectiles.py --sweep`.
+- Phases 3–5: not started
