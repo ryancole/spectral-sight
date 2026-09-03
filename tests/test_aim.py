@@ -236,6 +236,43 @@ def test_no_anchor_means_no_shot_can_be_attributed() -> None:
     assert d.flush()[0].launched is None
 
 
+def test_the_last_anchor_stands_in_when_a_frame_has_none() -> None:
+    # The camera is locked: a plate read that fails to resolve the player
+    # does not mean the player moved, and the bolt that finished on that
+    # frame is still theirs.
+    d = detector()
+    d.consider([], ANCHOR)
+    d.observe_cast("Q", 9.95)
+    d.consider([bolt(600, 300, 1, 0)], None)
+    assert d.flush()[0].launched == 10.0
+
+
+def test_reset_forgets_the_anchor() -> None:
+    d = detector()
+    d.consider([], ANCHOR)
+    d.reset()
+    d.observe_cast("Q", 9.95)
+    d.consider([bolt(600, 300, 1, 0)], None)
+    assert d.flush()[0].launched is None
+
+
+def test_a_bolt_on_the_window_s_edge_frame_is_inside_it() -> None:
+    # Three frames before the veil is exactly -0.1 s, and the difference of
+    # two frame timestamps does not come out exactly. Frame 10178 against a
+    # cast the reader stamped at frame 10181, rounded as the source rounds.
+    d = detector(launch_before=0.1)
+    d.observe_cast("Q", round(10181 / FPS, 3))
+    d.consider([bolt(600, 300, 1, 0, t0=10178 / FPS)], ANCHOR)
+    assert d.flush()[0].launched is not None
+
+
+def test_a_bolt_a_frame_past_the_edge_is_outside_it() -> None:
+    d = detector(launch_before=0.1)
+    d.observe_cast("Q", round(10181 / FPS, 3))
+    d.consider([bolt(600, 300, 1, 0, t0=10177 / FPS)], ANCHOR)
+    assert d.flush()[0].launched is None
+
+
 def test_skillshot_round_trips_through_dict() -> None:
     shot = Skillshot(
         slot="Q", at=10.0, launched=10.1, speed=1200.0, heading=(0.6, -0.8),

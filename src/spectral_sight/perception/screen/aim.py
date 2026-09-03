@@ -50,15 +50,31 @@ baseline is zero and the fall is the ground truth it was supposed to be -- for
 this stage, and for the classifier the projectile stage is waiting on.
 
 **Where the sample goes.** Over 150-700 s of the 2026-08-30 session: 111 casts
-in ability slots, 72 of which launched a bolt this stage could find, and 24 of
+in ability slots, 83 of which launched a bolt this stage could find, and 24 of
 those with an enemy champion on screen in front of it to have been aimed at.
 The attrition is not a failure of the stage -- an enemy is simply not on screen
 for most of a lane phase, and only 30% of sampled frames hold an enemy plate at
 all, a quarter of those occluded or clipped and reading `None` rather than a
 number. So `unknown` is the common outcome and is reported as such rather than
-folded into a miss. The denominator coaching needs -- how many skillshots were
-thrown, and where each went -- is complete; the numerator is only as complete
-as the enemy's presence.
+folded into a miss. The numerator is only as complete as the enemy's presence.
+
+**The denominator is not complete either, and a consumer should know which
+way it errs.** Ezreal's Q and W always launch a bolt, so on this footage every
+Q or W cast without one is a bolt this stage did not see, not a blink. Traced
+cast by cast on 200-470 s (15 of 51 Q/W casts silent before the fixes above
+the fold in `consider`), the misses split two ways. Eight are the projectile
+stage's: a fast, straight track was born beside the player and died at three
+points, one short of `ProjectileConfig.min_points`, or nothing fast was there
+at all. Admitting three-point tracks was measured and rejected -- it doubles
+the rate at which a fake cast placed at a random moment gets credited a bolt
+(22% to 38% on 150-700 s) and re-picks fifteen bolts already claimed. Seven
+were this stage's: two lost to a plate read that returned no anchor, two to
+the window's edge in floating point, both fixed; two a frame or two past
+`launch_after` and one first tracked past `max_launch`, both left, because
+widening either lets a neighbouring cast steal a bolt the way the
+one-bolt-per-cast rule exists to prevent. So a cast reported with no bolt is
+silence, and the silence is biased toward under-counting the shots thrown --
+never toward inventing one.
 
 Coordinates are world-view pixels, like the rest of `perception.screen`.
 """
@@ -104,7 +120,14 @@ class AimConfig:
     half a second -- but widening it buys them at the price of admitting more
     of the ~210 unrelated candidates a minute, and an unrelated bolt credited
     to a cast is worse than a cast credited with none. The small allowance
-    before covers the veil being confirmed a frame late."""
+    before covers the veil being confirmed a frame late.
+
+    Both edges are frame edges and are compared with `_EDGE` of slack: a
+    bolt first seen exactly three frames before the veil is at -0.1 s, and
+    two of them on the 2026-08-30 session were rejected because the
+    difference of two frame timestamps came out a hair under -0.1 in
+    floating point. The slack is a seventh of a frame, so it admits the
+    frame on the edge and not the next one."""
 
     max_launch: float = 250.0
     """How near the player's model the bolt must be born. A bolt does not
@@ -247,6 +270,18 @@ class AimDetector:
 
     _ax: float = 0.0
     _ay: float = 0.0
+    _anchor: tuple[float, float] | None = None
+    """The last anchor `consider` was given. A frame whose plate read did not
+    resolve the player -- most often the reader finding two self-side plates
+    rather than one -- hands over None, and without this the candidates that
+    finished on that frame are offered to nobody. Measured on the 2026-08-30
+    session, that silenced two of fifteen Q/W casts that had a bolt beside the
+    player passing every other gate. The camera is locked, so the anchor is
+    not a moving target: across the whole clip it sat within 6 px in x and
+    8 px in y, and the last good one is as good as this frame's would have
+    been. Cleared by `reset`, since death is the one thing that moves the
+    player's model without moving the camera."""
+
     _claimed: set[int] = field(default_factory=set)
     """Track ids already taken by a settled cast. One bolt is one cast's:
     measured on the 2026-08-30 session, three pairs of casts fired within half
@@ -324,17 +359,25 @@ class AimDetector:
 
         A track is offered to every cast whose launch window it falls in; the
         one it belongs to is chosen at settle time, when they have all been
-        seen.
+        seen. `anchor` is the player's model on the world view, or None when
+        this frame's plate read did not resolve it, in which case the last
+        one that did stands in -- see `_anchor`.
         """
         if anchor is None:
-            return
+            anchor = self._anchor
+            if anchor is None:
+                return
+        else:
+            self._anchor = anchor
         cfg = self.config
         for p in self._pending:
             if p.settled:
                 continue
             for track in tracks:
                 t0, x0, y0 = track.start
-                if not -cfg.launch_before <= t0 - p.at <= cfg.launch_after:
+                if not (-cfg.launch_before - _EDGE
+                        <= t0 - p.at
+                        <= cfg.launch_after + _EDGE):
                     continue
                 away = float(np.hypot(x0 - anchor[0], y0 - anchor[1]))
                 if away > cfg.max_launch:
@@ -379,6 +422,7 @@ class AimDetector:
         self._enemies.clear()
         self._camera.clear()
         self._claimed.clear()
+        self._anchor = None
         self._ax = self._ay = 0.0
 
     def _settle(self, p: _Pending) -> None:
@@ -554,6 +598,10 @@ class AimDetector:
         if self._camera and self._camera[0][0] < cut:
             self._camera = [c for c in self._camera if c[0] >= cut]
 
+
+_EDGE = 0.005
+"""Slack on the launch window's edges, s: a seventh of a frame at 30 fps.
+See `AimConfig.launch_after`."""
 
 _TRACK_GRACE = 0.5
 """How long after the launch window a bolt born inside it can still be

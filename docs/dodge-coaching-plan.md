@@ -214,9 +214,30 @@ rather than blocking anything.
   launched and the enemy plate it went at; `skillshots` ride the self row, a
   `skillshot` event flows through feed and replay, and `has_skillshots` is on
   for a `--coach` run with the ability HUD and nameplates calibrated. Measured
-  on 150-700 s of `Recording 2026-08-30 200315`: **111 casts, 72 launching a
+  on 150-700 s of `Recording 2026-08-30 200315`: **111 casts, 83 launching a
   bolt, 24 with an enemy on screen in front of it** -- 17 called hits, 7
   misses, at a median miss of 77 px. `tools/detect_skillshots.py --sweep`.
+
+  **Bolt recall, traced cast by cast (2026-09-02).** The consumer side found
+  that 15 of 51 Q/W casts on 200-470 s carried no bolt, and Ezreal's Q and W
+  always launch one. The Phase 2 "24 of 25" above is a looser metric than the
+  join -- 400 px, -0.15 to +0.6 s, and casts with no self plate on the cast
+  frame dropped from the denominator -- and on the same 25 casts the aim
+  window sees 20, so nothing regressed. Of the 15: eight were detection
+  misses, a bolt-shaped track that died at three points or no fast track at
+  all; seven were join misses, of which four are now fixed (two where the
+  plate read returned no anchor on the frame the bolt finished, so the last
+  good anchor now stands in -- the camera is locked and the anchor moved
+  under 8 px across the clip -- and two rejected at exactly three frames
+  before the veil by floating point on an inclusive edge). That took the
+  150-700 s count from 72 to 83 bolts with no already-claimed bolt changed
+  except one R that now takes a nearer early stray, and left the stray-claim
+  rate -- a fake cast at a random moment credited a bolt, 22% on this clip,
+  most plausibly the player's own auto-attacks -- unchanged. Not taken:
+  three-point tracks (recovers the most, doubles the stray rate, re-picks 15
+  claimed bolts) and a wider window (a neighbouring cast steals the bolt).
+  The remaining silence is the projectile stage's to close, and it errs
+  toward under-counting shots thrown, never toward inventing one.
 
   **The phase changed shape once measured, and the reason is worth carrying
   forward.** The plan above said the outcome was "an enemy nameplate HP drop
