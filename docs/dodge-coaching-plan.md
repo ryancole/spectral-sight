@@ -239,6 +239,19 @@ rather than blocking anything.
   The remaining silence is the projectile stage's to close, and it errs
   toward under-counting shots thrown, never toward inventing one.
 
+  **Then a larger finding, recorded in full in `docs/aim-bolt-findings.md`:**
+  most credited bolts are not the player's shot. Only 9-13 of 46 credited
+  bolts on 200-470 s have a line that traces back through the player's model;
+  the rest are enemy projectiles arriving, allied bolts passing by, and
+  effects near the model, confirmed on frame crops. An origin gate in the join
+  (80 px) takes 150-700 s from 83 credited bolts to 38 and from 8 called
+  misses to 1 -- so the miss-distance gap that justifies `hit_radius` was
+  strays, and the hit/miss numbers above should not be quoted until re-based.
+  The gate is measured and proposed, not applied. The same document records
+  why bolts die at three points (rival tracks and the ghost mask, in equal
+  measure), that four tracker remedies did not pay, and that the choice rule
+  and the window are moot until the gate is in.
+
   **The phase changed shape once measured, and the reason is worth carrying
   forward.** The plan above said the outcome was "an enemy nameplate HP drop
   coinciding with the track ending on that plate". Neither half survived
