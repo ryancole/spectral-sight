@@ -177,10 +177,14 @@ re-based. For mind-control: a `missed` verdict from the current stage is
 mostly not the player's shot; the silence problem from §1 is the smaller
 effect.
 
-**Recommendation, not applied:** add the origin gate at 80 px (which admits
-the W's large orb where 45 px does not), re-base the docstring and plan doc on
-the gated run, and accept that credited bolts fall to about a third of casts
-— the stage then sees the shot in a third of cases and says nothing otherwise.
+**Applied** as `AimConfig.max_origin_miss = 80.0` (80 admits the W's large
+orb where 45 does not), with the docstring and plan doc re-based on the gated
+run. Credited bolts fall to about a third of casts: the stage sees the shot in
+a third of cases and says nothing otherwise. Gated numbers on 150–700 s: 38
+credited of 111 (Q 25 of 66, W 12 of 31, E 1 of 10, R 0 of 4), 15 aimed, 14
+hit, 1 missed; first sighting a median +0.12 s after the veil, p90 +0.43;
+flights 0.13–0.46 s; the bar fell after 9 of the 14 called hits and not after
+the one miss.
 
 ## 4. The choice rule is moot once the gate is in
 
@@ -213,7 +217,7 @@ footage can say what the new misses are.
   8 px across the clip.
 - The silence of a cast with no bolt is honest and errs toward under-counting
   shots thrown.
-- The verdicts are not, yet. The gate is the fix, and it is one config field
-  and one condition in `consider`.
+- The verdicts now rest on bolts that left the player's model. What remains
+  is a stray floor of about 7%, and a hit radius nothing has justified.
 - Phase 0 footage remains the only way to turn any of these proxies into a
   precision or recall number.

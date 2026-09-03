@@ -38,11 +38,10 @@ So **the verdict is geometric**: a shot is a hit when the bolt's line passed
 within `hit_radius` of the target's model, and a miss when it went wide. That
 is measured from the stabilised residual and the nameplate, and it does not
 consult the bar at all. The fall is still carried, as `fall`, because it is
-real evidence a consumer may want to weigh -- and because it does lean the
-right way even here: of 24 aimed shots, the bar fell after 82% of the 17 that
-passed within 130 px and 43% of the 7 that went wide, against that 52%
-baseline. Seven wide shots is not a result; it is the direction a result would
-point.
+real evidence a consumer may want to weigh. Gated (see `max_origin_miss`),
+the sample is too small to read it against: of 15 aimed shots on 150-700 s,
+14 passed within 130 px and the bar fell after 9 of them, and the one wide
+shot was not followed by a fall. One wide shot is not a result.
 
 **What would make the bar a label again is exactly the plan's Phase 0**: one
 enemy, one skillshot, and nothing else on the map dealing damage. Then the
@@ -50,31 +49,30 @@ baseline is zero and the fall is the ground truth it was supposed to be -- for
 this stage, and for the classifier the projectile stage is waiting on.
 
 **Where the sample goes.** Over 150-700 s of the 2026-08-30 session: 111 casts
-in ability slots, 83 of which launched a bolt this stage could find, and 24 of
-those with an enemy champion on screen in front of it to have been aimed at.
-The attrition is not a failure of the stage -- an enemy is simply not on screen
-for most of a lane phase, and only 30% of sampled frames hold an enemy plate at
-all, a quarter of those occluded or clipped and reading `None` rather than a
-number. So `unknown` is the common outcome and is reported as such rather than
-folded into a miss. The numerator is only as complete as the enemy's presence.
+in ability slots, 38 of which launched a bolt this stage could find *and*
+trace back to the player's model, and 15 of those with an enemy champion on
+screen in front of it to have been aimed at. The attrition has two causes and
+neither is a failure of the stage. An enemy is simply not on screen for most
+of a lane phase -- only 30% of sampled frames hold an enemy plate at all, a
+quarter of those occluded or clipped and reading `None` rather than a number
+-- so `unknown` is the common outcome and is reported as such rather than
+folded into a miss. And the bolt is seen in about a third of casts, for
+reasons traced in `docs/aim-bolt-findings.md`: Ezreal's Q and W always launch
+one, and where the stage did not credit it, the projectile stage had lost the
+track at three points (a rival chance track or the ghost mask took its fourth
+blob) or never had one, and the remedies measured for that all cost more in
+strays than they returned.
 
-**The denominator is not complete either, and a consumer should know which
-way it errs.** Ezreal's Q and W always launch a bolt, so on this footage every
-Q or W cast without one is a bolt this stage did not see, not a blink. Traced
-cast by cast on 200-470 s (15 of 51 Q/W casts silent before the fixes above
-the fold in `consider`), the misses split two ways. Eight are the projectile
-stage's: a fast, straight track was born beside the player and died at three
-points, one short of `ProjectileConfig.min_points`, or nothing fast was there
-at all. Admitting three-point tracks was measured and rejected -- it doubles
-the rate at which a fake cast placed at a random moment gets credited a bolt
-(22% to 38% on 150-700 s) and re-picks fifteen bolts already claimed. Seven
-were this stage's: two lost to a plate read that returned no anchor, two to
-the window's edge in floating point, both fixed; two a frame or two past
-`launch_after` and one first tracked past `max_launch`, both left, because
-widening either lets a neighbouring cast steal a bolt the way the
-one-bolt-per-cast rule exists to prevent. So a cast reported with no bolt is
-silence, and the silence is biased toward under-counting the shots thrown --
-never toward inventing one.
+**Which way the errors run.** Before `max_origin_miss` this stage credited 83
+of those 111 casts, and most of those bolts were not the player's -- enemy
+bolts arriving, allied bolts passing by, effects near the model -- and seven
+of the eight wide shots it reported were among them. A consumer of the old
+output was coached on strays. Now a cast reported with no bolt is silence,
+biased toward under-counting the shots thrown and never toward inventing one,
+and a credited bolt is one that left the player's model. What remains among
+the credited bolts is a stray floor of about 7% -- a fake cast at a random
+moment is credited a bolt that often -- which is where the player's own
+auto-attacks would sit if they are being credited; the sample cannot say.
 
 Coordinates are world-view pixels, like the rest of `perception.screen`.
 """
@@ -113,9 +111,9 @@ class AimConfig:
     """Window around the cast in which the bolt must have been first seen. A
     bolt does not appear the instant the veil does: there is the cast
     animation, and then the bolt has to separate from the player's own
-    residual before it is a track at all. Measured over the 72 casts that
-    launched one on the 2026-08-30 session, the first sighting lands a median
-    +0.13 s after the veil, p90 +0.43. That p90 is close enough to the gate to
+    residual before it is a track at all. Measured over the 38 casts credited
+    a bolt on 150-700 s of the 2026-08-30 session, the first sighting lands a
+    median +0.12 s after the veil, p90 +0.43. That p90 is close enough to the gate to
     say the distribution is censored by it -- there are probably bolts past
     half a second -- but widening it buys them at the price of admitting more
     of the ~210 unrelated candidates a minute, and an unrelated bolt credited
@@ -136,17 +134,43 @@ class AimConfig:
     mirror of `ThreatConfig.min_launch`: the same distance that disqualifies
     a bolt as a threat qualifies it as the player's shot."""
 
+    max_origin_miss: float = 80.0
+    """How far the bolt's line may pass from the player's model, px, with the
+    model *behind* the bolt's first point. A shot the player fired starts at
+    their model and flies straight, so its track, extended backwards, goes
+    through where they stand; a bolt born beside them that does not trace
+    back to them is something else -- an enemy's bolt arriving, an ally's
+    passing by, an effect near the model.
+
+    This is the gate that makes a credited bolt mean anything, and it was
+    measured before it was written (`docs/aim-bolt-findings.md`). Without it,
+    of 46 bolts credited to real casts on 200-470 s of the 2026-08-30
+    session, only 13 traced back through the model even at this tolerance;
+    frame crops showed a Q "hit" credited to a track 240 px above the player
+    at the enemy's feet, and another credited to an enemy's crescent gliding
+    *in*. With it, on 150-700 s: 83 credited bolts became 38, and the eight
+    called misses became one -- nearly every wide shot the stage had reported
+    was a stray. The rate at which a fake cast at a random moment is credited
+    a bolt fell from 25% to 7%.
+
+    80 rather than 45 because Ezreal's W is a large orb whose residual
+    centroid sits well off the line the orb travels; at 45 px the gate loses
+    it and at 80 it does not, for two more points of strays. The fitted origin
+    of the real bolt lines sits within 30 px of the anchor, so the anchor's
+    own error is inside this."""
+
     hit_radius: float = 130.0
     """Closest approach of the bolt's line to an enemy model, px, within which
     it is judged to have hit them. This is the verdict -- see the module for
     why the health bar is not -- and it is the least settled number here.
 
-    Two things argue for 130. The measured miss distances on the 2026-08-30
-    session fall in a group and then a gap: 6, 13, 14, 14, 20, 26, 27, 39, 47,
-    61, 71, 75, 79, 81, 92, 95, 124, then nothing until 183, 208, 213, 248,
-    274, 314, 331. And the bar leans the right way across that gap -- 82% of
-    the near group followed by a fall against 43% of the far, on a 52%
-    baseline. Neither is strong: 24 shots, and the split is not significant.
+    What argued for 130 was a gap in the measured miss distances, 124 px to
+    183 px, with the bar leaning the right way across it. That measurement
+    was made before `max_origin_miss`, and the far side of the gap was
+    strays: gated, the 15 aimed shots on 150-700 s miss by 5, 14, 14, 16, 20,
+    26, 26, 39, 61, 71, 81, 92, 95, 111 and then 314. One shot past the
+    radius is no basis for placing it, so 130 stands as the number that was
+    there, not as one the footage chose.
 
     What argues for less is the scale. The viewport rectangle measures 78
     minimap pixels wide at 48.0 world units each, over a 2,116 px screen:
@@ -167,7 +191,7 @@ class AimConfig:
     max_flight: float = 1.5
     """Longest flight to a target, s. Beyond this the bolt's line happens to
     pass through a champion who is nowhere near its range. Not a gate that
-    does much work: the measured flights run 0.06-0.85 s.
+    does much work: the measured flights run 0.13-0.46 s.
 
     Where the bolt's track *ended* is deliberately not a gate, and that was
     measured rather than assumed. The chord of a bolt's track over the
@@ -382,7 +406,23 @@ class AimDetector:
                 away = float(np.hypot(x0 - anchor[0], y0 - anchor[1]))
                 if away > cfg.max_launch:
                     continue
+                if not self._from_model(track, anchor):
+                    continue
                 p.offered.append((away, track))
+
+    def _from_model(
+        self, track: ProjectileTrack, anchor: tuple[float, float]
+    ) -> bool:
+        """Does the track's line, run backwards, pass through the player's
+        model? See `AimConfig.max_origin_miss`."""
+        ux, uy = track.heading
+        if ux == 0.0 and uy == 0.0:
+            return False
+        _, x0, y0 = track.start
+        rx, ry = x0 - anchor[0], y0 - anchor[1]
+        behind = rx * ux + ry * uy > 0
+        perp = abs(rx * uy - ry * ux)
+        return behind and perp <= self.config.max_origin_miss
 
     def resolve(self, now: float) -> list[Skillshot]:
         """Skillshots whose windows have closed by `now`.
@@ -462,7 +502,8 @@ class AimDetector:
 
         Measured against where the target stood *at the launch*, not where
         they stood when the bolt got there, and that is a choice with a
-        measurement behind it. A champion walks a median 146 px/s and a bolt
+        measurement behind it -- one made before `max_origin_miss`, on a
+        sample that included strays, so the numbers are indicative. A champion walks a median 146 px/s and a bolt
         flies for a median 0.28 s, so the two differ: on the 2026-08-30
         session, by a median 12 px and a p90 of 29. They disagreed about the
         verdict on 1 of 24 shots. What decides it is availability -- the

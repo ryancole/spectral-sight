@@ -214,9 +214,12 @@ rather than blocking anything.
   launched and the enemy plate it went at; `skillshots` ride the self row, a
   `skillshot` event flows through feed and replay, and `has_skillshots` is on
   for a `--coach` run with the ability HUD and nameplates calibrated. Measured
-  on 150-700 s of `Recording 2026-08-30 200315`: **111 casts, 83 launching a
-  bolt, 24 with an enemy on screen in front of it** -- 17 called hits, 7
-  misses, at a median miss of 77 px. `tools/detect_skillshots.py --sweep`.
+  on 150-700 s of `Recording 2026-08-30 200315`, with the origin gate below:
+  **111 casts, 38 credited a bolt that traces back to the player's model, 15
+  with an enemy on screen in front of it** -- 14 called hits, 1 miss.
+  `tools/detect_skillshots.py --sweep`. (Before the gate the same run read
+  83 bolts, 28 aimed, 20 hits and 8 misses; see below for why those were
+  wrong.)
 
   **Bolt recall, traced cast by cast (2026-09-02).** The consumer side found
   that 15 of 51 Q/W casts on 200-470 s carried no bolt, and Ezreal's Q and W
@@ -240,17 +243,19 @@ rather than blocking anything.
   toward under-counting shots thrown, never toward inventing one.
 
   **Then a larger finding, recorded in full in `docs/aim-bolt-findings.md`:**
-  most credited bolts are not the player's shot. Only 9-13 of 46 credited
-  bolts on 200-470 s have a line that traces back through the player's model;
-  the rest are enemy projectiles arriving, allied bolts passing by, and
-  effects near the model, confirmed on frame crops. An origin gate in the join
-  (80 px) takes 150-700 s from 83 credited bolts to 38 and from 8 called
-  misses to 1 -- so the miss-distance gap that justifies `hit_radius` was
-  strays, and the hit/miss numbers above should not be quoted until re-based.
-  The gate is measured and proposed, not applied. The same document records
+  most bolts the join credited were not the player's shot. Only 9-13 of 46
+  credited bolts on 200-470 s had a line that traced back through the
+  player's model; the rest were enemy projectiles arriving, allied bolts
+  passing by, and effects near the model, confirmed on frame crops. The join
+  now has an origin gate (`AimConfig.max_origin_miss`, 80 px): the bolt's
+  line must pass back through the model with the model behind its first
+  point. On 150-700 s that took 83 credited bolts to 38 and 8 called misses to
+  1, and the rate at which a fake cast at a random moment is credited a bolt
+  from 25% to 7%. The miss-distance gap that had justified `hit_radius` was
+  strays; 130 px stands unjustified until Phase 0. The same document records
   why bolts die at three points (rival tracks and the ghost mask, in equal
   measure), that four tracker remedies did not pay, and that the choice rule
-  and the window are moot until the gate is in.
+  and the window are moot now the gate is in.
 
   **The phase changed shape once measured, and the reason is worth carrying
   forward.** The plan above said the outcome was "an enemy nameplate HP drop

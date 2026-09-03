@@ -61,6 +61,31 @@ def test_a_bolt_born_far_from_the_player_is_not_their_shot() -> None:
     assert d.flush()[0].launched is None
 
 
+def test_a_bolt_whose_line_does_not_trace_back_to_the_player_is_not_theirs() -> None:
+    # Born 100px from the anchor, inside max_launch, but flying across it:
+    # its line passes 100px from the model. An enemy's bolt going by.
+    d = detector(max_origin_miss=80.0)
+    d.observe_cast("Q", 9.95)
+    d.consider([bolt(500, 400, 1, 0)], ANCHOR)
+    assert d.flush()[0].launched is None
+
+
+def test_a_bolt_flying_into_the_player_is_not_theirs() -> None:
+    # Its line passes through the model, but the model is ahead of it.
+    d = detector(max_origin_miss=80.0)
+    d.observe_cast("Q", 9.95)
+    d.consider([bolt(600, 300, -1, 0)], ANCHOR)
+    assert d.flush()[0].launched is None
+
+
+def test_a_bolt_that_traces_back_to_the_player_within_tolerance_is_theirs() -> None:
+    # 50px off the line through the model, heading away: inside 80.
+    d = detector(max_origin_miss=80.0)
+    d.observe_cast("Q", 9.95)
+    d.consider([bolt(600, 350, 1, 0)], ANCHOR)
+    assert d.flush()[0].launched == 10.0
+
+
 def test_a_bolt_outside_the_launch_window_is_not_their_shot() -> None:
     d = detector(launch_after=0.5)
     d.observe_cast("Q", 9.0)                      # bolt is a second late
