@@ -59,6 +59,15 @@
   #coach-status { color: var(--dim); font-size: 12px; }
   #coach-status.live { color: #6fdc8c; }
   #coach-status.paused { color: var(--red); }
+  #coach-thinking { color: var(--gold); font-size: 12px; margin-left: auto; }
+  #coach-thinking[hidden] { display: none; }
+  #coach-thinking .dot {
+    display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+    background: var(--gold); margin-right: 6px; vertical-align: middle;
+    animation: pulse 0.9s ease-in-out infinite;
+  }
+  @keyframes pulse { 50% { opacity: 0.25; } }
+  @media (prefers-reduced-motion: reduce) { #coach-thinking .dot { animation: none; } }
   #coach-log { overflow-y: auto; flex: 1; min-height: 0; }
   #coach-log div { padding: 1px 0; border-bottom: 1px solid #10141b; }
   #coach-log .t { color: var(--dim); margin-right: 8px; }
@@ -99,6 +108,7 @@
       <div class="bar">
         <h2>COACHING</h2>
         <span id="coach-status">offline — start mind-control to see feedback</span>
+        <span id="coach-thinking" hidden><span class="dot"></span>thinking… <span id="coach-asking"></span></span>
       </div>
       <div id="coach-log"></div>
     </div>
@@ -293,12 +303,35 @@ function coachLine(m) {
   while (log.childElementCount > 100) log.lastElementChild.remove();
 }
 
+// `asking` is not advice but the coach's pulse: the questions waiting on the
+// Jev model right now, oldest first. Each line is the whole current state, so
+// only the latest counts. A question takes ~100 ms, so the indicator would
+// blink every frame; once the list empties it stays lit a little longer, and
+// a new question inside that window just carries on from it.
+const THINKING_HOLD_MS = 300;
+let thinkingHold = null;
+function asking(occasions) {
+  clearTimeout(thinkingHold);
+  thinkingHold = null;
+  if (occasions.length) {
+    $("coach-asking").textContent = [...new Set(occasions)].join(", ");
+    $("coach-thinking").hidden = false;
+  } else if (!$("coach-thinking").hidden) {
+    thinkingHold = setTimeout(stopThinking, THINKING_HOLD_MS);
+  }
+}
+function stopThinking() {
+  clearTimeout(thinkingHold);
+  thinkingHold = null;
+  $("coach-thinking").hidden = true;
+}
+
 const coachOffline = "offline — start mind-control to see feedback";
 const coachUrl = new URLSearchParams(location.search).get("coach")
   || "http://localhost:8724/stream";
 const coachStream = new EventSource(coachUrl);
 coachStream.onopen = () => { $("coach-status").textContent = "● connected"; $("coach-status").className = "live"; };
-coachStream.onerror = () => { $("coach-status").textContent = coachOffline; $("coach-status").className = ""; ghost = null; };
+coachStream.onerror = () => { $("coach-status").textContent = coachOffline; $("coach-status").className = ""; ghost = null; stopThinking(); };
 coachStream.onmessage = e => {
   const m = JSON.parse(e.data);
   if (m.t === "move") {
@@ -315,8 +348,10 @@ coachStream.onmessage = e => {
     coachLine(m);
   } else if (m.t === "status") {
     const status = $("coach-status");
-    if (m.state === "paused") { status.textContent = `paused: ${m.reason}`; status.className = "paused"; ghost = null; }
+    if (m.state === "paused") { status.textContent = `paused: ${m.reason}`; status.className = "paused"; ghost = null; stopThinking(); }
     else { status.textContent = "● coaching"; status.className = "live"; }
+  } else if (m.t === "asking") {
+    asking(Array.isArray(m.occasions) ? m.occasions : []);
   }
 };
 </script>
