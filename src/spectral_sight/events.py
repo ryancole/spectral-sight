@@ -47,6 +47,16 @@ The kinds, and what each is grounded in:
   respawn explains them, since "the corpse left the minimap" is not news.
 - `level_up` -- the filtered `level` rising. First knowledge of a level is not
   an event: learning that someone *is* level 3 is state, reaching 4 is change.
+- `skill_point` / `skill_spent` -- the self row's `learnable` becoming
+  non-empty / becoming empty again: a skill point waiting to be spent, read
+  off the level-up chevrons the HUD draws above the ability slots, and the
+  point going into an ability. Unlike a level, a waiting point *is* news on
+  first sight -- joining a stream while one is unspent is late knowledge of
+  something the player can still act on, the same argument as joining
+  mid-corpse -- and a change in which slots could take it (R lighting at 6
+  while a point is held) re-announces with the new set. `skill_spent` carries
+  how long the point sat. None on `learnable` never transitions anything,
+  for the reason `alive: None` never does: it means nothing looked.
 - `identified` -- a track's champion becoming known, or changing. It can
   change before the roster locks, and re-announcing with `replaces` is honest
   where staying silent would leave consumers holding a name the pipeline no
@@ -78,6 +88,8 @@ KINDS = (
     "vanished",
     "reappeared",
     "level_up",
+    "skill_point",
+    "skill_spent",
     "identified",
     "roster",
 )
@@ -140,6 +152,11 @@ class EventDeriver:
         self._visible: dict[int, bool] = {}
         self._vanished_at: dict[int, float] = {}
         self._levels: dict[int, int] = {}
+        self._learnable: dict[str, tuple[str, ...]] = {}
+        """Last read set of lit chevrons, keyed like liveness -- by champion
+        once named -- because the self track can be re-found on a new id
+        while the same point is still waiting."""
+        self._point_since: dict[str, float] = {}
         self._named: dict[int, str] = {}
         self._rosters: dict[Team, frozenset[str]] = {}
 
@@ -190,6 +207,23 @@ class EventDeriver:
             self._levels[row.track_id] = row.level
             if known is not None and row.level > known:
                 events.append(event("level_up", level=row.level))
+
+        if row.learnable is not None:
+            key = self._life_key(row)
+            before = self._learnable.get(key)
+            self._learnable[key] = row.learnable
+            if row.learnable and row.learnable != before:
+                # First sight and a changed set both announce; the same set
+                # persisting for seconds is one point, not one per frame.
+                if not before:
+                    self._point_since[key] = now
+                events.append(event("skill_point", slots=list(row.learnable)))
+            elif before and not row.learnable:
+                detail = {}
+                since = self._point_since.pop(key, None)
+                if since is not None:
+                    detail["held_for"] = round(now - since, 2)
+                events.append(event("skill_spent", **detail))
 
         died, revived = self._liveness_of(row)
         if died:

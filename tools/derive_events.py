@@ -62,6 +62,12 @@ def describe(event) -> str:
             return f"{who}{side} reappeared{for_}"
         case "level_up":
             return f"{who}{side} reached level {detail['level']}"
+        case "skill_point":
+            return f"{who}{side} has a skill point for {'/'.join(detail['slots'])}"
+        case "skill_spent":
+            held = detail.get("held_for")
+            for_ = "" if held is None else f" after {held:.1f}s"
+            return f"{who}{side} spent the skill point{for_}"
         case "identified":
             tag = " (the local player)" if detail.get("is_self") else ""
             was = detail.get("replaces")

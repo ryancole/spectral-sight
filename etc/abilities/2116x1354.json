@@ -8,5 +8,7 @@
   "summoner_y": 1247.0,
   "summoner_width": 40.0,
   "summoner_height": 40.0,
-  "summoner_spacing": 43.5
+  "summoner_spacing": 43.5,
+  "point_y": 1204.0,
+  "point_height": 39.0
 }

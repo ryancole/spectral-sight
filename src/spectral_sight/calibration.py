@@ -224,6 +224,14 @@ def _derive_abilities(fit: LayoutFit, source: AbilityLayout) -> AbilityLayout:
         summoner_width=fit.across(source.summoner_width),
         summoner_height=fit.down(source.summoner_height),
         summoner_spacing=fit.across(source.summoner_spacing),
+        point_y=(
+            None if source.point_y is None
+            else fit.point(source.ability_first_x, source.point_y)[1]
+        ),
+        point_height=(
+            None if source.point_height is None
+            else fit.down(source.point_height)
+        ),
     )
 
 

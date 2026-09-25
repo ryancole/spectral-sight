@@ -34,6 +34,7 @@ from spectral_sight.capture import open_source
 from spectral_sight.perception.hud.abilities import load_ability_reader
 from spectral_sight.perception.hud.clock import load_clock_reader
 from spectral_sight.perception.hud.resources import load_resource_reader
+from spectral_sight.perception.hud.skill_points import load_skill_point_reader
 
 
 def _readers(width: int, height: int):
@@ -44,18 +45,20 @@ def _readers(width: int, height: int):
     glyphs = None if clock is None else clock.glyphs
     reader = load_ability_reader(width, height, glyphs)
     resources = load_resource_reader(width, height, glyphs)
-    return reader, resources
+    points = None if reader is None else load_skill_point_reader(reader.layout)
+    return reader, resources, points
 
 
-def run(path: str, stride: int, limit: int) -> tuple[list, list]:
-    """Every ability cast, and the player's mana series, over the clip."""
+def run(path: str, stride: int, limit: int) -> tuple[list, list, list]:
+    """Every ability cast, the player's mana series, and every change in the
+    level-up chevrons, over the clip."""
     with open_source(path) as probe:
         first = next(iter(probe.frames()), None)
     if first is None:
         raise SystemExit(f"no frames in {path}")
     width, height = first.size
 
-    reader, resources = _readers(width, height)
+    reader, resources, points = _readers(width, height)
     if reader is None:
         raise SystemExit(
             f"no ability calibration for {width}x{height}; it derives from the "
@@ -64,6 +67,8 @@ def run(path: str, stride: int, limit: int) -> tuple[list, list]:
 
     casts: list = []
     mana: list[tuple[float, int, int]] = []
+    changes: list[tuple[float, tuple[str, ...]]] = []
+    learnable: tuple[str, ...] | None = None
     with open_source(path, stride=stride) as source:
         for sampled, frame in enumerate(source.frames()):
             if limit and sampled >= limit:
@@ -73,8 +78,13 @@ def run(path: str, stride: int, limit: int) -> tuple[list, list]:
                 reading = resources.read_line(frame.image, resources.layout.mana)
                 if reading is not None:
                     mana.append((frame.timestamp, reading.current, reading.maximum))
+            if points is not None:
+                now = points.read(frame.image, frame.timestamp)
+                if now is not None and now != learnable:
+                    changes.append((frame.timestamp, now))
+                    learnable = now
     casts.extend(reader.flush())
-    return casts, mana
+    return casts, mana, changes
 
 
 def report(casts: list, list_all: bool) -> None:
@@ -94,6 +104,28 @@ def report(casts: list, list_all: bool) -> None:
             cd = "  ?" if c.countdown is None else f"{c.countdown:3d}"
             flag = "" if c.confirmed else "  (unconfirmed)"
             print(f"  {c.at:8.1f}  {c.slot}  cd={cd}{flag}")
+
+
+def report_points(changes: list[tuple[float, tuple[str, ...]]]) -> None:
+    """Each stretch the level-up chevrons were lit: when, what, how long."""
+    windows = []
+    opened: tuple[float, tuple[str, ...]] | None = None
+    for at, slots in changes:
+        if slots and opened is None:
+            opened = (at, slots)
+        elif slots and opened is not None and slots != opened[1]:
+            windows.append((opened[0], at, opened[1]))
+            opened = (at, slots)
+        elif not slots and opened is not None:
+            windows.append((opened[0], at, opened[1]))
+            opened = None
+    if opened is not None:
+        windows.append((opened[0], None, opened[1]))
+    print(f"\n{len(windows)} skill-point windows")
+    for start, end, slots in windows:
+        held = ("  (still lit)" if end is None
+                else f"  spent after {end - start:5.1f}s")
+        print(f"  {start:8.1f}  {''.join(slots):4s}{held}")
 
 
 def validate(casts: list, mana: list[tuple[float, int, int]]) -> int:
@@ -150,8 +182,9 @@ def main() -> int:
                              "source, which a live window never finishes")
     args = parser.parse_args()
 
-    casts, mana = run(args.input, args.stride, args.limit)
+    casts, mana, changes = run(args.input, args.stride, args.limit)
     report(casts, args.list)
+    report_points(changes)
     if args.validate:
         return validate(casts, mana)
     return 0

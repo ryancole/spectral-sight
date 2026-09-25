@@ -402,6 +402,17 @@ class Observation:
     bolt has flown and the target's bar has had a chance to move, so these
     ride a later row than the `abilities` entry naming the same cast."""
 
+    learnable: tuple[str, ...] | None = None
+    """Ability slots whose level-up chevron is lit -- the self row only.
+
+    The client draws a chevron above each ability the player's unspent skill
+    point could go into, so a non-empty tuple means a point is waiting and
+    names the abilities it could buy (R lights only at 6, 11 and 16; a maxed
+    ability never does). Empty means the HUD was read and shows no point to
+    spend. None means nothing looked: no calibration for the row, the frame
+    was not the game, or the player was dead -- the same silence as an
+    unread `alive`, and like it, None never means "unchanged"."""
+
     allies_dead: int | None = None
     """How many of your five teammates were dead on this frame.
 
@@ -460,6 +471,10 @@ class Observation:
             row["threats"] = [threat.to_dict() for threat in self.threats]
         if self.skillshots:
             row["skillshots"] = [shot.to_dict() for shot in self.skillshots]
+        # Written even when empty: an empty list is a reading ("no point to
+        # spend"), where the key's absence is the lack of one.
+        if self.learnable is not None:
+            row["learnable"] = list(self.learnable)
         return row
 
     @classmethod
@@ -509,6 +524,10 @@ class Observation:
             skillshots=(
                 tuple(Skillshot.from_dict(t) for t in data["skillshots"])
                 if data.get("skillshots") else None
+            ),
+            learnable=(
+                None if data.get("learnable") is None
+                else tuple(str(slot) for slot in data["learnable"])
             ),
             allies_dead=(
                 None if data.get("allies_dead") is None

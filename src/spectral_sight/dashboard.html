@@ -84,6 +84,7 @@
   #log .blue { color: var(--blue); } #log .red { color: var(--red); }
   #log .kind-death { color: var(--red); font-weight: bold; }
   #log .kind-cast { color: var(--gold); }
+  #log .kind-skill_point { color: var(--gold); font-weight: bold; }
   #log .kind-gap { color: var(--dim); font-style: italic; }
 </style>
 </head>
@@ -250,6 +251,8 @@ function logLine(message) {
       (message.kind === "cast" ? `  ${(message.drop * 100).toFixed(0)}% of pool` : "") +
       (message.kind === "respawn" && message.down_for != null ? `  after ${message.down_for}s` : "") +
       (message.kind === "level_up" ? `  → ${message.level}` : "") +
+      (message.kind === "skill_point" ? `  ${message.slots.join("/")}` : "") +
+      (message.kind === "skill_spent" && message.held_for != null ? `  after ${message.held_for}s` : "") +
       (message.kind === "roster" ? `  ${message.champions.join(", ")}` : "");
   line.append(when, what);
   const log = $("log");

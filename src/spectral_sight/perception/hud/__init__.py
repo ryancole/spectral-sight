@@ -22,6 +22,11 @@ from spectral_sight.perception.hud.clock import (
 )
 from spectral_sight.perception.hud.naming import SlotNaming
 from spectral_sight.perception.hud.portraits import PortraitLayout
+from spectral_sight.perception.hud.skill_points import (
+    SkillPointConfig,
+    SkillPointReader,
+    load_skill_point_reader,
+)
 
 __all__ = [
     "AbilityCast",
@@ -36,8 +41,11 @@ __all__ = [
     "GlyphSet",
     "Liveness",
     "PortraitLayout",
+    "SkillPointConfig",
+    "SkillPointReader",
     "SlotNaming",
     "SlotState",
     "load_ability_reader",
     "load_clock_reader",
+    "load_skill_point_reader",
 ]

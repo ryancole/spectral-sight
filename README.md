@@ -315,9 +315,9 @@ and a consumer reacting in real time mostly wants the changes — a death, a
 cast, a champion slipping into fog — without diffing ten rows against their
 predecessors itself, badly, in every downstream tool at once. So the feed
 interleaves `{"t": "event", "kind": ...}` messages with the frames: `cast`,
-`death`/`respawn`, `vanished`/`reappeared`, `level_up`, `identified` and
-`roster`, each carrying the same `video_time`/`game_time` keys as everything
-else.
+`death`/`respawn`, `vanished`/`reappeared`, `level_up`,
+`skill_point`/`skill_spent`, `identified` and `roster`, each carrying the
+same `video_time`/`game_time` keys as everything else.
 
 These are *perceptual* events, deliberately: things the vision concluded, not
 what they might mean. "Gank incoming" is the analysis tool's job, and holding
@@ -883,6 +883,26 @@ mana on the 2026-08-30 session: **90% of 196 mana-fall casts caught, about one
 false positive in a hundred**, and summoner spells and zero-mana casts seen
 that the mana route is blind to. `abilities` rides the self row; the `ability`
 event names the slot. `tools/detect_abilities.py --validate` reports it.
+
+**A skill point waiting, and where it could go.** The nameplate level says
+the player *reached* 6; it cannot say whether the point has been spent, and
+that is the thing a coach wants to nag about. The client answers directly:
+while a point is unspent it draws a chevron above each ability the point
+could go into, and removes the row the moment it is spent, so
+`perception/hud/skill_points.py` reads that row. The row is transparent when
+nothing is lit -- the world shows through, and the player's own buff icons
+overlap the Q box -- so a brightness reading fires on fireballs and item
+stacks. The chevron is a fixed drawing, though: correlating each box against
+a captured one (`etc/abilities/chevron.png`) scored 0.60-0.97 on every lit
+box across the 2026-08-30 session's sixteen level-ups and at most 0.42 on
+anything else, with the chevron's own greyed-out *unavailable* state (R
+before 6, which shares the shape) removed by requiring some gold in the box
+-- it has none. Every level-up 1 through 16 produced a window, the lit sets
+matched the rank rules (`WER` at 6 with Q capped, `W` alone at 14 and 15),
+and nothing outside them read lit. `learnable` rides the self row; the
+`skill_point` event says a point is waiting and for what, `skill_spent`
+says it went and how long it sat. `tools/detect_abilities.py` lists the
+windows.
 
 **Projectiles on the world view.** Nothing labels a projectile, so
 `perception/screen/` finds what moves like one, at every distinct frame:

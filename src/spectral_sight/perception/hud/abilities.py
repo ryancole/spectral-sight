@@ -129,6 +129,13 @@ class AbilityLayout:
     summoner_width: float
     summoner_height: float
     summoner_spacing: float
+    point_y: float | None = None
+    point_height: float | None = None
+    """The row of level-up chevrons the client draws directly above the four
+    ability slots while a skill point is unspent. Each chevron shares its
+    slot's x and width, so the row is a top and a height. None on a layout
+    calibrated before the row was read; the skill-point reader then stays
+    off rather than measuring the wrong pixels."""
 
     def boxes(self) -> dict[str, tuple[int, int, int, int]]:
         """Every slot's (x, y, width, height), keyed Q W E R D F."""
@@ -149,8 +156,19 @@ class AbilityLayout:
             )
         return out
 
-    def to_dict(self) -> dict[str, float]:
+    def point_boxes(self) -> dict[str, tuple[int, int, int, int]] | None:
+        """Each ability slot's chevron box (x, y, width, height), keyed
+        Q W E R, or None if the row is not calibrated."""
+        if self.point_y is None or self.point_height is None:
+            return None
         return {
+            name: (x, round(self.point_y), width, round(self.point_height))
+            for name, (x, _, width, _) in self.boxes().items()
+            if name in ABILITY_SLOTS
+        }
+
+    def to_dict(self) -> dict[str, float]:
+        out = {
             "ability_first_x": self.ability_first_x,
             "ability_y": self.ability_y,
             "ability_width": self.ability_width,
@@ -162,14 +180,25 @@ class AbilityLayout:
             "summoner_height": self.summoner_height,
             "summoner_spacing": self.summoner_spacing,
         }
+        if self.point_y is not None and self.point_height is not None:
+            out["point_y"] = self.point_y
+            out["point_height"] = self.point_height
+        return out
 
     @classmethod
     def from_dict(cls, data: dict) -> AbilityLayout:
-        return cls(**{key: float(data[key]) for key in (
+        layout = cls(**{key: float(data[key]) for key in (
             "ability_first_x", "ability_y", "ability_width", "ability_height",
             "ability_spacing", "summoner_first_x", "summoner_y",
             "summoner_width", "summoner_height", "summoner_spacing",
         )})
+        if data.get("point_y") is not None and data.get("point_height") is not None:
+            layout = replace(
+                layout,
+                point_y=float(data["point_y"]),
+                point_height=float(data["point_height"]),
+            )
+        return layout
 
     def save(self, path: str | Path) -> None:
         path = Path(path)

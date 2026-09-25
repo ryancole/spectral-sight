@@ -66,6 +66,7 @@ from spectral_sight.export import (
     TimelineMeta,
 )
 from spectral_sight.perception.hud.abilities import AbilityLayout, AbilityReader
+from spectral_sight.perception.hud.skill_points import load_skill_point_reader
 from spectral_sight.perception.hud.resources import ResourceReader, load_resource_reader
 from spectral_sight.perception.nameplates.plates import Side
 from spectral_sight.perception.screen import (
@@ -263,6 +264,16 @@ class Pipeline:
         whatever frame confirmed it, and the self track is occasionally
         unresolved on exactly that frame -- holding the cast until the next
         self row loses nothing, where dropping it loses the cast."""
+        self.skill_points = (
+            None if abilities is None else load_skill_point_reader(abilities)
+        )
+        """The level-up chevrons above the ability slots: whether a skill
+        point is waiting and which abilities could take it. Rides the same
+        calibration as the slots and the same gates as the cooldown veil."""
+        self._learnable: tuple[str, ...] | None = None
+        """The last confirmed chevron reading, carried onto the self row.
+        State rather than a queue, unlike the casts: a point waiting is true
+        for as long as it waits, and the row reports what is true."""
 
         # The world-view stage: projectiles at every frame, threats to the
         # player resolved against their printed health. Only when asked for
@@ -438,6 +449,9 @@ class Pipeline:
             if self.ability_reader is not None:
                 self.ability_reader.reset()
                 self._pending_abilities.clear()
+            if self.skill_points is not None:
+                self.skill_points.reset()
+                self._learnable = None
 
         liveness = None
         if self.liveness is not None:
@@ -478,6 +492,21 @@ class Pipeline:
                     # Death veils every slot; whatever the aim stage was
                     # holding was cast in a life that has ended.
                     self.aim.reset()
+
+        if self.skill_points is not None:
+            # The same two gates, for the same reasons: a screen that is not
+            # the game has no chevrons to read, and the death screen is not
+            # evidence about them either way. Dead, the reading is dropped
+            # rather than carried -- the row says nothing looked, and a point
+            # spent from the grey screen is reported on respawn, late rather
+            # than wrong.
+            portrait = None if liveness is None else liveness.slot(SELF_SLOT)
+            dead = portrait is not None and portrait.alive is False
+            if trusted and not dead:
+                self._learnable = self.skill_points.read(frame, timestamp)
+            elif dead:
+                self.skill_points.reset()
+                self._learnable = None
 
         if self.projectiles is not None and self.threats is not None:
             self._watch_world(frame, timestamp, trusted)
@@ -581,6 +610,7 @@ class Pipeline:
                 pairing, casts, self._take_abilities(self_track),
                 self._take_threats(self_track),
                 self._take_skillshots(self_track),
+                self._learnable,
             ),
         )
 
@@ -859,6 +889,7 @@ class Pipeline:
         abilities: tuple[AbilityUse, ...] = (),
         threats: tuple[Threat, ...] = (),
         skillshots: tuple[Skillshot, ...] = (),
+        learnable: tuple[str, ...] | None = None,
     ) -> list[Observation]:
         """Flatten this frame's tracks into rows.
 
@@ -920,6 +951,11 @@ class Pipeline:
                         if skillshots
                         and self_track is not None
                         and track.id == self_track.id
+                        else None
+                    ),
+                    learnable=(
+                        learnable
+                        if self_track is not None and track.id == self_track.id
                         else None
                     ),
                     allies_dead=None if liveness is None else liveness.dead_count,

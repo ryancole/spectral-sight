@@ -247,6 +247,76 @@ class TestLevels:
         assert ups[0].detail == {"level": 4}
 
 
+class TestSkillPoints:
+    def test_a_waiting_point_is_news_on_first_sight(self) -> None:
+        """Unlike a level: a point the player can still spend is something
+        to say now, however late the stream joined."""
+        events = derive(
+            state(0, [row(is_self=True, learnable=("Q", "W"))]),
+            state(1, [row(video_time=10.1, is_self=True, learnable=("Q", "W"))]),
+        )
+        assert kinds(events) == ["skill_point"]
+        assert events[0].detail == {"slots": ["Q", "W"]}
+
+    def test_no_point_on_first_sight_is_silence(self) -> None:
+        events = derive(state(0, [row(is_self=True, learnable=())]))
+        assert kinds(events) == []
+
+    def test_spending_reports_how_long_it_sat(self) -> None:
+        events = derive(
+            state(0, [row(is_self=True, learnable=())]),
+            state(1, [row(video_time=10.1, is_self=True, learnable=("W",))]),
+            state(2, [row(video_time=12.6, is_self=True, learnable=("W",))]),
+            state(3, [row(video_time=15.35, is_self=True, learnable=())]),
+        )
+        assert kinds(events) == ["skill_point", "skill_spent"]
+        assert events[1].detail == {"held_for": 5.25}
+
+    def test_a_point_seen_on_join_is_timed_from_the_join(self) -> None:
+        """Joining while a point waits gets `skill_point` at that moment, and
+        `held_for` measures from then: a lower bound on how long it sat,
+        which is the most the stream can honestly say."""
+        events = derive(
+            state(0, [row(is_self=True, learnable=("R",))]),
+            state(1, [row(video_time=11.0, is_self=True, learnable=())]),
+        )
+        assert kinds(events) == ["skill_point", "skill_spent"]
+        assert events[1].detail == {"held_for": 1.0}
+
+    def test_the_choice_changing_while_held_re_announces(self) -> None:
+        """R lights at 6 while a point from 5 is still waiting."""
+        events = derive(
+            state(0, [row(is_self=True, learnable=("Q", "W"))]),
+            state(1, [row(video_time=10.1, is_self=True, learnable=("Q", "W", "R"))]),
+            state(2, [row(video_time=10.2, is_self=True, learnable=("Q", "W", "R"))]),
+        )
+        assert kinds(events) == ["skill_point", "skill_point"]
+        assert events[1].detail == {"slots": ["Q", "W", "R"]}
+
+    def test_nothing_looked_never_transitions(self) -> None:
+        """A row without `learnable` -- dead, or not the game -- is not a
+        reading of "no point", and the point is still waiting after it."""
+        events = derive(
+            state(0, [row(is_self=True, learnable=("Q",))]),
+            state(1, [row(video_time=10.1, is_self=True)]),
+            state(2, [row(video_time=10.2, is_self=True, learnable=("Q",))]),
+            state(3, [row(video_time=10.3, is_self=True)]),
+            state(4, [row(video_time=10.4, is_self=True, learnable=())]),
+        )
+        assert kinds(events) == ["skill_point", "skill_spent"]
+        assert events[1].detail == {"held_for": 0.4}
+
+    def test_the_point_survives_the_self_track_being_re_found(self) -> None:
+        """Keyed by champion once named, like liveness: a new track id for
+        the same player is not a second point."""
+        events = derive(
+            state(0, [row(champion="Ezreal", is_self=True, learnable=("Q",))]),
+            state(1, [row(track_id=7, video_time=10.1, champion="Ezreal",
+                          is_self=True, learnable=("Q",))]),
+        )
+        assert kinds(events) == ["identified", "skill_point", "identified"]
+
+
 class TestIdentity:
     def test_identified_fires_once_per_belief(self) -> None:
         events = derive(

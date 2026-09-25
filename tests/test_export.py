@@ -114,6 +114,17 @@ def test_a_row_with_no_skillshots_omits_the_key() -> None:
     assert "skillshots" not in sample_observation().to_dict()
 
 
+def test_learnable_round_trips_and_an_empty_reading_is_kept() -> None:
+    """Empty is a reading ("no point to spend"); only None is omitted."""
+    lit = sample_observation(is_self=True, learnable=("Q", "W"))
+    assert Observation.from_dict(lit.to_dict()) == lit
+    assert lit.to_dict()["learnable"] == ["Q", "W"]
+    none = sample_observation(is_self=True, learnable=())
+    assert none.to_dict()["learnable"] == []
+    assert Observation.from_dict(none.to_dict()).learnable == ()
+    assert "learnable" not in sample_observation().to_dict()
+
+
 def test_a_row_with_no_world_omits_the_keys_entirely() -> None:
     """Absent rather than null: a reader should not have to distinguish a
     position of None from a position at the origin."""
