@@ -102,6 +102,11 @@ class Session:
     and a resized window invalidates every calibration at once. Neither should
     unwind past the block that owns the timeline file, or a run gets thrown away
     by the way it ended -- which for an hour of VOD review is the whole session.
+
+    The resize surfaces from the source, so the iterator handles it. Ctrl+C
+    lands wherever the process happens to be, which is nearly always inside the
+    pipeline rather than the frame grab, so it is absorbed by the ``with``
+    block that wraps the whole loop rather than by the iterator.
     """
 
     def __init__(self, source: FrameSource) -> None:
@@ -109,11 +114,18 @@ class Session:
         self.interrupted = False
         self.error: str | None = None
 
+    def __enter__(self) -> "Session":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        if exc_type is not None and issubclass(exc_type, KeyboardInterrupt):
+            self.interrupted = True
+            return True
+        return False
+
     def __iter__(self) -> Iterator[Frame]:
         try:
             yield from self.source.frames()
-        except KeyboardInterrupt:
-            self.interrupted = True
         except FrameSizeChanged as exc:
             self.error = str(exc)
 
@@ -403,102 +415,107 @@ def main() -> int:
         # rather than for the single frame the cast settles on.
         last_cast: dict[int, tuple[float, bool]] = {}
 
-        session = Session(source)
-        for frame in session:
-            result = pipeline.process(frame.image, frame.timestamp)
-            if not result.sampled:
-                # A frame between samples: the world-view stages saw it, the
-                # minimap stages did not, and there is nothing to publish.
-                continue
-            processed += 1
+        with Session(source) as session:
+            for frame in session:
+                result = pipeline.process(frame.image, frame.timestamp)
+                if not result.sampled:
+                    # A frame between samples: the world-view stages saw it, the
+                    # minimap stages did not, and there is nothing to publish.
+                    continue
+                processed += 1
 
-            if len(feed):
-                state = FrameState.of(
-                    result, frame,
-                    seq=processed - 1,
-                    fps=meter.tick(),
-                    dropped=getattr(source, "dropped", 0),
-                )
-                feed.publish(state)
-                # After the frame, so a consumer holds the state an event
-                # describes before being told about the change.
-                for event in deriver.update(state):
-                    feed.publish_event(event)
-
-            for observation in result.observations:
-                if observation.cast_drop is not None:
-                    last_cast[observation.track_id] = (
-                        frame.timestamp, bool(observation.cast_continuous)
+                if len(feed):
+                    state = FrameState.of(
+                        result, frame,
+                        seq=processed - 1,
+                        fps=meter.tick(),
+                        dropped=getattr(source, "dropped", 0),
                     )
+                    feed.publish(state)
+                    # After the frame, so a consumer holds the state an event
+                    # describes before being told about the change.
+                    for event in deriver.update(state):
+                        feed.publish_event(event)
 
-            visible = [t for t in result.tracks
-                       if t.age(frame.timestamp) < pipeline.tracker.config.lost_after]
-            named = result.named()
-            dead = frozenset(o.champion for o in result.observations
-                             if o.alive is False and o.champion)
-
-            clock = f"{result.clock}" if result.clock else "--:--"
-            if result.clock is not None and not result.clock.observed:
-                clock += "*"
-
-            down = ""
-            if result.liveness is not None and result.liveness.dead_count:
-                # Named casualties where the pipeline could attribute them, a
-                # bare count where it could not.
-                down = f"  down={','.join(sorted(dead)) or result.liveness.dead_count}"
-
-            if args.quiet:
-                allies = sorted(n for n, t in named.items() if t.team is Team.BLUE)
-                enemies = sorted(n for n, t in named.items() if t.team is Team.RED)
-                where = ""
-                if result.self_track is not None:
-                    position = pipeline.world_position(
-                        result.self_track.x, result.self_track.y
-                    )
-                    if position is not None:
-                        where = f"  self=({position[0]:5.0f},{position[1]:5.0f})"
-                print(f"{clock:>7}  t={frame.timestamp:7.2f}s  visible={len(visible):2d}"
-                      f"{where}  allies={','.join(allies) or '-':40s} "
-                      f"enemies={','.join(enemies) or '-'}{down}", file=console)
-            else:
-                minimap = pipeline.region.crop(frame.image)
-                canvas = draw_tracks(
-                    minimap, result.tracks, frame.timestamp,
-                    scale=args.zoom, self_track=result.self_track,
-                    lost_after=pipeline.tracker.config.lost_after,
-                    dead=dead,
-                    casts={
-                        track_id: CastMark(frame.timestamp - when, continuous)
-                        for track_id, (when, continuous) in last_cast.items()
-                    },
-                )
-                cv2.putText(
-                    canvas,
-                    f"{clock}  ({frame.timestamp:.1f}s)  tracked {len(result.tracks)}  "
-                    f"visible {len(visible)}  named {len(named)}{down}",
-                    (8, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1,
-                    cv2.LINE_AA,
-                )
-
-                if args.save:
-                    if writer is None:
-                        h, w = canvas.shape[:2]
-                        writer = cv2.VideoWriter(
-                            args.save, cv2.VideoWriter_fourcc(*"mp4v"),
-                            args.fps if args.window else 30.0 / max(args.stride, 1),
-                            (w, h),
+                for observation in result.observations:
+                    if observation.cast_drop is not None:
+                        last_cast[observation.track_id] = (
+                            frame.timestamp, bool(observation.cast_continuous)
                         )
-                    writer.write(canvas)
-                else:
-                    cv2.imshow("spectral-sight", canvas)
-                    key = cv2.waitKey(0 if paused else 1) & 0xFF
-                    if key in (ord("q"), 27):
-                        break
-                    if key == ord(" "):
-                        paused = not paused
 
-            if args.limit and processed >= args.limit:
-                break
+                lost_after = pipeline.tracker.config.lost_after
+                visible = [t for t in result.tracks
+                           if t.age(frame.timestamp) < lost_after]
+                named = result.named()
+                dead = frozenset(o.champion for o in result.observations
+                                 if o.alive is False and o.champion)
+
+                clock = f"{result.clock}" if result.clock else "--:--"
+                if result.clock is not None and not result.clock.observed:
+                    clock += "*"
+
+                down = ""
+                if result.liveness is not None and result.liveness.dead_count:
+                    # Named casualties where the pipeline could attribute them, a
+                    # bare count where it could not.
+                    who = ",".join(sorted(dead)) or result.liveness.dead_count
+                    down = f"  down={who}"
+
+                if args.quiet:
+                    allies = sorted(n for n, t in named.items() if t.team is Team.BLUE)
+                    enemies = sorted(n for n, t in named.items() if t.team is Team.RED)
+                    where = ""
+                    if result.self_track is not None:
+                        position = pipeline.world_position(
+                            result.self_track.x, result.self_track.y
+                        )
+                        if position is not None:
+                            where = (f"  self=({position[0]:5.0f},"
+                                     f"{position[1]:5.0f})")
+                    print(f"{clock:>7}  t={frame.timestamp:7.2f}s  "
+                          f"visible={len(visible):2d}"
+                          f"{where}  allies={','.join(allies) or '-':40s} "
+                          f"enemies={','.join(enemies) or '-'}{down}", file=console)
+                else:
+                    minimap = pipeline.region.crop(frame.image)
+                    canvas = draw_tracks(
+                        minimap, result.tracks, frame.timestamp,
+                        scale=args.zoom, self_track=result.self_track,
+                        lost_after=lost_after,
+                        dead=dead,
+                        casts={
+                            track_id: CastMark(frame.timestamp - when, continuous)
+                            for track_id, (when, continuous) in last_cast.items()
+                        },
+                    )
+                    cv2.putText(
+                        canvas,
+                        f"{clock}  ({frame.timestamp:.1f}s)  "
+                        f"tracked {len(result.tracks)}  "
+                        f"visible {len(visible)}  named {len(named)}{down}",
+                        (8, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1,
+                        cv2.LINE_AA,
+                    )
+
+                    if args.save:
+                        if writer is None:
+                            h, w = canvas.shape[:2]
+                            writer = cv2.VideoWriter(
+                                args.save, cv2.VideoWriter_fourcc(*"mp4v"),
+                                args.fps if args.window else 30.0 / max(args.stride, 1),
+                                (w, h),
+                            )
+                        writer.write(canvas)
+                    else:
+                        cv2.imshow("spectral-sight", canvas)
+                        key = cv2.waitKey(0 if paused else 1) & 0xFF
+                        if key in (ord("q"), 27):
+                            break
+                        if key == ord(" "):
+                            paused = not paused
+
+                if args.limit and processed >= args.limit:
+                    break
 
         if writer is not None:
             writer.release()
