@@ -266,6 +266,58 @@ class Skillshot:
 
 
 @dataclass(frozen=True, slots=True)
+class MinionSighting:
+    """One minion, as either reader saw it -- the self row's `minions` (the
+    world view's health bars) or `minion_dots` (the minimap).
+
+    One type for both because a consumer asks both the same question -- whose,
+    and where -- and only the bars can add how hurt."""
+
+    team: str
+    """"blue" or "red", as on the rows."""
+
+    x: float
+    y: float
+    """For `minions`, world-view pixels (the 3D view with the HUD cut away, as
+    `threats` uses) of the minion's body, estimated from its bar. For
+    `minion_dots`, minimap-crop pixels, as a row's own `x`, `y`."""
+
+    health: float | None = None
+    """Fill fraction of the bar, `minions` only. None when the bar was read but
+    another bar covered it or the frame cut it -- the minion is there, its
+    health is not legible."""
+
+    world_x: float | None = None
+    world_y: float | None = None
+    """Summoner's Rift units, when the world is calibrated -- and for a
+    `minions` entry, when the camera viewport placed the screen on the map."""
+
+    def to_dict(self) -> dict[str, object]:
+        entry: dict[str, object] = {
+            "team": self.team,
+            "x": round(float(self.x), 1),
+            "y": round(float(self.y), 1),
+        }
+        if self.health is not None:
+            entry["health"] = round(float(self.health), 3)
+        if self.world_x is not None and self.world_y is not None:
+            entry["world_x"] = round(float(self.world_x), 1)
+            entry["world_y"] = round(float(self.world_y), 1)
+        return entry
+
+    @classmethod
+    def from_dict(cls, data: dict) -> MinionSighting:
+        return cls(
+            team=str(data["team"]),
+            x=float(data["x"]),
+            y=float(data["y"]),
+            health=None if data.get("health") is None else float(data["health"]),
+            world_x=None if data.get("world_x") is None else float(data["world_x"]),
+            world_y=None if data.get("world_y") is None else float(data["world_y"]),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class Observation:
     """One champion at one instant.
 
@@ -413,6 +465,20 @@ class Observation:
     was not the game, or the player was dead -- the same silence as an
     unread `alive`, and like it, None never means "unchanged"."""
 
+    minions: tuple[MinionSighting, ...] | None = None
+    """Minions on the world view, from their health bars -- the self row only,
+    since the world view is the local player's camera. Empty means the view was
+    read and shows none; None means nothing looked (no minion calibration, or
+    not an in-game frame). Positions are the player's screen, so this is what
+    last-hitting and standing-in-the-wave questions are asked of."""
+
+    minion_dots: tuple[MinionSighting, ...] | None = None
+    """Minions on the minimap -- the self row only, as the one row every frame
+    has a use for. Covers the whole map, so this is where the waves are. Empty
+    and None mean what they do for `minions`. A dot under a champion marker is
+    not seen and a clump reads as fewer dots than it has, so a count here is a
+    floor."""
+
     allies_dead: int | None = None
     """How many of your five teammates were dead on this frame.
 
@@ -475,6 +541,11 @@ class Observation:
         # spend"), where the key's absence is the lack of one.
         if self.learnable is not None:
             row["learnable"] = list(self.learnable)
+        # Empty is written for the same reason: "looked, saw none".
+        if self.minions is not None:
+            row["minions"] = [m.to_dict() for m in self.minions]
+        if self.minion_dots is not None:
+            row["minion_dots"] = [m.to_dict() for m in self.minion_dots]
         return row
 
     @classmethod
@@ -528,6 +599,14 @@ class Observation:
             learnable=(
                 None if data.get("learnable") is None
                 else tuple(str(slot) for slot in data["learnable"])
+            ),
+            minions=(
+                None if data.get("minions") is None
+                else tuple(MinionSighting.from_dict(m) for m in data["minions"])
+            ),
+            minion_dots=(
+                None if data.get("minion_dots") is None
+                else tuple(MinionSighting.from_dict(m) for m in data["minion_dots"])
             ),
             allies_dead=(
                 None if data.get("allies_dead") is None
@@ -588,6 +667,14 @@ class TimelineMeta:
     world view, the ability HUD and nameplates all at once, so it is on only
     for a `--coach` run with each of them calibrated."""
 
+    has_minions: bool = False
+    """Whether minion health bars were read off the world view. When False no
+    row carries `minions` because nothing looked."""
+
+    has_minion_dots: bool = False
+    """Whether minion dots were read off the minimap. Needs a minimap large
+    enough to draw them legibly, so it is off for the small default panel."""
+
     world_bounds: dict[str, float] | None = None
     world_units_per_pixel: list[float] | None = None
     """The world calibration in force, or None if positions are crop pixels
@@ -610,6 +697,8 @@ class TimelineMeta:
             "has_abilities": self.has_abilities,
             "has_threats": self.has_threats,
             "has_skillshots": self.has_skillshots,
+            "has_minions": self.has_minions,
+            "has_minion_dots": self.has_minion_dots,
             "world_bounds": self.world_bounds,
             "world_units_per_pixel": self.world_units_per_pixel,
         }
@@ -628,6 +717,8 @@ class TimelineMeta:
             has_abilities=bool(data.get("has_abilities", False)),
             has_threats=bool(data.get("has_threats", False)),
             has_skillshots=bool(data.get("has_skillshots", False)),
+            has_minions=bool(data.get("has_minions", False)),
+            has_minion_dots=bool(data.get("has_minion_dots", False)),
             world_bounds=data.get("world_bounds"),
             world_units_per_pixel=data.get("world_units_per_pixel"),
             schema=int(data.get("schema", SCHEMA)),
@@ -650,6 +741,8 @@ class TimelineMeta:
             has_abilities=self.has_abilities,
             has_threats=self.has_threats,
             has_skillshots=self.has_skillshots,
+            has_minions=self.has_minions,
+            has_minion_dots=self.has_minion_dots,
             world_bounds=self.world_bounds,
             world_units_per_pixel=self.world_units_per_pixel,
             schema=self.schema,

@@ -56,10 +56,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import cv2
 import numpy as np
 
 from spectral_sight.export import (
     AbilityUse,
+    MinionSighting,
     Observation,
     Skillshot,
     Threat,
@@ -94,12 +96,18 @@ from spectral_sight.perception.minimap import (
     Viewport,
     WorldTransform,
     find_viewport,
+    scaled_viewport_config,
 )
 from spectral_sight.perception.minimap.blips import scaled_config
+from spectral_sight.perception.minimap.minions import (
+    MinionDotDetector,
+    scaled_dot_config,
+)
 from spectral_sight.perception.nameplates import (
     Cast,
     CastBook,
     LevelBook,
+    MinionReader,
     Nameplate,
     NameplateLayout,
     NameplateReader,
@@ -123,6 +131,17 @@ there but a few pixels out is used rather than doubled."""
 PLATE_ABOVE_MODEL = 95.0
 """Pixels from a nameplate's bar down to the champion's model, measured on the
 2026-08-30 session. The model is what a bolt comes from and goes to."""
+
+MINION_ABOVE_MODEL = 55.0
+"""Pixels from a minion's health bar down to its body, measured on the
+2026-08-30 session. Minions carry their bars lower than champions do, which is
+the difference `_read_minions` corrects for before borrowing the champion
+plates' screen-to-minimap fit."""
+
+MIN_DOT_MINIMAP = 400
+"""Narrowest minimap panel, in pixels, the minion dots are read on. At 325px a
+dot is two or three pixels and indistinguishable from the map's decoration; at
+486px it is legible. Nothing between has been looked at."""
 
 SELF_MIN_SIGHTINGS = 10
 SELF_MIN_LEAD = 2.0
@@ -227,6 +246,13 @@ class Pipeline:
         self.detector = detector or BlipDetector(
             scaled_config(BlipDetectorConfig(), minimap_width=region.width)
         )
+        self._viewport_config = scaled_viewport_config(region.width)
+        self._map_bounds = None if world is None else (
+            world.x - region.x, world.y - region.y, world.width, world.height
+        )
+        """Where the camera outline can be drawn: the map square inside the
+        crop. A box clipped at its edge is fitted against this, not the panel's
+        ornate frame."""
         self.tracker = tracker or Tracker(TrackerConfig())
         self.roster = roster or Roster()
         self.clock = clock
@@ -249,6 +275,21 @@ class Pipeline:
         )
         """Levels ride on the clock's glyph set, so a run with no clock
         calibration reads plates without them rather than not at all."""
+
+        self.minion_reader = (
+            MinionReader(nameplates)
+            if nameplates is not None
+            and nameplates.minion_width is not None
+            and nameplates.minion_height is not None
+            else None
+        )
+        """Minion health bars on the world view: the player's own lane."""
+        self.dot_detector = (
+            MinionDotDetector(scaled_dot_config(region.width))
+            if region.width >= MIN_DOT_MINIMAP
+            else None
+        )
+        """Minion dots on the minimap: every wave on the map."""
 
         self.ability_reader = (
             None if abilities is None
@@ -517,7 +558,7 @@ class Pipeline:
         minimap = self.region.crop(frame)
         blips = self.detector.detect(minimap)
 
-        viewport = find_viewport(minimap)
+        viewport = find_viewport(minimap, self._viewport_config, self._map_bounds)
         me = None if liveness is None else liveness.slot(SELF_SLOT)
         self_blip, placed = self._find_self(
             blips, viewport,
@@ -590,9 +631,18 @@ class Pipeline:
                 self.self_champion, timestamp, trusted=trusted,
             )
 
-        plates, pairing, casts = self._read_plates(
-            frame, tracks, viewport, timestamp
+        # One colour conversion of the whole frame, shared by both readers of
+        # the world view's bars -- it is the largest single cost either has.
+        hsv = (
+            cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+            if self.plate_reader is not None or self.minion_reader is not None
+            else None
         )
+        plates, pairing, casts = self._read_plates(
+            frame, tracks, viewport, timestamp, hsv
+        )
+        minions = self._read_minions(frame, viewport, trusted, hsv)
+        minion_dots = self._read_minion_dots(minimap, blips, trusted)
 
         return PipelineResult(
             blips=blips,
@@ -611,8 +661,68 @@ class Pipeline:
                 self._take_threats(self_track),
                 self._take_skillshots(self_track),
                 self._learnable,
+                minions=minions,
+                minion_dots=minion_dots,
             ),
         )
+
+    def _read_minions(
+        self,
+        frame: np.ndarray,
+        viewport: Viewport | None,
+        trusted: bool,
+        hsv: np.ndarray | None = None,
+    ) -> tuple[MinionSighting, ...] | None:
+        """Minions on the world view, or None when nothing looked."""
+        if self.minion_reader is None or not trusted:
+            return None
+        height, width = frame.shape[:2]
+        vx, vy, _, _ = self._view.box(width, height)
+        placed = (
+            self.projection is not None
+            and viewport is not None
+            and self.world is not None
+        )
+        sightings = []
+        for minion in self.minion_reader.read(frame, hsv):
+            cx, top = minion.center
+            body = top + MINION_ABOVE_MODEL
+            world = None
+            if placed:
+                # Where a champion's bar would float over the same body.
+                mx, my = self.projection.point_to_minimap(
+                    cx, body - PLATE_ABOVE_MODEL, viewport, (width, height)
+                )
+                world = self.world_position(mx, my)
+            sightings.append(MinionSighting(
+                team=minion.team.value,
+                x=cx - vx,
+                y=body - vy,
+                health=minion.health,
+                world_x=None if world is None else world[0],
+                world_y=None if world is None else world[1],
+            ))
+        return tuple(sightings)
+
+    def _read_minion_dots(
+        self, minimap: np.ndarray, blips: list[Blip], trusted: bool
+    ) -> tuple[MinionSighting, ...] | None:
+        """Minions on the minimap, or None when nothing looked."""
+        if self.dot_detector is None or not trusted:
+            return None
+        sightings = []
+        for dot in self.dot_detector.detect(
+            minimap, [(b.x, b.y, b.radius) for b in blips]
+        ):
+            world = self.world_position(dot.x, dot.y)
+            sightings.append(MinionSighting(
+                team=dot.team.value,
+                x=float(dot.x),
+                y=float(dot.y),
+                world_x=None if world is None else world[0],
+                world_y=None if world is None else world[1],
+            ))
+        return tuple(sightings)
 
     def _watch_world(
         self, frame: np.ndarray, timestamp: float, trusted: bool
@@ -706,6 +816,7 @@ class Pipeline:
         tracks: list[Track],
         viewport: Viewport | None,
         timestamp: float,
+        hsv: np.ndarray | None = None,
     ) -> tuple[list[Nameplate], dict[int, int], dict[int, Cast]]:
         """Read nameplates, attach them to tracks, and call any casts.
 
@@ -718,7 +829,7 @@ class Pipeline:
         if self.plate_reader is None:
             return [], {}, {}
 
-        plates = self.plate_reader.read(frame)
+        plates = self.plate_reader.read(frame, hsv)
         height, width = frame.shape[:2]
         if self.threats is not None:
             self._hold_models(plates, (width, height), timestamp)
@@ -890,6 +1001,9 @@ class Pipeline:
         threats: tuple[Threat, ...] = (),
         skillshots: tuple[Skillshot, ...] = (),
         learnable: tuple[str, ...] | None = None,
+        *,
+        minions: tuple[MinionSighting, ...] | None = None,
+        minion_dots: tuple[MinionSighting, ...] | None = None,
     ) -> list[Observation]:
         """Flatten this frame's tracks into rows.
 
@@ -958,6 +1072,16 @@ class Pipeline:
                         if self_track is not None and track.id == self_track.id
                         else None
                     ),
+                    minions=(
+                        minions
+                        if self_track is not None and track.id == self_track.id
+                        else None
+                    ),
+                    minion_dots=(
+                        minion_dots
+                        if self_track is not None and track.id == self_track.id
+                        else None
+                    ),
                     allies_dead=None if liveness is None else liveness.dead_count,
                 )
             )
@@ -999,6 +1123,8 @@ class Pipeline:
             has_abilities=self.ability_reader is not None,
             has_threats=self.threats is not None,
             has_skillshots=self.aim is not None,
+            has_minions=self.minion_reader is not None,
+            has_minion_dots=self.dot_detector is not None,
             world_bounds=bounds,
             world_units_per_pixel=scale,
         )

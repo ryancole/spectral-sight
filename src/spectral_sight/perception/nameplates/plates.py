@@ -208,6 +208,12 @@ class NameplateLayout:
     geometry above is usable on its own, and fitting these needs a second pass
     over footage."""
 
+    minion_width: int | None = None
+    minion_height: int | None = None
+    """A minion health bar's fill at full health, in pixels. See `minions.py`.
+    Optional so a layout calibrated before minions were read still loads; the
+    minion reader is simply unavailable for it."""
+
     def to_dict(self) -> dict[str, object]:
         return {
             "bar_width": self.bar_width,
@@ -220,6 +226,8 @@ class NameplateLayout:
             else list(self.projection_x),
             "projection_y": None if self.projection_y is None
             else list(self.projection_y),
+            "minion_width": self.minion_width,
+            "minion_height": self.minion_height,
         }
 
     @classmethod
@@ -237,6 +245,10 @@ class NameplateLayout:
             else tuple(float(v) for v in data["projection_x"]),
             projection_y=None if data.get("projection_y") is None
             else tuple(float(v) for v in data["projection_y"]),
+            minion_width=None if data.get("minion_width") is None
+            else int(data["minion_width"]),
+            minion_height=None if data.get("minion_height") is None
+            else int(data["minion_height"]),
         )
 
     def save(self, path: str | Path) -> None:
@@ -362,23 +374,31 @@ class NameplateReader:
 
     # -- masks ------------------------------------------------------------
 
-    def _masks(self, frame: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def _masks(
+        self, frame: np.ndarray, hsv: np.ndarray | None = None
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        # cv2.inRange rather than numpy comparisons: on a full 2117x1354 frame
+        # the numpy form cost 23ms a frame, most of the reader's time. The
+        # floors are strict (>) as they always were, hence the +1s.
         cfg = self.config
-        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-        h, s, v = hsv[..., 0], hsv[..., 1], hsv[..., 2]
+        if hsv is None:
+            hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         lo, hi = cfg.health_hue
-        red = (((h >= lo) & (h <= hi)) | (h <= 3)) & (s > cfg.min_saturation) & (
-            v > cfg.min_value
+        sat, val = cfg.min_saturation + 1, cfg.min_value + 1
+        red = cv2.inRange(hsv, (lo, sat, val), (hi, 255, 255)) | cv2.inRange(
+            hsv, (0, sat, val), (3, 255, 255)
         )
         lo, hi = cfg.self_hue
-        green = (h >= lo) & (h <= hi) & (s > cfg.self_min_saturation) & (
-            v > cfg.min_value
+        green = cv2.inRange(
+            hsv, (lo, cfg.self_min_saturation + 1, val), (hi, 255, 255)
         )
         lo, hi = cfg.resource_hue
-        blue = (h >= lo) & (h <= hi) & (s > cfg.resource_min_saturation) & (
-            v > cfg.resource_min_value
+        blue = cv2.inRange(
+            hsv,
+            (lo, cfg.resource_min_saturation + 1, cfg.resource_min_value + 1),
+            (hi, 255, 255),
         )
-        return red, green, blue
+        return red > 0, green > 0, blue > 0
 
     def _excluded(self, x: int, y: int, width: int, height: int) -> bool:
         for x0, y0, x1, y1 in self.layout.exclude:
@@ -492,11 +512,15 @@ class NameplateReader:
 
     # -- reading ----------------------------------------------------------
 
-    def read(self, frame: np.ndarray) -> list[Nameplate]:
-        """Every champion nameplate visible in the frame."""
+    def read(
+        self, frame: np.ndarray, hsv: np.ndarray | None = None
+    ) -> list[Nameplate]:
+        """Every champion nameplate visible in the frame.
+
+        `hsv` is the frame already converted, for a caller that has it."""
         cfg, layout = self.config, self.layout
         height, width = frame.shape[:2]
-        red, green, blue = self._masks(frame)
+        red, green, blue = self._masks(frame, hsv)
 
         binary = (blue.astype(np.uint8)) * 255
         binary = cv2.morphologyEx(

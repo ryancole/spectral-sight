@@ -69,9 +69,23 @@ class ScreenProjection:
         frame_size: tuple[int, int],
     ) -> tuple[float, float]:
         """Where on the minimap the champion wearing this plate is standing."""
-        width, height = frame_size
         cx, _cy = plate.center
-        u, v = cx / width, plate.y / height
+        return self.point_to_minimap(cx, plate.y, viewport, frame_size)
+
+    def point_to_minimap(
+        self,
+        x: float,
+        y: float,
+        viewport: Viewport,
+        frame_size: tuple[int, int],
+    ) -> tuple[float, float]:
+        """The minimap position of a screen point, read as a plate's bar.
+
+        The fit is of champion plates, so it maps a bar to the model hanging
+        below it. Anything else is placed by passing the point where a
+        champion's bar would sit over the same spot."""
+        width, height = frame_size
+        u, v = x / width, y / height
         ax, bx, cx_ = self.x
         ay, by, cy_ = self.y
         return (

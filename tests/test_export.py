@@ -17,6 +17,7 @@ import numpy as np
 import pytest
 
 from spectral_sight.export import (
+    MinionSighting,
     Observation,
     SCHEMA,
     Skillshot,
@@ -125,6 +126,32 @@ def test_learnable_round_trips_and_an_empty_reading_is_kept() -> None:
     assert "learnable" not in sample_observation().to_dict()
 
 
+def test_minions_round_trip_and_an_empty_reading_is_kept() -> None:
+    """Both minion fields follow `learnable`: empty is "looked, saw none",
+    a missing key is "nothing looked"."""
+    bars = (
+        MinionSighting(team="red", x=812.44, y=301.06, health=0.1234,
+                       world_x=9876.54, world_y=1234.56),
+        MinionSighting(team="blue", x=700.0, y=320.0),
+    )
+    dots = (MinionSighting(team="blue", x=43.0, y=220.0),)
+    row = sample_observation(is_self=True, minions=bars, minion_dots=dots)
+    data = row.to_dict()
+    assert data["minions"][0] == {
+        "team": "red", "x": 812.4, "y": 301.1, "health": 0.123,
+        "world_x": 9876.5, "world_y": 1234.6,
+    }
+    assert data["minions"][1] == {"team": "blue", "x": 700.0, "y": 320.0}
+    back = Observation.from_dict(data)
+    assert back.minions[1] == bars[1] and back.minion_dots == dots
+
+    empty = sample_observation(is_self=True, minions=(), minion_dots=())
+    assert empty.to_dict()["minions"] == [] and empty.to_dict()["minion_dots"] == []
+    assert Observation.from_dict(empty.to_dict()).minions == ()
+    plain = sample_observation().to_dict()
+    assert "minions" not in plain and "minion_dots" not in plain
+
+
 def test_a_row_with_no_world_omits_the_keys_entirely() -> None:
     """Absent rather than null: a reader should not have to distinguish a
     position of None from a position at the origin."""
@@ -159,6 +186,7 @@ def test_meta_round_trips() -> None:
         created="2026-08-16T12:00:00+00:00", has_game_time=True,
         world_bounds={"min_x": 0.0, "min_y": 0.0, "max_x": 1.0, "max_y": 1.0},
         world_units_per_pixel=[48.0, 48.3],
+        has_minions=True, has_minion_dots=True,
     )
     assert TimelineMeta.from_dict(meta.to_dict()) == meta
 
@@ -324,6 +352,7 @@ def test_observations_serialise_straight_out_of_the_pipeline() -> None:
 def test_meta_records_a_missing_calibration_honestly() -> None:
     meta = build_pipeline().timeline_meta("data/clip.mp4", stride=3)
     assert meta.has_game_time is False
+    assert meta.has_minions is False and meta.has_minion_dots is False
     assert meta.world_bounds is None and meta.world_units_per_pixel is None
     assert meta.schema == SCHEMA
 
