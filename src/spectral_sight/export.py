@@ -359,6 +359,48 @@ class MinionSighting:
 
 
 @dataclass(frozen=True, slots=True)
+class TurretStatus:
+    """One turret's settled state, as the self row's `turrets` carries it."""
+
+    team: str
+    """"blue" (ours) or "red", as on the rows."""
+
+    lane: str
+    """"top", "mid", "bot", or "base" for the two nexus turrets."""
+
+    tier: str
+    """"outer", "inner", "inhibitor" or "nexus"."""
+
+    standing: bool | None
+    """None until the turret has been seen clearly enough to call."""
+
+    side: str | None = None
+    """Nexus turrets only, which share a lane and tier: "top" for the one on
+    the top-lane side of the nexus, "bot" for the other."""
+
+    def to_dict(self) -> dict[str, object]:
+        entry: dict[str, object] = {
+            "team": self.team,
+            "lane": self.lane,
+            "tier": self.tier,
+            "standing": self.standing,
+        }
+        if self.side is not None:
+            entry["side"] = self.side
+        return entry
+
+    @classmethod
+    def from_dict(cls, data: dict) -> TurretStatus:
+        return cls(
+            team=str(data["team"]),
+            lane=str(data["lane"]),
+            tier=str(data["tier"]),
+            standing=None if data["standing"] is None else bool(data["standing"]),
+            side=None if data.get("side") is None else str(data["side"]),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class Observation:
     """One champion at one instant.
 
@@ -520,6 +562,11 @@ class Observation:
     not seen and a clump reads as fewer dots than it has, so a count here is a
     floor."""
 
+    turrets: tuple[TurretStatus, ...] | None = None
+    """All 22 turrets -- the self row only, always the full set. A turret not
+    yet seen clearly enough to call has `standing` None. The field itself is
+    None when the minimap was not read."""
+
     cs: int | None = None
     """The local player's creep score, from the score bar -- the self row
     only. Filtered: it never falls and a rise is adopted only once readings
@@ -601,6 +648,8 @@ class Observation:
             row["minions"] = [m.to_dict() for m in self.minions]
         if self.minion_dots is not None:
             row["minion_dots"] = [m.to_dict() for m in self.minion_dots]
+        if self.turrets is not None:
+            row["turrets"] = [t.to_dict() for t in self.turrets]
         return row
 
     @classmethod
@@ -667,6 +716,10 @@ class Observation:
             minion_dots=(
                 None if data.get("minion_dots") is None
                 else tuple(MinionSighting.from_dict(m) for m in data["minion_dots"])
+            ),
+            turrets=(
+                None if data.get("turrets") is None
+                else tuple(TurretStatus.from_dict(t) for t in data["turrets"])
             ),
             allies_dead=(
                 None if data.get("allies_dead") is None
@@ -739,6 +792,11 @@ class TimelineMeta:
     """Whether minion dots were read off the minimap. Needs a minimap large
     enough to draw them legibly, so it is off for the small default panel."""
 
+    has_turrets: bool = False
+    """Whether turret icons were read off the minimap. Needs the world
+    calibration and the enlarged panel. When False no row carries
+    `turrets`."""
+
     world_bounds: dict[str, float] | None = None
     world_units_per_pixel: list[float] | None = None
     """The world calibration in force, or None if positions are crop pixels
@@ -764,6 +822,7 @@ class TimelineMeta:
             "has_minions": self.has_minions,
             "has_minion_dots": self.has_minion_dots,
             "has_last_hits": self.has_last_hits,
+            "has_turrets": self.has_turrets,
             "world_bounds": self.world_bounds,
             "world_units_per_pixel": self.world_units_per_pixel,
         }
@@ -785,6 +844,7 @@ class TimelineMeta:
             has_minions=bool(data.get("has_minions", False)),
             has_minion_dots=bool(data.get("has_minion_dots", False)),
             has_last_hits=bool(data.get("has_last_hits", False)),
+            has_turrets=bool(data.get("has_turrets", False)),
             world_bounds=data.get("world_bounds"),
             world_units_per_pixel=data.get("world_units_per_pixel"),
             schema=int(data.get("schema", SCHEMA)),
@@ -810,6 +870,7 @@ class TimelineMeta:
             has_minions=self.has_minions,
             has_minion_dots=self.has_minion_dots,
             has_last_hits=self.has_last_hits,
+            has_turrets=self.has_turrets,
             world_bounds=self.world_bounds,
             world_units_per_pixel=self.world_units_per_pixel,
             schema=self.schema,

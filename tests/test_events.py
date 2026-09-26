@@ -21,6 +21,7 @@ from spectral_sight.export import (
     Skillshot,
     Threat,
     TimelineMeta,
+    TurretStatus,
 )
 from spectral_sight.feed import FrameState, JsonlSink, read_frames
 from spectral_sight.types import Team
@@ -315,6 +316,76 @@ class TestSkillPoints:
                           is_self=True, learnable=("Q",))]),
         )
         assert kinds(events) == ["identified", "skill_point", "identified"]
+
+
+def turrets(*down: tuple[str, str, str], rebuilt: bool = False) -> tuple[TurretStatus, ...]:
+    """A full set with the named (team, lane, tier) turrets down."""
+    out = []
+    for team in ("blue", "red"):
+        for lane in ("top", "mid", "bot"):
+            for tier in ("outer", "inner", "inhibitor"):
+                out.append(TurretStatus(team, lane, tier, (team, lane, tier) not in down))
+        for side in ("top", "bot"):
+            out.append(TurretStatus(
+                team, "base", "nexus", (team, "base", side) not in down, side=side,
+            ))
+    return tuple(out)
+
+
+class TestTurrets:
+    def test_a_fall_is_one_event_about_the_turret(self) -> None:
+        events = derive(
+            state(0, [row(is_self=True, turrets=turrets())]),
+            state(1, [row(video_time=10.1, is_self=True,
+                          turrets=turrets(("red", "mid", "outer")))]),
+            state(2, [row(video_time=10.2, is_self=True,
+                          turrets=turrets(("red", "mid", "outer")))]),
+        )
+        assert kinds(events) == ["turret_destroyed"]
+        event = events[0].to_dict()
+        assert event["team"] == "red" and event["lane"] == "mid"
+        assert event["tier"] == "outer" and "side" not in event
+        assert event["champion"] is None and event["track_id"] is None
+
+    def test_turrets_down_on_join_are_state(self) -> None:
+        events = derive(state(0, [row(is_self=True,
+                                      turrets=turrets(("blue", "top", "outer")))]))
+        assert kinds(events) == []
+
+    def test_a_missing_reading_transitions_nothing(self) -> None:
+        events = derive(
+            state(0, [row(is_self=True, turrets=turrets())]),
+            state(1, [row(video_time=10.1, is_self=True)]),
+            state(2, [row(video_time=10.2, is_self=True, turrets=turrets())]),
+        )
+        assert kinds(events) == []
+
+    def test_an_unknown_turret_transitions_nothing(self) -> None:
+        known = turrets()
+        unknown = tuple(
+            TurretStatus(t.team, t.lane, t.tier, None, side=t.side)
+            if (t.team, t.lane, t.tier) == ("red", "mid", "outer") else t
+            for t in known
+        )
+        events = derive(
+            state(0, [row(is_self=True, turrets=unknown)]),
+            state(1, [row(video_time=10.1, is_self=True, turrets=known)]),
+            state(2, [row(video_time=10.2, is_self=True, turrets=unknown)]),
+            state(3, [row(video_time=10.3, is_self=True,
+                          turrets=turrets(("red", "mid", "outer")))]),
+        )
+        assert kinds(events) == ["turret_destroyed"]
+
+    def test_a_nexus_turret_falls_and_rebuilds_by_side(self) -> None:
+        down = ("blue", "base", "bot")
+        events = derive(
+            state(0, [row(is_self=True, turrets=turrets())]),
+            state(1, [row(video_time=10.1, is_self=True, turrets=turrets(down))]),
+            state(2, [row(video_time=190.0, is_self=True, turrets=turrets())]),
+        )
+        assert kinds(events) == ["turret_destroyed", "turret_rebuilt"]
+        assert events[0].detail == {"lane": "base", "tier": "nexus", "side": "bot"}
+        assert events[0].team is Team.BLUE
 
 
 class TestIdentity:

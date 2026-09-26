@@ -67,6 +67,7 @@ from spectral_sight.export import (
     Skillshot,
     Threat,
     TimelineMeta,
+    TurretStatus,
 )
 from spectral_sight.perception.hud.abilities import AbilityLayout, AbilityReader
 from spectral_sight.perception.hud.creep_score import (
@@ -109,6 +110,11 @@ from spectral_sight.perception.minimap.minions import (
     MinionDotDetector,
     scaled_dot_config,
 )
+from spectral_sight.perception.minimap.turrets import (
+    TurretReader,
+    TurretState,
+    project_anchors,
+)
 from spectral_sight.perception.nameplates import (
     Cast,
     CastBook,
@@ -148,6 +154,11 @@ MIN_DOT_MINIMAP = 400
 """Narrowest minimap panel, in pixels, the minion dots are read on. At 325px a
 dot is two or three pixels and indistinguishable from the map's decoration; at
 486px it is legible. Nothing between has been looked at."""
+
+TURRET_COVER_MEMORY = 0.35
+"""Seconds a track still counts as covering a turret after its marker was
+last detected -- a few readings, for the frames the detector drops a marker
+that has not moved."""
 
 SELF_MIN_SIGHTINGS = 10
 SELF_MIN_LEAD = 2.0
@@ -296,6 +307,20 @@ class Pipeline:
             else None
         )
         """Minion dots on the minimap: every wave on the map."""
+        self.turret_reader = (
+            TurretReader(
+                project_anchors(
+                    lambda wx, wy: _frame_to_crop(region, *world.to_frame(wx, wy))
+                ),
+                region.width,
+            )
+            if world is not None and region.width >= MIN_DOT_MINIMAP
+            else None
+        )
+        """Which turrets are standing, from their minimap icons. Needs the
+        world calibration, which is what places each icon, and the enlarged
+        panel the icons were captured at."""
+        self._turrets: tuple[TurretState, ...] | None = None
         self.creep_score = (
             CreepScoreReader.beside(clock)
             if clock is not None and self.minion_reader is not None
@@ -511,6 +536,9 @@ class Pipeline:
             if self.skill_points is not None:
                 self.skill_points.reset()
                 self._learnable = None
+            if self.turret_reader is not None:
+                self.turret_reader.reset()
+                self._turrets = None
 
         liveness = None
         if self.liveness is not None:
@@ -665,6 +693,7 @@ class Pipeline:
             dead=me is not None and me.alive is False,
         )
         minion_dots = self._read_minion_dots(minimap, blips, trusted)
+        self._read_turrets(minimap, blips, timestamp, trusted, self_blip)
 
         return PipelineResult(
             blips=blips,
@@ -685,6 +714,7 @@ class Pipeline:
                 self._learnable,
                 minions=minions,
                 minion_dots=minion_dots,
+                turrets=self._turrets,
                 cs=self._cs,
                 last_hits=self._take_last_hits(self_track),
             ),
@@ -785,6 +815,38 @@ class Pipeline:
                 world_y=None if world is None else world[1],
             ))
         return tuple(sightings)
+
+    def _read_turrets(
+        self,
+        minimap: np.ndarray,
+        blips: list[Blip],
+        timestamp: float,
+        trusted: bool,
+        self_blip: Blip | None,
+    ) -> None:
+        """Update the turret verdicts from this frame's minimap.
+
+        Cover is every marker the detector found this frame, whether or not
+        the tracker has confirmed it -- on the live receiver the markers
+        crossing a turret were mostly on tentative tracks -- plus any track
+        seen in the last `TURRET_COVER_MEMORY` seconds, for the frame the
+        detector misses a marker that is still there. The detector also
+        fires on the turret-and-inhibitor clusters themselves (20-58% of
+        frames at the busiest spots), which costs nothing: a turret whose
+        icon is clearly seen reads standing before cover is asked about, and
+        a destroyed one only needs its uncovered readings to add up.
+        """
+        if self.turret_reader is None or not trusted:
+            return
+        radius = float(np.median([b.radius for b in blips])) if blips else 13.0
+        markers = [(b.x, b.y, b.radius) for b in blips]
+        markers.extend(
+            (t.x, t.y, radius) for t in self.tracker.tracks
+            if t.age(timestamp) <= TURRET_COVER_MEMORY
+        )
+        if self_blip is not None:
+            markers.append((self_blip.x, self_blip.y, self_blip.radius))
+        self._turrets = self.turret_reader.read(minimap, timestamp, markers)
 
     def _watch_world(
         self, frame: np.ndarray, timestamp: float, trusted: bool
@@ -1066,6 +1128,7 @@ class Pipeline:
         *,
         minions: tuple[MinionSighting, ...] | None = None,
         minion_dots: tuple[MinionSighting, ...] | None = None,
+        turrets: tuple[TurretState, ...] | None = None,
         cs: int | None = None,
         last_hits: tuple[LastHit, ...] = (),
     ) -> list[Observation]:
@@ -1146,6 +1209,22 @@ class Pipeline:
                         if self_track is not None and track.id == self_track.id
                         else None
                     ),
+                    turrets=(
+                        tuple(
+                            TurretStatus(
+                                team=t.turret.team.value,
+                                lane=t.turret.lane,
+                                tier=t.turret.tier.value,
+                                standing=t.standing,
+                                side=t.turret.side,
+                            )
+                            for t in turrets
+                        )
+                        if turrets is not None
+                        and self_track is not None
+                        and track.id == self_track.id
+                        else None
+                    ),
                     cs=(
                         cs
                         if self_track is not None and track.id == self_track.id
@@ -1201,6 +1280,7 @@ class Pipeline:
             has_skillshots=self.aim is not None,
             has_minions=self.minion_reader is not None,
             has_minion_dots=self.dot_detector is not None,
+            has_turrets=self.turret_reader is not None,
             has_last_hits=self.creep_score is not None,
             world_bounds=bounds,
             world_units_per_pixel=scale,
@@ -1242,3 +1322,9 @@ class Pipeline:
                       if blips else 13.0)
             return Blip(x=cx, y=cy, radius=radius, team=Team.BLUE, score=0.0), True
         return None, False
+
+
+def _frame_to_crop(
+    region: MinimapRegion, x: float, y: float
+) -> tuple[float, float]:
+    return x - region.x, y - region.y
