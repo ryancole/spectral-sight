@@ -65,6 +65,11 @@ The kinds, and what each is grounded in:
   change before the roster locks, and re-announcing with `replaces` is honest
   where staying silent would leave consumers holding a name the pipeline no
   longer believes.
+- `turret_destroyed` / `turret_rebuilt` -- a turret in the self row's
+  `turrets` going from standing to not, or back (only the nexus turrets
+  rebuild). Like `level_up`, first knowledge is state: a turret already down
+  when the feed starts makes no event. The event's `team` is the turret's
+  owner and it names no champion.
 - `roster` -- a team showing five distinct named champions at once. Re-emitted
   if the set later changes, for the same reason `identified` is.
 
@@ -165,6 +170,9 @@ class EventDeriver:
         self._point_since: dict[str, float] = {}
         self._named: dict[int, str] = {}
         self._rosters: dict[Team, frozenset[str]] = {}
+        self._standing: dict[tuple[str, str, str, str | None], bool] = {}
+        """Last reported state of each turret. Game-wide, so keyed by the
+        turret, whichever row carried it."""
 
     def update(self, state: FrameState) -> list[Event]:
         """Derive this frame's events. Order is deterministic: rows arrive
@@ -173,6 +181,7 @@ class EventDeriver:
         events: list[Event] = []
         for row in state.champions:
             events.extend(self._from_row(state, row))
+        events.extend(self._turrets_from(state))
         events.extend(self._rosters_from(state))
         return events
 
@@ -340,6 +349,42 @@ class EventDeriver:
         dropped before the respawn, so the name is the identity that survives
         being dead; the track id is what exists before there is a name."""
         return row.champion if row.champion is not None else f"#{row.track_id}"
+
+    def _turrets_from(self, state: FrameState) -> list[Event]:
+        """`turret_destroyed` / `turret_rebuilt` from the self row's
+        `turrets`. The event is about the turret, so its `team` is the
+        turret's and it names no champion, like `roster`."""
+        row = next(
+            (r for r in state.champions if r.is_self and r.turrets is not None),
+            None,
+        )
+        if row is None:
+            return []
+        events: list[Event] = []
+        for turret in row.turrets:
+            key = (turret.team, turret.lane, turret.tier, turret.side)
+            if turret.standing is None:
+                # Not yet called, or never: a None transitions nothing, as
+                # `alive: None` does not.
+                continue
+            before = self._standing.get(key)
+            self._standing[key] = turret.standing
+            if before is None or before == turret.standing:
+                continue
+            detail: dict[str, object] = {"lane": turret.lane, "tier": turret.tier}
+            if turret.side is not None:
+                detail["side"] = turret.side
+            events.append(Event(
+                kind="turret_destroyed" if before else "turret_rebuilt",
+                seq=state.seq,
+                video_time=state.video_time,
+                game_time=state.game_time,
+                team=Team(turret.team),
+                champion=None,
+                track_id=None,
+                detail=detail,
+            ))
+        return events
 
     def _rosters_from(self, state: FrameState) -> list[Event]:
         events: list[Event] = []
