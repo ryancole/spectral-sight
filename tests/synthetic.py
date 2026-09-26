@@ -131,15 +131,29 @@ def draw_nameplate(
 
 
 def draw_minion_bar(
-    canvas: np.ndarray, x: int, y: int, *, hostile: bool = True, width: int = 40
+    canvas: np.ndarray,
+    x: int,
+    y: int,
+    *,
+    hostile: bool = True,
+    width: int = 40,
+    health: float = 1.0,
+    height: int = 4,
 ) -> None:
-    """A health bar with no resource bar and no level box.
+    """A minion's health bar: a dark frame the full width, filled from the left.
 
-    The thing the reader has to reject: right colour, bar-shaped, and there are
-    far more of them on screen than there are champions.
+    `x`, `y` are the fill's top-left, matching what the minion reader reports.
+    No resource bar and no level box, so the champion reader has to reject it:
+    right colour, bar-shaped, and there are far more of them on screen than
+    there are champions.
     """
+    cv2.rectangle(canvas, (x - 1, y - 1), (x + width, y + height),
+                  PLATE_BOX_BGR, -1)
     colour = PLATE_HOSTILE_BGR if hostile else PLATE_ALLY_BGR
-    cv2.rectangle(canvas, (x, y), (x + width, y + 3), colour, -1)
+    filled = int(round(width * health))
+    if filled > 0:
+        cv2.rectangle(canvas, (x, y), (x + filled - 1, y + height - 1),
+                      colour, -1)
 
 
 def plate_scene(

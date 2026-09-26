@@ -7,11 +7,18 @@ from spectral_sight.perception.minimap.locate import (
     load_reference,
     locate_panel,
 )
+from spectral_sight.perception.minimap.minions import (
+    MinionDot,
+    MinionDotConfig,
+    MinionDotDetector,
+    scaled_dot_config,
+)
 from spectral_sight.perception.minimap.region import MinimapRegion
 from spectral_sight.perception.minimap.viewport import (
     Viewport,
     ViewportConfig,
     find_viewport,
+    scaled_viewport_config,
 )
 from spectral_sight.perception.minimap.world import (
     SUMMONERS_RIFT,
@@ -25,6 +32,9 @@ __all__ = [
     "BlipDetector",
     "BlipDetectorConfig",
     "MinimapRegion",
+    "MinionDot",
+    "MinionDotConfig",
+    "MinionDotDetector",
     "PanelMatch",
     "Viewport",
     "ViewportConfig",
@@ -33,4 +43,6 @@ __all__ = [
     "find_viewport",
     "load_reference",
     "locate_panel",
+    "scaled_dot_config",
+    "scaled_viewport_config",
 ]

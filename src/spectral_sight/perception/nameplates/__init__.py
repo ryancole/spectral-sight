@@ -7,6 +7,11 @@ from spectral_sight.perception.nameplates.casts import (
     CastDetector,
 )
 from spectral_sight.perception.nameplates.levels import LevelBook, LevelFilter
+from spectral_sight.perception.nameplates.minions import (
+    Minion,
+    MinionConfig,
+    MinionReader,
+)
 from spectral_sight.perception.nameplates.plates import (
     LAYOUT_DIR,
     Nameplate,
@@ -31,6 +36,9 @@ __all__ = [
     "CastDetector",
     "LevelBook",
     "LevelFilter",
+    "Minion",
+    "MinionConfig",
+    "MinionReader",
     "Nameplate",
     "Side",
     "NameplateConfig",
