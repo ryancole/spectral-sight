@@ -61,6 +61,7 @@ import numpy as np
 
 from spectral_sight.export import (
     AbilityUse,
+    LastHit,
     MinionSighting,
     Observation,
     Skillshot,
@@ -68,9 +69,14 @@ from spectral_sight.export import (
     TimelineMeta,
 )
 from spectral_sight.perception.hud.abilities import AbilityLayout, AbilityReader
+from spectral_sight.perception.hud.creep_score import (
+    CreepScoreFilter,
+    CreepScoreReader,
+)
 from spectral_sight.perception.hud.skill_points import load_skill_point_reader
 from spectral_sight.perception.hud.resources import ResourceReader, load_resource_reader
 from spectral_sight.perception.nameplates.plates import Side
+from spectral_sight.perception.screen.last_hits import LastHitDetector
 from spectral_sight.perception.screen import (
     AimDetector,
     EnemyPlate,
@@ -290,6 +296,18 @@ class Pipeline:
             else None
         )
         """Minion dots on the minimap: every wave on the map."""
+        self.creep_score = (
+            CreepScoreReader.beside(clock)
+            if clock is not None and self.minion_reader is not None
+            else None
+        )
+        """The player's creep score, which is what says a dying minion was
+        theirs. Read only alongside the minion bars, since that is its use."""
+        self._cs_filter = CreepScoreFilter()
+        self._cs: int | None = None
+        self.last_hits: LastHitDetector | None = None
+        """Built on the first frame, once the world view's size is known."""
+        self._pending_last_hits: list[LastHit] = []
 
         self.ability_reader = (
             None if abilities is None
@@ -642,6 +660,10 @@ class Pipeline:
             frame, tracks, viewport, timestamp, hsv
         )
         minions = self._read_minions(frame, viewport, trusted, hsv)
+        self._judge_last_hits(
+            frame, timestamp, trusted, minions,
+            dead=me is not None and me.alive is False,
+        )
         minion_dots = self._read_minion_dots(minimap, blips, trusted)
 
         return PipelineResult(
@@ -663,8 +685,48 @@ class Pipeline:
                 self._learnable,
                 minions=minions,
                 minion_dots=minion_dots,
+                cs=self._cs,
+                last_hits=self._take_last_hits(self_track),
             ),
         )
+
+    def _judge_last_hits(
+        self,
+        frame: np.ndarray,
+        timestamp: float,
+        trusted: bool,
+        minions: tuple[MinionSighting, ...] | None,
+        *,
+        dead: bool,
+    ) -> None:
+        """Read the creep score and follow enemy minion bars to their deaths."""
+        if self.creep_score is None or not trusted:
+            return
+        self._cs = self._cs_filter.update(self.creep_score.read(frame))
+        if self.last_hits is None:
+            height, width = frame.shape[:2]
+            _, _, view_w, view_h = self._view.box(width, height)
+            # Minion positions are world-view pixels, so the view is the box
+            # at the origin.
+            self.last_hits = LastHitDetector((0, 0, view_w, view_h))
+        if dead or minions is None:
+            # A dead player's camera is on their corpse or roaming; their
+            # bars are not the lane's.
+            self.last_hits.reset()
+        else:
+            self.last_hits.observe(
+                timestamp,
+                [(m.x, m.y, m.health) for m in minions if m.team == "red"],
+                self._cs,
+            )
+        self._pending_last_hits.extend(self.last_hits.resolve(timestamp))
+
+    def _take_last_hits(self, self_track: Track | None) -> tuple[LastHit, ...]:
+        if self_track is None or not self._pending_last_hits:
+            return ()
+        taken = tuple(self._pending_last_hits)
+        self._pending_last_hits.clear()
+        return taken
 
     def _read_minions(
         self,
@@ -1004,6 +1066,8 @@ class Pipeline:
         *,
         minions: tuple[MinionSighting, ...] | None = None,
         minion_dots: tuple[MinionSighting, ...] | None = None,
+        cs: int | None = None,
+        last_hits: tuple[LastHit, ...] = (),
     ) -> list[Observation]:
         """Flatten this frame's tracks into rows.
 
@@ -1082,6 +1146,18 @@ class Pipeline:
                         if self_track is not None and track.id == self_track.id
                         else None
                     ),
+                    cs=(
+                        cs
+                        if self_track is not None and track.id == self_track.id
+                        else None
+                    ),
+                    last_hits=(
+                        last_hits
+                        if last_hits
+                        and self_track is not None
+                        and track.id == self_track.id
+                        else None
+                    ),
                     allies_dead=None if liveness is None else liveness.dead_count,
                 )
             )
@@ -1125,6 +1201,7 @@ class Pipeline:
             has_skillshots=self.aim is not None,
             has_minions=self.minion_reader is not None,
             has_minion_dots=self.dot_detector is not None,
+            has_last_hits=self.creep_score is not None,
             world_bounds=bounds,
             world_units_per_pixel=scale,
         )

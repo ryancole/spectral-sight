@@ -33,6 +33,10 @@ The kinds, and what each is grounded in:
   Arrives a second or two after the `ability` event naming the same cast,
   because the answer is not in yet when the cast is -- the bolt has to fly and
   the target's bar has to move.
+- `last_hit` / `missed_cs` -- a row carrying `last_hits`: an enemy minion that
+  died on the player's screen, and whether the creep score rose for it. One
+  event per entry, arriving a second or so after the death. An entry whose
+  outcome is `unknown` stays on the row and makes no event.
 - `ability` -- a row carrying `abilities`. The local player's own cast, read
   off the HUD cooldown veil and named to a slot -- what `cast` cannot give,
   since it infers an anonymous resource drop that works for enemies too. One
@@ -83,6 +87,8 @@ KINDS = (
     "ability",
     "threat",
     "skillshot",
+    "last_hit",
+    "missed_cs",
     "death",
     "respawn",
     "vanished",
@@ -300,6 +306,16 @@ class EventDeriver:
 
         for shot in row.skillshots or ():
             events.append(event("skillshot", **shot.to_dict()))
+
+        # A minion the player got, or one that died without them. An
+        # "unknown" (the score unreadable around it) is left on the row only:
+        # an event is a claim, and that one is not.
+        for hit in row.last_hits or ():
+            kind = {"last_hit": "last_hit", "missed": "missed_cs"}.get(hit.outcome)
+            if kind is not None:
+                fields = hit.to_dict()
+                del fields["outcome"]
+                events.append(event(kind, **fields))
 
         return events
 

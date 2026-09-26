@@ -266,6 +266,47 @@ class Skillshot:
 
 
 @dataclass(frozen=True, slots=True)
+class LastHit:
+    """One enemy minion that died on the world view, and whether the player
+    got it -- judged by the creep score rising for it. See
+    `perception/screen/last_hits.py`."""
+
+    at: float
+    """`video_time` its bar was last seen."""
+
+    outcome: str
+    """"last_hit" (the creep score rose for it), "missed" (it did not) or
+    "unknown" (the score could not be read around it)."""
+
+    health: float
+    """The bar's last legible fill -- how low it had got. A last hit well above
+    a third was an ability kill."""
+
+    x: float
+    y: float
+    """Where on the world view it died, in world-view pixels."""
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "at": round(float(self.at), 3),
+            "outcome": self.outcome,
+            "health": round(float(self.health), 3),
+            "x": round(float(self.x), 1),
+            "y": round(float(self.y), 1),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> LastHit:
+        return cls(
+            at=float(data["at"]),
+            outcome=str(data["outcome"]),
+            health=float(data["health"]),
+            x=float(data["x"]),
+            y=float(data["y"]),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class MinionSighting:
     """One minion, as either reader saw it -- the self row's `minions` (the
     world view's health bars) or `minion_dots` (the minimap).
@@ -479,6 +520,16 @@ class Observation:
     not seen and a clump reads as fewer dots than it has, so a count here is a
     floor."""
 
+    cs: int | None = None
+    """The local player's creep score, from the score bar -- the self row
+    only. Filtered: it never falls and a rise is adopted only once readings
+    agree, so it can lag the HUD by a reading or two. None when unread."""
+
+    last_hits: tuple[LastHit, ...] | None = None
+    """Enemy minions that died on the world view and resolved on this frame --
+    the self row only, like `skillshots`, and a second or so after the death,
+    once the creep score has had its chance to rise."""
+
     allies_dead: int | None = None
     """How many of your five teammates were dead on this frame.
 
@@ -541,6 +592,10 @@ class Observation:
         # spend"), where the key's absence is the lack of one.
         if self.learnable is not None:
             row["learnable"] = list(self.learnable)
+        if self.cs is not None:
+            row["cs"] = int(self.cs)
+        if self.last_hits:
+            row["last_hits"] = [hit.to_dict() for hit in self.last_hits]
         # Empty is written for the same reason: "looked, saw none".
         if self.minions is not None:
             row["minions"] = [m.to_dict() for m in self.minions]
@@ -599,6 +654,11 @@ class Observation:
             learnable=(
                 None if data.get("learnable") is None
                 else tuple(str(slot) for slot in data["learnable"])
+            ),
+            cs=None if data.get("cs") is None else int(data["cs"]),
+            last_hits=(
+                tuple(LastHit.from_dict(h) for h in data["last_hits"])
+                if data.get("last_hits") else None
             ),
             minions=(
                 None if data.get("minions") is None
@@ -671,6 +731,10 @@ class TimelineMeta:
     """Whether minion health bars were read off the world view. When False no
     row carries `minions` because nothing looked."""
 
+    has_last_hits: bool = False
+    """Whether the creep score was read and enemy minion deaths judged against
+    it. When False no row carries `cs` or `last_hits` because nothing looked."""
+
     has_minion_dots: bool = False
     """Whether minion dots were read off the minimap. Needs a minimap large
     enough to draw them legibly, so it is off for the small default panel."""
@@ -699,6 +763,7 @@ class TimelineMeta:
             "has_skillshots": self.has_skillshots,
             "has_minions": self.has_minions,
             "has_minion_dots": self.has_minion_dots,
+            "has_last_hits": self.has_last_hits,
             "world_bounds": self.world_bounds,
             "world_units_per_pixel": self.world_units_per_pixel,
         }
@@ -719,6 +784,7 @@ class TimelineMeta:
             has_skillshots=bool(data.get("has_skillshots", False)),
             has_minions=bool(data.get("has_minions", False)),
             has_minion_dots=bool(data.get("has_minion_dots", False)),
+            has_last_hits=bool(data.get("has_last_hits", False)),
             world_bounds=data.get("world_bounds"),
             world_units_per_pixel=data.get("world_units_per_pixel"),
             schema=int(data.get("schema", SCHEMA)),
@@ -743,6 +809,7 @@ class TimelineMeta:
             has_skillshots=self.has_skillshots,
             has_minions=self.has_minions,
             has_minion_dots=self.has_minion_dots,
+            has_last_hits=self.has_last_hits,
             world_bounds=self.world_bounds,
             world_units_per_pixel=self.world_units_per_pixel,
             schema=self.schema,

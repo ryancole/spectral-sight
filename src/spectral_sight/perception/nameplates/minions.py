@@ -240,7 +240,7 @@ class MinionReader:
             return None
 
         right = x + bar
-        clipped = right + 2 > frame_width or self._excluded(
+        clipped = right + 5 > frame_width or self._excluded(
             right, y, frame_width, frame_height
         )
         end = min(right, frame_width)
