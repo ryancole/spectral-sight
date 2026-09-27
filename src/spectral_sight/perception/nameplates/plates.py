@@ -268,7 +268,7 @@ class NameplateLayout:
         if not path.exists():
             raise FileNotFoundError(
                 f"no nameplate calibration at {path}. "
-                f"Run: python tools/calibrate_nameplates.py --input <clip>"
+                f"Run: python tools/calibrate_nameplates.py"
             )
         return cls.load(path)
 
@@ -576,14 +576,16 @@ class NameplateReader:
                 continue
             bars.append((bx, by, bw, bh))
 
+        # Blue joins the health search: an ally's health bar is blue, and the
+        # rows searched lie strictly above the resource run, so the run itself
+        # cannot masquerade as its own health.
+        health = red | green | blue
+
         plates: list[Nameplate] = []
         for bx, by, bw, bh in self._merge_fragments(frame, bars):
             if self._excluded(bx, by, width, height):
                 continue
-            # Blue joins the health search: an ally's health bar is blue, and
-            # the rows searched lie strictly above the resource run, so the
-            # run itself cannot masquerade as its own health.
-            top = self._health_top(red | green | blue, bx, by)
+            top = self._health_top(health, bx, by)
             if top is None:
                 continue
             band = (

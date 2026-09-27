@@ -1,8 +1,9 @@
 """Live screen capture: one window, or a whole monitor.
 
 `windows-capture` is an optional extra, so it is imported when a session is
-opened rather than when this module is: the offline path has to keep working on
-a machine that has never seen a League client.
+opened rather than when this module is: everything that does not capture --
+the tests, replaying a recorded timeline -- keeps working on a machine without
+it.
 
 `WindowSource` is the one the real-time path uses. It captures a named window
 via Windows Graphics Capture, which follows the window rather than a screen
@@ -21,13 +22,28 @@ from __future__ import annotations
 
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 
 import numpy as np
 
 from spectral_sight.capture.base import FrameSource
 from spectral_sight.types import Frame
+
+DEFAULT_WINDOW = "kilrogg"
+"""The receiver every tool captures unless told otherwise. Matched as a
+substring of the title, like any `--window`."""
+
+
+def lasting(frames: Iterable[Frame], seconds: float | None) -> Iterator[Frame]:
+    """`frames` until `seconds` of them have gone by; all of them for None or 0.
+
+    A live source never ends by itself, so a tool that reports at the end
+    needs either this or Ctrl+C to get there."""
+    for frame in frames:
+        if seconds and frame.timestamp > seconds:
+            return
+        yield frame
 
 
 class WindowClosed(RuntimeError):
@@ -179,13 +195,11 @@ class WindowSource(FrameSource):
 
         self.title = title
         self.stride = stride
-        """Take every Nth frame that arrives, as `VideoFileSource` does.
+        """Take every Nth frame that arrives.
 
-        Kept so that a tool written against clips runs unchanged against a
-        window -- three of the calibration tools default to a stride above one
-        to space their samples out in time, and that intent carries over.
-        Unrelated to dropping: a skip here is deliberate, a drop is the pipeline
-        failing to keep up.
+        Several of the calibration tools default to a stride above one to space
+        their samples out in time. Unrelated to dropping: a skip here is
+        deliberate, a drop is the pipeline failing to keep up.
         """
 
         self.startup_timeout = startup_timeout

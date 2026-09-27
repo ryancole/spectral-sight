@@ -11,8 +11,7 @@ join up with HUD art into one component that starts inside a panel and is
 rejected; cropped, the panel reads as empty and the bar stands alone.
 
 Usage:
-    python tools/compare_crop.py --input "data/live-lane-20260925.mp4"
-    python tools/compare_crop.py --window kilrogg --limit 600
+    python tools/compare_crop.py --limit 600
 """
 
 from __future__ import annotations
@@ -24,7 +23,7 @@ from pathlib import Path
 
 import cv2
 
-from spectral_sight.capture import WindowSource, open_source
+from spectral_sight.capture import DEFAULT_WINDOW, WindowSource
 from spectral_sight.perception.nameplates import MinionReader, NameplateReader
 from spectral_sight.pipeline import Pipeline
 
@@ -35,12 +34,9 @@ from watch import newest_icon_set  # noqa: E402
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    target = parser.add_mutually_exclusive_group(required=True)
-    target.add_argument("--input", help="video path")
-    target.add_argument("--window", help="capture a live window whose title "
-                                         "contains this")
-    parser.add_argument("--stride", type=int, default=1,
-                        help="read every Nth frame; --input only")
+    parser.add_argument("--window", default=DEFAULT_WINDOW,
+                        help="capture the window whose title contains this "
+                             f"(default {DEFAULT_WINDOW!r})")
     parser.add_argument("--fps", type=float, default=10.0,
                         help="frames per second to ask the window for")
     parser.add_argument("--limit", type=int, help="stop after N frames")
@@ -48,9 +44,7 @@ def main() -> int:
                         help="differences to print in full (default 10)")
     args = parser.parse_args()
 
-    source = (WindowSource(args.window, target_fps=args.fps) if args.window
-              else open_source(args.input, stride=args.stride))
-    with source:
+    with WindowSource(args.window, target_fps=args.fps) as source:
         width, height = source.size
         pipeline = Pipeline.for_resolution(width, height, newest_icon_set())
         cropped_plates = pipeline.plate_reader

@@ -48,11 +48,12 @@ a quarter of a second. The recordings are 30 fps, but about 30% of frames are
 repeats or stale refreshes (the world view not redrawn — see
 `perception/screen/motion.py`), so the effective distinct rate is ~20 fps and a
 bolt is **four to six distinct frames**. That is enough to track; 10 Hz would
-have seen two. The consequence is accepted rather than fought: **this feature
-is offline-VOD first** (`--input --stride 1`). Identification already does not
-run live, and the projectile stage will not either. The live-window path can
-later run the projectile stage on a center crop, or the receiver can play at
-reduced speed.
+have seen two. The consequence was accepted rather than fought: **this feature
+was offline-VOD first** (`--input --stride 1`). Identification did not yet run
+live, and the projectile stage would not either. The live-window path could
+later run the projectile stage on a center crop, or the receiver could play at
+reduced speed. *(Superseded 2026-09-27: offline extraction was removed; every
+tool now reads the live window only, with coaching on by default.)*
 
 ## Phases
 
@@ -165,7 +166,8 @@ rather than blocking anything.
 
 ## Risks, named now
 
-- **Live mode stays behind.** Accepted above; VOD-offline first.
+- **Live mode stays behind.** Accepted above; VOD-offline first. *(Superseded:
+  live is now the only mode.)*
 - **The ML dependency is new.** ONNX Runtime for inference keeps runtime
   dependencies to one wheel; training code stays out of the package.
 - **Unlocked-camera footage breaks the screen-space shortcut.** The same

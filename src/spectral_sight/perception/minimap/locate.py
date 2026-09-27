@@ -97,7 +97,7 @@ def load_reference(path: str | Path | None = None) -> np.ndarray:
     if image is None:
         raise FileNotFoundError(
             f"no minimap reference at {path}. "
-            f"Run: python tools/build_reference.py --input <calibrated clip>"
+            f"Run: python tools/build_reference.py (on a calibrated window)"
         )
     return image
 

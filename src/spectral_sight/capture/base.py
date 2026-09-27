@@ -1,7 +1,7 @@
 """The frame source interface.
 
-Keeping this narrow is what lets the same detector run against a recorded clip
-during development and a live window during a game, with no branch in between.
+Keeping this narrow is what lets a detector be driven by a window, a monitor or
+a test's hand-fed frames with no branch in between.
 """
 
 from __future__ import annotations

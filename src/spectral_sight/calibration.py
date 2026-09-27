@@ -96,7 +96,7 @@ class Reference:
         if not path.exists():
             raise FileNotFoundError(
                 f"no reference profile at {path}. "
-                f"Run: python tools/build_reference.py --input <calibrated clip>"
+                f"Run: python tools/build_reference.py (on a calibrated window)"
             )
         data = json.loads(path.read_text(encoding="utf-8"))
         return cls(width=int(data["width"]), height=int(data["height"]))

@@ -4,17 +4,17 @@ The portrait row and the local player's own portrait sit at fixed positions for
 a given resolution, but not at positions derivable from it, so they are marked
 once by hand like the minimap panel:
 
-    python tools/calibrate_hud.py --input "data/your clip.mp4"
+    python tools/calibrate_hud.py
 
 Three boxes: the leftmost teammate portrait, the rightmost teammate portrait,
 and your own. The spacing between the four teammate slots is interpolated from
 the first and last rather than asked for, since the row is evenly spaced and
 three of the four numbers would otherwise be a chance to make a typo.
 
-Then check it against footage, which reports what each slot looks like alive
-and any deaths it finds:
+Then check it against the game as it plays, which reports what each slot looks
+like alive and any deaths it finds -- Ctrl+C (or `--limit`) ends the check:
 
-    python tools/calibrate_hud.py --input "data/your clip.mp4" --validate
+    python tools/calibrate_hud.py --validate
 
 That check is worth running. A box placed a few pixels off still reads a
 portrait and still produces a baseline, so a bad calibration does not announce
@@ -25,11 +25,12 @@ until you go looking for one.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import sys
 
 import cv2
 
-from spectral_sight.capture import open_source
+from spectral_sight.capture import DEFAULT_WINDOW, WindowSource
 from spectral_sight.perception.hud.alive import AliveReader
 from spectral_sight.perception.hud.portraits import LAYOUT_DIR, PortraitLayout
 
@@ -48,17 +49,18 @@ def mark(image, prompt: str) -> tuple[float, float, int] | None:
     return circle_from_box(box)
 
 
-def validate(path: str, layout: PortraitLayout, stride: int,
+def validate(window: str, layout: PortraitLayout, stride: int,
              limit: int = 0) -> int:
-    """Run the reader over a clip and report what it learned and found.
+    """Run the reader over the window and report what it learned and found.
 
-    `limit` of 0 walks the whole source, which is right for a clip and never
-    returns for a live window -- so a window has to be given a budget.
+    `limit` of 0 watches until Ctrl+C, which ends the check rather than the
+    process, so what was seen is still reported.
     """
     reader = AliveReader(layout)
     history: dict[str, list[tuple[float, bool | None]]] = {}
 
-    with open_source(path, stride=stride) as source:
+    with (WindowSource(window, stride=stride) as source,
+          contextlib.suppress(KeyboardInterrupt)):
         for sampled, frame in enumerate(source.frames()):
             if limit and sampled >= limit:
                 break
@@ -68,7 +70,7 @@ def validate(path: str, layout: PortraitLayout, stride: int,
                 )
 
     if not history:
-        print(f"no frames in {path}", file=sys.stderr)
+        print(f"no frames from {window!r}", file=sys.stderr)
         return 1
 
     frames = len(next(iter(history.values())))
@@ -84,7 +86,7 @@ def validate(path: str, layout: PortraitLayout, stride: int,
               f"{readable / frames:8.0%}  {summary}")
 
     if total_deaths == 0:
-        print("\nNo deaths found. If nobody died in this clip that is the right "
+        print("\nNo deaths found. If nobody died while it watched that is the right "
               "answer; if somebody did, the boxes are probably off.",
               file=sys.stderr)
     return 0
@@ -110,20 +112,22 @@ def main() -> int:
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--input", required=True, help="clip or screenshot")
+    parser.add_argument("--window", default=DEFAULT_WINDOW,
+                        help="capture the window whose title contains this "
+                             f"(default {DEFAULT_WINDOW!r})")
     parser.add_argument("--validate", action="store_true",
-                        help="check the saved layout against this clip")
+                        help="check the saved layout against the game")
     parser.add_argument("--stride", type=int, default=15,
                         help="frames per sample when validating")
     parser.add_argument("--limit", type=int, default=0,
-                        help="stop after N sampled frames; 0 walks the whole source, which a live window never finishes")
+                        help="stop after N sampled frames; 0 watches until Ctrl+C")
     parser.add_argument("--out", help="override the output path")
     args = parser.parse_args()
 
-    with open_source(args.input) as source:
+    with WindowSource(args.window) as source:
         frame = next(iter(source.frames()), None)
     if frame is None:
-        print(f"no frames in {args.input}", file=sys.stderr)
+        print(f"window {args.window!r} closed", file=sys.stderr)
         return 1
     width, height = frame.size
     path = args.out or LAYOUT_DIR / f"{width}x{height}.json"
@@ -135,7 +139,7 @@ def main() -> int:
             print(f"no layout at {path}; run without --validate first",
                   file=sys.stderr)
             return 1
-        return validate(args.input, layout, args.stride, args.limit)
+        return validate(args.window, layout, args.stride, args.limit)
 
     print(f"frame is {width}x{height}. Drag each portrait, ENTER to accept.")
     first = mark(frame.image, "1/3: the LEFTMOST teammate portrait")
@@ -167,8 +171,10 @@ def main() -> int:
           f"r={layout.ally_radius}")
     print(f"  you at ({layout.self_center_x:.0f}, {layout.self_center_y:.0f}), "
           f"r={layout.self_radius}")
+    target = ("" if args.window == DEFAULT_WINDOW
+              else f' --window "{args.window}"')
     print(f"\nNow check it:\n"
-          f"  python tools/calibrate_hud.py --input \"{args.input}\" --validate")
+          f"  python tools/calibrate_hud.py{target} --validate")
     return 0
 
 

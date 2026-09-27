@@ -12,7 +12,7 @@
     # as fast as it will go, and keep serving /state afterwards
     python tools/replay.py session.jsonl --fast --hold
 
-To anything listening this is `watch.py --serve`: the same endpoints, the
+To anything listening this is `watch.py`'s feed: the same endpoints, the
 same messages, the same events. The difference is what it costs -- no League
 client, no capture window, no vision -- which makes it the way the
 downstream tool gets built: against a clip whose deaths and casts are known,

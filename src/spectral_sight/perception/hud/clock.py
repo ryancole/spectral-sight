@@ -460,7 +460,7 @@ def load_clock_reader(
     if not region_path.exists() or not glyph_path.exists():
         raise FileNotFoundError(
             f"no clock calibration for {width}x{height} in {CLOCK_DIR}. "
-            f"Run: python tools/calibrate_clock.py --input <clip>"
+            f"Run: python tools/calibrate_clock.py"
         )
     region = ClockRegion.from_dict(
         json.loads(region_path.read_text(encoding="utf-8"))

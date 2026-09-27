@@ -1,11 +1,11 @@
 """Measure the champion nameplate, then fit the screen-to-minimap projection.
 
 The bar geometry is fixed for a resolution but not derivable from it, like the
-minimap panel and the clock strip, so it is marked once by hand. Find a frame
-with an enemy champion on screen and drag a box around the whole plate --
-level box, health bar and resource bar together:
+minimap panel and the clock strip, so it is marked once by hand. Pause the
+receiver on a frame with an enemy champion on screen and drag a box around the
+whole plate -- level box, health bar and resource bar together:
 
-    python tools/calibrate_nameplates.py --input "data/your clip.mp4"
+    python tools/calibrate_nameplates.py
 
 The parts are then measured out of that box rather than asked for one at a
 time. The resource bar is found as the blue run inside it, the health bar as
@@ -14,38 +14,41 @@ so a generous drag still produces tight numbers.
 
 **The bar must be dragged on a champion, not a minion.** Minions draw a health
 bar of a different width and no resource bar at all, and the fill denominator
-taken from one would be wrong for every champion in the clip without ever
+taken from one would be wrong for every champion in the game without ever
 looking wrong.
 
 That gives positions. Turning a plate into an *identity* also needs the map from
-screen to minimap, which is fitted from footage rather than marked:
+screen to minimap, which is fitted from the game as it plays rather than
+marked:
 
-    python tools/calibrate_nameplates.py --input "data/your clip.mp4" --fit
+    python tools/calibrate_nameplates.py --fit
 
 It collects frames where exactly one enemy plate and exactly one enemy blip are
 present -- which makes the pairing unambiguous without assuming the association
 it is calibrating -- and least-squares fits the coefficients. A few hundred
-such frames is plenty; the sample clip yielded 190 over 162 seconds.
+such frames is plenty; one recorded game yielded 190 over 162 seconds. The
+fit and the check both watch until Ctrl+C or `--limit`.
 
 Then check it, which reports coverage and the fit's own error:
 
-    python tools/calibrate_nameplates.py --input "data/your clip.mp4" --validate
+    python tools/calibrate_nameplates.py --validate
 
 Worth running. A plate reader with a slightly wrong `bar_width` still returns
 plausible fractions on every frame, so a bad calibration does not announce
 itself -- what it does instead is put a fixed percentage error into every fill,
-which is invisible until two clips disagree.
+which is invisible until two games disagree.
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import sys
 
 import cv2
 import numpy as np
 
-from spectral_sight.capture import open_source
+from spectral_sight.capture import DEFAULT_WINDOW, WindowSource
 from spectral_sight.perception.hud.clock import load_clock_reader
 from spectral_sight.perception.minimap import (
     BlipDetector,
@@ -148,19 +151,20 @@ def measure(box: np.ndarray, config: NameplateConfig) -> NameplateLayout | None:
 
 
 def fit_projection(
-    path: str, layout: NameplateLayout, stride: int, limit: int = 0
+    window: str, layout: NameplateLayout, stride: int, limit: int = 0
 ) -> NameplateLayout | None:
     """Fit the screen-to-minimap coefficients from unambiguous frames.
 
-    `limit` of 0 walks the whole source, which is right for a clip and never
-    returns for a live window -- so a window has to be given a budget.
+    `limit` of 0 watches until Ctrl+C, which ends the collection rather than
+    the process, so what was collected is still fitted.
     """
     reader = NameplateReader(layout)
     region: MinimapRegion | None = None
     detector: BlipDetector | None = None
     samples: list[tuple[float, float, float, float]] = []
 
-    with open_source(path, stride=stride) as source:
+    with (WindowSource(window, stride=stride) as source,
+          contextlib.suppress(KeyboardInterrupt)):
         for sampled, frame in enumerate(source.frames()):
             if limit and sampled >= limit:
                 break
@@ -195,7 +199,7 @@ def fit_projection(
 
     print(f"{len(samples)} unambiguous frames")
     if len(samples) < 8:
-        print("not enough to fit; try a clip with more enemy contact",
+        print("not enough to fit; watch a stretch with more enemy contact",
               file=sys.stderr)
         return None
 
@@ -235,9 +239,9 @@ def _report_fit(samples, layout: NameplateLayout) -> None:
 
 
 def validate(
-    path: str, layout: NameplateLayout, stride: int, size, limit: int = 0
+    window: str, layout: NameplateLayout, stride: int, size, limit: int = 0
 ) -> int:
-    """Run the reader over a clip and report what it finds."""
+    """Run the reader over the window and report what it finds."""
     try:
         glyphs = load_clock_reader(*size).glyphs
     except FileNotFoundError:
@@ -248,7 +252,8 @@ def validate(
     frames = with_plate = readings = hostile = occluded = levelled = 0
     resources = []
 
-    with open_source(path, stride=stride) as source:
+    with (WindowSource(window, stride=stride) as source,
+          contextlib.suppress(KeyboardInterrupt)):
         for frame in source.frames():
             if limit and frames >= limit:
                 break
@@ -292,22 +297,24 @@ def main() -> int:
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--input", required=True, help="clip or screenshot")
+    parser.add_argument("--window", default=DEFAULT_WINDOW,
+                        help="capture the window whose title contains this "
+                             f"(default {DEFAULT_WINDOW!r})")
     parser.add_argument("--fit", action="store_true",
-                        help="fit the screen-to-minimap projection from footage")
+                        help="fit the screen-to-minimap projection from the game")
     parser.add_argument("--validate", action="store_true",
-                        help="check the saved layout against this clip")
+                        help="check the saved layout against the game")
     parser.add_argument("--stride", type=int, default=3,
                         help="frames per sample when fitting or validating")
     parser.add_argument("--limit", type=int, default=0,
-                        help="stop after N sampled frames; 0 walks the whole source, which a live window never finishes")
+                        help="stop after N sampled frames; 0 watches until Ctrl+C")
     parser.add_argument("--out", help="override the output path")
     args = parser.parse_args()
 
-    with open_source(args.input) as source:
+    with WindowSource(args.window) as source:
         frame = next(iter(source.frames()), None)
     if frame is None:
-        print(f"no frames in {args.input}", file=sys.stderr)
+        print(f"window {args.window!r} closed", file=sys.stderr)
         return 1
     width, height = frame.size
     path = args.out or LAYOUT_DIR / f"{width}x{height}.json"
@@ -320,9 +327,9 @@ def main() -> int:
                   file=sys.stderr)
             return 1
         if args.validate:
-            return validate(args.input, layout, args.stride, (width, height),
+            return validate(args.window, layout, args.stride, (width, height),
                             args.limit)
-        fitted = fit_projection(args.input, layout, args.stride, args.limit)
+        fitted = fit_projection(args.window, layout, args.stride, args.limit)
         if fitted is None:
             return 1
         fitted.save(path)
@@ -349,10 +356,11 @@ def main() -> int:
     print(f"saved -> {path}")
     print(f"  bar {layout.bar_width}x{layout.bar_height}px, resource "
           f"{layout.resource_dy[0]}-{layout.resource_dy[1]}px below the health bar")
+    target = ("" if args.window == DEFAULT_WINDOW
+              else f' --window "{args.window}"')
     print(f"\nNow fit the projection, then check it:\n"
-          f"  python tools/calibrate_nameplates.py --input \"{args.input}\" --fit\n"
-          f"  python tools/calibrate_nameplates.py --input \"{args.input}\" "
-          f"--validate")
+          f"  python tools/calibrate_nameplates.py{target} --fit\n"
+          f"  python tools/calibrate_nameplates.py{target} --validate")
     return 0
 
 
