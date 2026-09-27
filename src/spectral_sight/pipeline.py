@@ -126,6 +126,7 @@ from spectral_sight.perception.nameplates import (
     ScreenProjection,
     associate,
 )
+from spectral_sight.profiling import StageTimer
 from spectral_sight.tracking import Track, Tracker, TrackerConfig
 from spectral_sight.types import Blip, Team
 
@@ -252,6 +253,9 @@ class Pipeline:
         the source, is what lets both run in one pass. Rows are produced on
         sampled frames only, so the timeline's cadence is unchanged."""
         self._calls = 0
+        self.timer: StageTimer | None = None
+        """Set to time each stage of `process` -- see `profiling`. None costs
+        nothing, which is the default for every run that did not ask."""
         self.place_self = place_self
         """Whether to place the player's marker at the viewport centre when
         stage 1 cannot see it -- see `_find_self`. A switch so the two can be
@@ -507,11 +511,24 @@ class Pipeline:
 
     def process(self, frame: np.ndarray, timestamp: float) -> PipelineResult:
         """Run one frame. `timestamp` is in seconds and must increase."""
+        if self.timer is None:
+            return self._process(frame, timestamp)
+        self.timer.start()
+        result = self._process(frame, timestamp)
+        self.timer.finish(sampled=result.sampled)
+        return result
+
+    def _lap(self, stage: str) -> None:
+        if self.timer is not None:
+            self.timer.lap(stage)
+
+    def _process(self, frame: np.ndarray, timestamp: float) -> PipelineResult:
         sampled = self._calls % self.every == 0
         self._calls += 1
         clock = None
         if self.clock is not None:
             clock = self._clock_filter.update(self.clock.read(frame), timestamp)
+        self._lap("clock")
 
         # Whether this frame provably shows the in-game HUD: the timer is the
         # one element that can prove it, so with a clock calibrated, trust
@@ -548,6 +565,7 @@ class Pipeline:
             # maximum never comes back down, so the real HUD would read dead
             # from its first frame onward.
             liveness = self.liveness.read(frame, learn=trusted)
+        self._lap("portraits")
 
         if self.ability_reader is not None:
             # Two gates, both structural. An untrusted frame is not read at all
@@ -579,6 +597,7 @@ class Pipeline:
                     # Death veils every slot; whatever the aim stage was
                     # holding was cast in a life that has ended.
                     self.aim.reset()
+        self._lap("abilities")
 
         if self.skill_points is not None:
             # The same two gates, for the same reasons: a screen that is not
@@ -594,15 +613,18 @@ class Pipeline:
             elif dead:
                 self.skill_points.reset()
                 self._learnable = None
+        self._lap("skill points")
 
         if self.projectiles is not None and self.threats is not None:
             self._watch_world(frame, timestamp, trusted)
+        self._lap("world view")
 
         if not sampled:
             return PipelineResult(clock=clock, liveness=liveness, sampled=False)
 
         minimap = self.region.crop(frame)
         blips = self.detector.detect(minimap)
+        self._lap("minimap markers")
 
         viewport = find_viewport(minimap, self._viewport_config, self._map_bounds)
         me = None if liveness is None else liveness.slot(SELF_SLOT)
@@ -622,6 +644,7 @@ class Pipeline:
         if placed:
             blips = [*blips, self_blip]
         corpse = self._hold_self(self_dead, self_blip, timestamp)
+        self._lap("viewport + self")
 
         matches: list[Match | None] = [None] * len(blips)
         for team in (Team.BLUE, Team.RED):
@@ -639,12 +662,14 @@ class Pipeline:
                 matches[index] = match
                 if match is not None and match.confident:
                     self.roster.observe(team, match.name, match.margin)
+        self._lap("gallery match")
 
         self.tracker.update(blips, timestamp, matches)
         # Enforcement can drop tracks, so read the surviving set afterwards
         # rather than trusting the snapshot update() returned.
         self._apply_roster()
         tracks = self.tracker.confirmed
+        self._lap("tracker")
 
         # The player's track is the one the tracker fed with the player's
         # marker -- not the nearest track to it, which with no gate at all
@@ -704,6 +729,7 @@ class Pipeline:
                 liveness, seen, self.roster.locked(Team.BLUE),
                 self.self_champion, timestamp, trusted=trusted,
             )
+        self._lap("self + naming")
 
         # One colour conversion of the whole frame, shared by both readers of
         # the world view's bars -- it is the largest single cost either has.
@@ -712,18 +738,24 @@ class Pipeline:
             if self.plate_reader is not None or self.minion_reader is not None
             else None
         )
+        self._lap("frame to HSV")
         plates, pairing, casts = self._read_plates(
             frame, tracks, viewport, timestamp, hsv, self_track
         )
+        self._lap("nameplates")
         minions = self._read_minions(frame, viewport, trusted, hsv)
+        self._lap("minions")
         self._judge_last_hits(
             frame, timestamp, trusted, minions,
             dead=me is not None and me.alive is False,
         )
+        self._lap("last hits")
         minion_dots = self._read_minion_dots(minimap, blips, trusted)
+        self._lap("minion dots")
         self._read_turrets(minimap, blips, timestamp, trusted, self_blip)
+        self._lap("turrets")
 
-        return PipelineResult(
+        result = PipelineResult(
             blips=blips,
             matches=matches,
             tracks=tracks,
@@ -747,6 +779,8 @@ class Pipeline:
                 last_hits=self._take_last_hits(self_track),
             ),
         )
+        self._lap("observations")
+        return result
 
     def _judge_last_hits(
         self,
