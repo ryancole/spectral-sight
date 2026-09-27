@@ -132,6 +132,10 @@ class Tracker:
         self.config = config or TrackerConfig()
         self.tracks: list[Track] = []
         self._ids = itertools.count(1)
+        self._held: set[int] = set()
+        self.assignment: dict[int, Track] = {}
+        """Detection index to the track it fed, from the last `update`. How a
+        caller learns which champion a particular marker turned out to be."""
 
     # -- public -----------------------------------------------------------
 
@@ -153,6 +157,7 @@ class Tracker:
 
         pairs = self._associate(detections, matches, timestamp)
         assigned = {index for index, _ in pairs}
+        self.assignment = dict(pairs)
 
         for index, track in pairs:
             detection = detections[index]
@@ -194,13 +199,53 @@ class Tracker:
 
         self.tracks = [
             t for t in self.tracks
-            if t.age(timestamp) < self.config.forget_after
+            if t.id in self._held or t.age(timestamp) < self.config.forget_after
         ]
+        self._held &= {t.id for t in self.tracks}
         self._repair_swaps()
         self._resolve_duplicate_identities()
         for team in (Team.BLUE, Team.RED):
             self._cap_team(team, self.config.max_tracks_per_team)
         return self.confirmed
+
+    def hold(self, track_id: int) -> None:
+        """Take a track out of association until `release`.
+
+        For a champion known to be off the minimap for a reason the tracker
+        cannot see -- the local player, dead. Their marker is gone, but stage
+        1's surplus is not: measured on a real death, stray markers kept the
+        corpse's track fed for the whole respawn timer, walking it about 1,400
+        units from where the player fell. The player's name then rode
+        a phantom for the rest of the game, while the respawned marker at the
+        fountain was taken by whichever teammate's track was nearest.
+
+        A held track keeps its name and its last position, goes lost like any
+        unseen track, and is never forgotten or evicted by the team cap --
+        a late-game death timer outlasts `forget_after`.
+        """
+        self._held.add(track_id)
+
+    def release(self, track_id: int, x: float, y: float,
+                timestamp: float) -> None:
+        """End a hold, putting the track where its champion now is.
+
+        The champion reappears somewhere the tracker could not have predicted
+        (a respawn is at the fountain, not where they died), so the track is
+        moved there outright with no velocity, and counts as seen now so the
+        marker at that spot is what the next update pairs it with.
+        """
+        self._held.discard(track_id)
+        for track in self.tracks:
+            if track.id == track_id:
+                track.x, track.y = x, y
+                track.vx = track.vy = 0.0
+                track.last_seen = timestamp
+                return
+
+    @property
+    def held(self) -> frozenset[int]:
+        """Ids of the tracks currently held out of association."""
+        return frozenset(self._held)
 
     def enforce_roster(
         self, team: Team, names: frozenset[str], limit: int
@@ -233,6 +278,11 @@ class Tracker:
             t for t in self.tracks
             if t.team is team and t.state is not TrackState.TENTATIVE
         ]
+        # A held champion is one of the team whether or not a marker shows it,
+        # so it counts toward the limit but is never the one evicted.
+        held = [t for t in confirmed if t.id in self._held]
+        confirmed = [t for t in confirmed if t.id not in self._held]
+        limit = max(0, limit - len(held))
         if len(confirmed) <= limit:
             return
 
@@ -348,6 +398,8 @@ class Tracker:
         edges: list[tuple[float, int, Track]] = []
         for index, detection in enumerate(detections):
             for track in self.tracks:
+                if track.id in self._held:
+                    continue
                 cost = self._cost(track, detection, matches[index], timestamp)
                 if cost is not None:
                     edges.append((cost, index, track))
