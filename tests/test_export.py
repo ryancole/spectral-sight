@@ -170,6 +170,13 @@ def test_turrets_round_trip_with_the_nexus_side() -> None:
     assert "turrets" not in sample_observation().to_dict()
 
 
+def test_map_side_round_trips_and_is_absent_until_known() -> None:
+    data = sample_observation(is_self=True, map_side="red").to_dict()
+    assert data["map_side"] == "red"
+    assert Observation.from_dict(data).map_side == "red"
+    assert "map_side" not in sample_observation(is_self=True).to_dict()
+
+
 def test_a_row_with_no_world_omits_the_keys_entirely() -> None:
     """Absent rather than null: a reader should not have to distinguish a
     position of None from a position at the origin."""
