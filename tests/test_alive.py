@@ -531,11 +531,11 @@ def test_without_calibrated_portraits_nothing_is_claimed() -> None:
     assert result.liveness is None
     assert all(row.alive is None and row.allies_dead is None
                for row in result.observations)
-    assert pipeline.timeline_meta("c.mp4", 3).has_liveness is False
+    assert pipeline.timeline_meta("c.mp4").has_liveness is False
 
 
 def test_the_header_records_that_liveness_was_read() -> None:
-    assert build_pipeline().timeline_meta("c.mp4", 3).has_liveness is True
+    assert build_pipeline().timeline_meta("c.mp4").has_liveness is True
 
 
 def test_a_verdict_round_trips_through_the_file_format() -> None:

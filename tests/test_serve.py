@@ -22,7 +22,7 @@ from spectral_sight.feed import FrameState
 from spectral_sight.serve import FeedServer
 
 META = TimelineMeta(
-    source="clip.mp4", width=420, height=400, stride=3,
+    source="clip.mp4", width=420, height=400,
     created="2026-08-19T00:00:00+00:00",
 )
 

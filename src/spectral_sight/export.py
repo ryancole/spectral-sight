@@ -42,9 +42,17 @@ from typing import IO
 
 from spectral_sight.types import Team
 
-SCHEMA = 1
+SCHEMA = 2
 """Bumped when a change would break a reader written against the old format.
-Adding an optional field does not count; removing or repurposing one does."""
+Adding an optional field does not count; removing or repurposing one does.
+
+History, so a reader knows what an older file differs by:
+
+1. The first format.
+2. `stride` removed from the header (2026-09-27). It counted source frames per
+   processed frame when timelines were extracted from clips; a live run samples
+   the minimap on a clock (`MINIMAP_INTERVAL`) and has no decimation to record.
+   Schema-1 files still load, and their `stride` is ignored."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -752,9 +760,6 @@ class TimelineMeta:
 
     width: int
     height: int
-    stride: int
-    """Source frames per processed frame. 3 is 10 Hz on 30 fps footage."""
-
     created: str = ""
     """UTC ISO 8601. Stamped by the writer when left empty."""
 
@@ -782,7 +787,7 @@ class TimelineMeta:
 
     has_threats: bool = False
     """Whether the world view was read for projectiles at the player. Needs
-    every frame, so it is on only for a run fed that way (`--coach`)."""
+    every frame, so it is on only for a coaching run (`--coach`)."""
 
     has_skillshots: bool = False
     """Whether the player's own casts were followed to their bolts. Needs the
@@ -820,7 +825,6 @@ class TimelineMeta:
             "source": self.source,
             "width": self.width,
             "height": self.height,
-            "stride": self.stride,
             "created": self.created,
             "has_game_time": self.has_game_time,
             "has_liveness": self.has_liveness,
@@ -842,7 +846,6 @@ class TimelineMeta:
             source=str(data["source"]),
             width=int(data["width"]),
             height=int(data["height"]),
-            stride=int(data["stride"]),
             created=str(data.get("created", "")),
             has_game_time=bool(data.get("has_game_time", False)),
             has_liveness=bool(data.get("has_liveness", False)),
@@ -868,7 +871,6 @@ class TimelineMeta:
             source=self.source,
             width=self.width,
             height=self.height,
-            stride=self.stride,
             created=now,
             has_game_time=self.has_game_time,
             has_liveness=self.has_liveness,

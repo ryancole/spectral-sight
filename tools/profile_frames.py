@@ -107,9 +107,6 @@ def main() -> int:
     parser.add_argument("--fps", type=float, default=10.0,
                         help="frames per second to ask the window for")
     parser.add_argument("--icons", help="icon set directory; defaults to newest")
-    parser.add_argument("--stride", type=int, default=3,
-                        help="with coaching, run the minimap stages every Nth "
-                             "frame, as watch.py does")
     parser.add_argument("--coach", action=argparse.BooleanOptionalAction,
                         default=True,
                         help="read the world view on every frame, as watch.py "
@@ -135,8 +132,7 @@ def main() -> int:
                   "watch.py once to derive them.", file=sys.stderr)
         try:
             pipeline = Pipeline.for_resolution(
-                width, height, icons, every=args.stride if args.coach else 1,
-                coach=args.coach,
+                width, height, icons, coach=args.coach,
             )
         except FileNotFoundError as exc:
             print(exc, file=sys.stderr)

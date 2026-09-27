@@ -46,6 +46,11 @@ enough to carry the map's layout -- and small enough that the coarse pass's
 downscale of it is still a picture rather than a smudge.
 """
 
+SAMPLE_FPS = 3.0
+"""Frames per second asked of the window. The map does not move, so
+neighbouring frames add nothing; what the average needs is champions that have
+walked on between samples."""
+
 MIN_FRAMES = 20
 """Below this the average still has champions visible in it, which would make
 the reference match a particular game rather than the map."""
@@ -60,16 +65,13 @@ def main() -> int:
                         help="capture the window whose title contains this "
                              f"(default {DEFAULT_WINDOW!r}); its size needs a "
                              "calibrated region")
-    parser.add_argument("--stride", type=int, default=10,
-                        help="sample every Nth frame; the map does not move, so "
-                             "neighbouring frames add nothing")
     parser.add_argument("--limit", type=int, default=300,
                         help="stop after N samples")
     parser.add_argument("--out", help="override the output path")
     args = parser.parse_args()
 
     try:
-        source = WindowSource(args.window, stride=args.stride)
+        source = WindowSource(args.window, target_fps=SAMPLE_FPS)
     except (RuntimeError, TimeoutError, ValueError) as exc:
         print(exc, file=sys.stderr)
         return 1

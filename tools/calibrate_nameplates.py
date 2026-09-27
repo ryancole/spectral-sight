@@ -66,6 +66,10 @@ from spectral_sight.perception.nameplates import (
 )
 from spectral_sight.types import Team
 
+SAMPLE_FPS = 10.0
+"""Frames per second asked of the window when fitting or validating: the rate
+the pipeline reads plates at (`MINIMAP_INTERVAL`)."""
+
 DEFAULT_EXCLUDE = (
     (0.00, 0.00, 1.00, 0.035),
     (0.00, 0.00, 0.28, 0.36),
@@ -151,7 +155,7 @@ def measure(box: np.ndarray, config: NameplateConfig) -> NameplateLayout | None:
 
 
 def fit_projection(
-    window: str, layout: NameplateLayout, stride: int, limit: int = 0
+    window: str, layout: NameplateLayout, limit: int = 0
 ) -> NameplateLayout | None:
     """Fit the screen-to-minimap coefficients from unambiguous frames.
 
@@ -163,7 +167,7 @@ def fit_projection(
     detector: BlipDetector | None = None
     samples: list[tuple[float, float, float, float]] = []
 
-    with (WindowSource(window, stride=stride) as source,
+    with (WindowSource(window, target_fps=SAMPLE_FPS) as source,
           contextlib.suppress(KeyboardInterrupt)):
         for sampled, frame in enumerate(source.frames()):
             if limit and sampled >= limit:
@@ -239,7 +243,7 @@ def _report_fit(samples, layout: NameplateLayout) -> None:
 
 
 def validate(
-    window: str, layout: NameplateLayout, stride: int, size, limit: int = 0
+    window: str, layout: NameplateLayout, size, limit: int = 0
 ) -> int:
     """Run the reader over the window and report what it finds."""
     try:
@@ -252,7 +256,7 @@ def validate(
     frames = with_plate = readings = hostile = occluded = levelled = 0
     resources = []
 
-    with (WindowSource(window, stride=stride) as source,
+    with (WindowSource(window, target_fps=SAMPLE_FPS) as source,
           contextlib.suppress(KeyboardInterrupt)):
         for frame in source.frames():
             if limit and frames >= limit:
@@ -272,7 +276,7 @@ def validate(
         print(f"no frames in {path}", file=sys.stderr)
         return 1
 
-    print(f"\n{frames} frames at stride {stride}\n")
+    print(f"\n{frames} frames at {SAMPLE_FPS:g} fps\n")
     print(f"  frames with a nameplate : {with_plate / frames:.1%}")
     print(f"  plate readings          : {readings}")
     print(f"  of those, hostile       : {hostile} ({hostile / frames:.2f}/frame)")
@@ -304,8 +308,6 @@ def main() -> int:
                         help="fit the screen-to-minimap projection from the game")
     parser.add_argument("--validate", action="store_true",
                         help="check the saved layout against the game")
-    parser.add_argument("--stride", type=int, default=3,
-                        help="frames per sample when fitting or validating")
     parser.add_argument("--limit", type=int, default=0,
                         help="stop after N sampled frames; 0 watches until Ctrl+C")
     parser.add_argument("--out", help="override the output path")
@@ -327,9 +329,8 @@ def main() -> int:
                   file=sys.stderr)
             return 1
         if args.validate:
-            return validate(args.window, layout, args.stride, (width, height),
-                            args.limit)
-        fitted = fit_projection(args.window, layout, args.stride, args.limit)
+            return validate(args.window, layout, (width, height), args.limit)
+        fitted = fit_projection(args.window, layout, args.limit)
         if fitted is None:
             return 1
         fitted.save(path)

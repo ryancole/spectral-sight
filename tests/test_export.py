@@ -207,7 +207,7 @@ def test_an_unidentified_champion_is_written_as_null() -> None:
 
 def test_meta_round_trips() -> None:
     meta = TimelineMeta(
-        source="clip.mp4", width=1920, height=1080, stride=3,
+        source="clip.mp4", width=1920, height=1080,
         created="2026-08-16T12:00:00+00:00", has_game_time=True,
         world_bounds={"min_x": 0.0, "min_y": 0.0, "max_x": 1.0, "max_y": 1.0},
         world_units_per_pixel=[48.0, 48.3],
@@ -217,7 +217,7 @@ def test_meta_round_trips() -> None:
 
 
 def test_the_writer_stamps_a_creation_time(tmp_path: Path) -> None:
-    meta = TimelineMeta(source="clip.mp4", width=100, height=100, stride=3)
+    meta = TimelineMeta(source="clip.mp4", width=100, height=100)
     with TimelineWriter(tmp_path / "out.jsonl", meta) as writer:
         pass
     assert writer.meta.created
@@ -226,7 +226,7 @@ def test_the_writer_stamps_a_creation_time(tmp_path: Path) -> None:
 
 def test_a_timeline_round_trips_through_a_file(tmp_path: Path) -> None:
     path = tmp_path / "out.jsonl"
-    meta = TimelineMeta(source="clip.mp4", width=100, height=100, stride=3)
+    meta = TimelineMeta(source="clip.mp4", width=100, height=100)
     rows = [sample_observation(video_time=t / 10, track_id=t) for t in range(5)]
     with TimelineWriter(path, meta) as writer:
         writer.write(rows[:2])
@@ -242,7 +242,7 @@ def test_the_header_lands_before_any_rows(tmp_path: Path) -> None:
     """A run killed part way through should leave a readable prefix, not a
     file whose header never got written."""
     path = tmp_path / "out.jsonl"
-    with TimelineWriter(path, TimelineMeta("c.mp4", 100, 100, 3)) as writer:
+    with TimelineWriter(path, TimelineMeta("c.mp4", 100, 100)) as writer:
         writer.write([sample_observation()])
         surviving = path.read_text(encoding="utf-8")
 
@@ -255,7 +255,7 @@ def test_the_header_lands_before_any_rows(tmp_path: Path) -> None:
 def test_streaming_and_loading_agree(tmp_path: Path) -> None:
     path = tmp_path / "out.jsonl"
     rows = [sample_observation(track_id=i) for i in range(4)]
-    with TimelineWriter(path, TimelineMeta("c.mp4", 100, 100, 3)) as writer:
+    with TimelineWriter(path, TimelineMeta("c.mp4", 100, 100)) as writer:
         writer.write(rows)
     assert list(iter_timeline(path)) == read_timeline(path)[1]
 
@@ -263,7 +263,7 @@ def test_streaming_and_loading_agree(tmp_path: Path) -> None:
 def test_a_timeline_from_the_future_is_refused(tmp_path: Path) -> None:
     path = tmp_path / "out.jsonl"
     path.write_text(json.dumps({"schema": SCHEMA + 1, "source": "c.mp4",
-                                "width": 1, "height": 1, "stride": 3}) + "\n",
+                                "width": 1, "height": 1}) + "\n",
                     encoding="utf-8")
     with pytest.raises(ValueError, match="schema"):
         read_timeline(path)
@@ -284,7 +284,7 @@ def test_an_empty_file_is_refused(tmp_path: Path) -> None:
 
 
 def test_writing_outside_a_context_is_an_error(tmp_path: Path) -> None:
-    writer = TimelineWriter(tmp_path / "out.jsonl", TimelineMeta("c", 1, 1, 3))
+    writer = TimelineWriter(tmp_path / "out.jsonl", TimelineMeta("c", 1, 1))
     with pytest.raises(RuntimeError):
         writer.write([sample_observation()])
 
@@ -375,7 +375,7 @@ def test_observations_serialise_straight_out_of_the_pipeline() -> None:
 
 
 def test_meta_records_a_missing_calibration_honestly() -> None:
-    meta = build_pipeline().timeline_meta("data/clip.mp4", stride=3)
+    meta = build_pipeline().timeline_meta("data/clip.mp4")
     assert meta.has_game_time is False
     assert meta.has_minions is False and meta.has_minion_dots is False
     assert meta.has_turrets is False
@@ -385,7 +385,7 @@ def test_meta_records_a_missing_calibration_honestly() -> None:
 
 def test_meta_records_the_world_scale_in_force() -> None:
     world = WorldTransform.assuming_crop(REGION)
-    meta = build_pipeline(world=world).timeline_meta("data/clip.mp4", stride=3)
+    meta = build_pipeline(world=world).timeline_meta("data/clip.mp4")
     assert meta.world_bounds == world.bounds.to_dict()
     assert meta.world_units_per_pixel == pytest.approx(
         list(world.units_per_pixel)
@@ -394,12 +394,60 @@ def test_meta_records_the_world_scale_in_force() -> None:
 
 def test_meta_records_the_source_name_not_its_path() -> None:
     """A timeline is shareable; someone's directory layout is not part of it."""
-    meta = build_pipeline().timeline_meta(r"C:\Users\someone\clips\game.mp4", 3)
+    meta = build_pipeline().timeline_meta(r"C:\Users\someone\clips\game.mp4")
     assert meta.source == "game.mp4"
 
 
 def test_meta_needs_a_resolution_from_somewhere() -> None:
     pipeline = Pipeline(region=REGION, gallery=Gallery())
     with pytest.raises(ValueError, match="resolution"):
-        pipeline.timeline_meta("clip.mp4", stride=3)
-    assert pipeline.timeline_meta("clip.mp4", 3, size=(1920, 1080)).width == 1920
+        pipeline.timeline_meta("clip.mp4")
+    assert pipeline.timeline_meta("clip.mp4", size=(1920, 1080)).width == 1920
+
+
+def test_the_header_carries_no_stride() -> None:
+    """Removed in schema 2: a live run samples on a clock, so there is no
+    decimation to record."""
+    assert "stride" not in build_pipeline().timeline_meta("clip.mp4").to_dict()
+
+
+def test_a_schema_1_timeline_still_loads(tmp_path: Path) -> None:
+    """Recorded sessions predate the bump, and their `stride` is ignored."""
+    path = tmp_path / "old.jsonl"
+    header = {"schema": 1, "source": "c.mp4", "width": 1, "height": 1,
+              "stride": 3}
+    lines = [json.dumps(header), json.dumps(sample_observation().to_dict())]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    meta, rows = read_timeline(path)
+    assert meta.schema == 1 and meta.source == "c.mp4"
+    assert len(rows) == 1
+
+
+# -- the minimap's clock ---------------------------------------------------
+
+
+def sampled_at(times: list[float]) -> list[bool]:
+    pipeline = build_pipeline()
+    frame = frame_with(TWO_ALLIES)
+    return [pipeline.process(frame, t).sampled for t in times]
+
+
+def test_the_minimap_runs_at_ten_hertz_on_a_fast_feed() -> None:
+    """30 fps in, every third frame sampled: the world view gets every
+    frame and the minimap stages the rate they were tuned at."""
+    flags = sampled_at([i / 30 for i in range(9)])
+    assert flags == [True, False, False] * 3
+
+
+def test_a_ten_fps_feed_is_sampled_whole_despite_jitter() -> None:
+    """A frame landing a millisecond early is not a frame to skip, or the
+    default capture rate would sample at 5 Hz."""
+    flags = sampled_at([0.0, 0.099, 0.201, 0.298, 0.4])
+    assert all(flags)
+
+
+def test_a_dropped_frame_does_not_skip_a_sample() -> None:
+    """Sampling follows elapsed time, so a gap in the feed -- the pipeline
+    falling behind -- is not compounded by a count skipping the next frame."""
+    flags = sampled_at([0.0, 1 / 30, 0.2, 0.2 + 1 / 30, 0.3])
+    assert flags == [True, False, True, False, True]

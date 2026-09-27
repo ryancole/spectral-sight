@@ -489,7 +489,7 @@ class TestDeterminism:
                 for frame in frames
                 for event in deriver.update(frame)]
 
-        meta = TimelineMeta(source="clip.mp4", width=420, height=400, stride=3)
+        meta = TimelineMeta(source="clip.mp4", width=420, height=400)
         path = tmp_path / "run.jsonl"
         with JsonlSink(path, meta) as sink:
             for frame in frames:

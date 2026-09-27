@@ -18,8 +18,11 @@ Always live, against the kilrogg receiver as it plays:
     # a receiver whose title has changed
     python tools/watch.py --window "some other title"
 
-    # the minimap stages on every frame too, not just the world view
-    python tools/watch.py --fps 30 --stride 1
+    # more frames for the world view; the minimap stays at 10 Hz regardless
+    python tools/watch.py --fps 30
+
+    # the minimap stages only, without the world view's cost
+    python tools/watch.py --no-coach
 
 Frames arrive from the window whether or not the pipeline is ready for them, so
 the ones it cannot keep up with are dropped on arrival rather than queued -- see
@@ -244,15 +247,12 @@ def main() -> int:
                         help="capture the window whose title contains this "
                              f"(default {DEFAULT_WINDOW!r})")
     parser.add_argument("--icons", help="icon set directory; defaults to newest")
-    parser.add_argument("--stride", type=int, default=3,
-                        help="with coaching, run the minimap stages every Nth "
-                             "captured frame (3 = 10 Hz at --fps 30)")
     parser.add_argument("--coach", action=argparse.BooleanOptionalAction,
                         default=True,
                         help="read the world view (projectiles, threats, "
-                             "skillshots) on every frame, sampling the minimap "
-                             "stages every --stride. On by default; --no-coach "
-                             "for the minimap stages only, on every frame")
+                             "skillshots) on every frame. On by default; "
+                             "--no-coach for the minimap and HUD only. The "
+                             "minimap runs at 10 Hz either way")
     parser.add_argument("--fps", type=float, default=10.0,
                         help="frames per second to ask the window for")
     parser.add_argument("--export",
@@ -308,8 +308,7 @@ def main() -> int:
                 return 1
         try:
             pipeline = Pipeline.for_resolution(
-                width, height, icons, every=args.stride if args.coach else 1,
-                coach=args.coach,
+                width, height, icons, coach=args.coach,
             )
         except FileNotFoundError as exc:
             print(exc, file=sys.stderr)
@@ -348,18 +347,13 @@ def main() -> int:
             for _, tool in absent:
                 print(f"  python tools/{tool}{target}", file=console)
 
-        # A live run has no stride -- it takes whichever frames it can keep up
-        # with -- so the timeline records 1, meaning "no frames deliberately
-        # skipped", rather than a number that would read as a decimation the
-        # run did not perform.
-        stride = 1
         origin = args.window
 
         timeline: JsonlSink | None = None
         server: FeedServer | None = None
         sinks: list[JsonlSink | StdoutSink | FeedServer] = []
         if args.export or args.serve is not None:
-            meta = pipeline.timeline_meta(origin, stride, (width, height))
+            meta = pipeline.timeline_meta(origin, (width, height))
             if args.export == "-":
                 sinks.append(StdoutSink(meta))
             elif args.export:

@@ -20,7 +20,7 @@ from spectral_sight.serve import FeedServer
 from spectral_sight.types import Team
 
 META = TimelineMeta(
-    source="clip.mp4", width=420, height=400, stride=3,
+    source="clip.mp4", width=420, height=400,
     created="2026-08-19T00:00:00+00:00",
 )
 

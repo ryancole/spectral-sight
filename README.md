@@ -966,8 +966,8 @@ Three measurements shaped it, all on the 2026-08-30 session:
   verdict, and it needs Phase 0's footage.
 
 `watch.py` runs it by default (`--coach`; `--no-coach` turns it off), feeding
-every frame and sampling the minimap stages every `--stride` instead of
-decimating the source; rows and the feed
+every frame and sampling the minimap stages on a 10 Hz clock
+(`MINIMAP_INTERVAL`) instead of decimating the source; rows and the feed
 keep their 10 Hz cadence, and `threats` ride the self row like `abilities`
 with a `threat` event per entry. Through the whole pipeline on the same
 three minutes: **14 threats, 4.7 a minute -- 5 hit, 4 dodged, 5 unknown** --
@@ -1298,9 +1298,11 @@ the only recorded input is a timeline served back by `tools/replay.py`.
 Each processed frame prints one line: the game clock (`*` when estimated rather
 than read), the champions visible, the local player with their world position,
 the named allies and enemies, and anyone the HUD confirms is dead. Every frame
-goes through the world-view stages (`--coach`, on by default); `--stride N` sets
-how often the minimap stages run among them. `--no-coach` skips the world view
-and runs the minimap stages on every frame.
+goes through the world-view stages (`--coach`, on by default); `--no-coach`
+skips them. Either way the minimap stages run at 10 Hz by the frames'
+timestamps, not every Nth frame, so the rate holds whatever `--fps` is and
+however many frames are dropped. Raising `--fps` feeds the world view more
+frames without making the minimap more expensive.
 
 The startup line names whichever calibrations are missing and prints the command
 for each, for the case where derivation declined and you want to supply one by
