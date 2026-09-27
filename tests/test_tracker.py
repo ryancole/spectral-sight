@@ -311,3 +311,40 @@ def test_coasting_damps_velocity() -> None:
     track = Track(id=1, team=Team.BLUE, x=0.0, y=0.0, last_seen=0.0, vx=10.0)
     track.coast()
     assert track.vx < 10.0
+
+
+# -- holding a track --------------------------------------------------------
+
+
+def test_a_held_track_is_not_fed_by_a_nearby_marker() -> None:
+    """The dead player's case: their marker is gone, stage 1's surplus is not."""
+    tracker = Tracker()
+    run(tracker, [([blip(100, 100)], [match("Swain")]) for _ in range(4)])
+    swain = tracker.confirmed[0]
+    tracker.hold(swain.id)
+    run(tracker, [([blip(104, 102)], [None]) for _ in range(10)], start=0.4)
+    assert (swain.x, swain.y) == pytest.approx((100, 100), abs=1.0)
+    assert swain.state is TrackState.LOST
+
+
+def test_a_held_track_outlives_forget_after_and_the_team_cap() -> None:
+    tracker = Tracker(TrackerConfig(forget_after=1.0, max_tracks_per_team=1))
+    run(tracker, [([blip(100, 100)], [match("Swain")]) for _ in range(4)])
+    swain = tracker.confirmed[0]
+    tracker.hold(swain.id)
+    run(tracker, [([blip(250, 250)], [None]) for _ in range(30)], start=0.4)
+    assert swain in tracker.confirmed
+
+
+def test_release_moves_the_track_onto_its_marker() -> None:
+    """A respawn is at the fountain, not where the champion fell."""
+    tracker = Tracker()
+    run(tracker, [([blip(100, 100)], [match("Swain")]) for _ in range(4)])
+    swain = tracker.confirmed[0]
+    tracker.hold(swain.id)
+    run(tracker, [([], []) for _ in range(20)], start=0.4)
+    tracker.release(swain.id, 20, 250, 2.4)
+    tracker.update([blip(20, 250)], 2.5, [None])
+    assert tracker.assignment[0] is swain
+    assert swain.identity == "Swain"
+    assert tracker.held == frozenset()

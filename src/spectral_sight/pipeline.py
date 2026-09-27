@@ -606,16 +606,22 @@ class Pipeline:
 
         viewport = find_viewport(minimap, self._viewport_config, self._map_bounds)
         me = None if liveness is None else liveness.slot(SELF_SLOT)
+        self_dead = me is not None and me.alive is False
         self_blip, placed = self._find_self(
             blips, viewport,
             # Placing a marker asserts the camera is on a living player on
             # an in-game frame; each of those is something the pipeline can
             # check, so each is required rather than assumed.
-            place=self.place_self and trusted
-            and (me is None or me.alive is not False),
+            place=self.place_self and trusted and not self_dead,
         )
+        if self_dead:
+            # A dead player has no marker. Whatever sits at the camera centre
+            # is a teammate the death-cam is watching or one standing by the
+            # corpse, and calling it the player hands them the self row.
+            self_blip = None
         if placed:
             blips = [*blips, self_blip]
+        corpse = self._hold_self(self_dead, self_blip, timestamp)
 
         matches: list[Match | None] = [None] * len(blips)
         for team in (Team.BLUE, Team.RED):
@@ -640,13 +646,33 @@ class Pipeline:
         self._apply_roster()
         tracks = self.tracker.confirmed
 
-        self_track = None
+        # The player's track is the one the tracker fed with the player's
+        # marker -- not the nearest track to it, which with no gate at all
+        # took whichever teammate's track sat closest to the fountain on a
+        # respawn and named the player after them for the rest of the game.
+        # A marker that only started a tentative track resolves nobody yet.
+        fed = None
         if self_blip is not None:
-            self_track = min(
-                (t for t in tracks if t.team is self_blip.team),
-                key=lambda t: t.distance_to(self_blip.x, self_blip.y),
-                default=None,
-            )
+            index = next(i for i, b in enumerate(blips) if b is self_blip)
+            fed = self.tracker.assignment.get(index)
+            if fed is not None and not any(t is fed for t in tracks):
+                fed = None
+        self_track = fed
+        if corpse is not None and any(t is corpse for t in tracks):
+            # Dead, the self row is the corpse: where the player fell, under
+            # their name, reading dead for the whole timer.
+            self_track = corpse
+        else:
+            # The camera centre is not always the player. At the fountain the
+            # camera is clamped to the map corner while the player walks out
+            # of it, and a marker placed at the centre there fed only
+            # phantoms; the player's own track, following their real marker,
+            # sat 25px away. Once the player is named, their track on screen
+            # -- inside the camera box -- answers when the centre found
+            # nobody, or found a track under someone else's name.
+            named = self._named_self_on_screen(tracks, viewport, timestamp)
+            if named is not None and (fed is None or fed.identity != named.identity):
+                self_track = named
         # The champion at the camera centre is only a witness to who the
         # player is while the camera is credibly locked on them, and the one
         # violation this pipeline can prove is death: a dead player's camera
@@ -657,9 +683,11 @@ class Pipeline:
         # the vote too -- pre-game frames are not a game -- and a run with no
         # portrait calibration keeps the old behaviour, having no gate to
         # apply.
+        # Only the camera votes: the fallback onto the named track would
+        # otherwise be the name voting for itself.
         witnessed = liveness is None or (me is not None and me.alive is True)
-        if witnessed and self_track is not None and self_track.identity is not None:
-            name = self_track.identity
+        if witnessed and fed is not None and fed.identity is not None:
+            name = fed.identity
             self._self_evidence[name] = self._self_evidence.get(name, 0) + 1
 
         if self.naming is not None and liveness is not None:
@@ -685,7 +713,7 @@ class Pipeline:
             else None
         )
         plates, pairing, casts = self._read_plates(
-            frame, tracks, viewport, timestamp, hsv
+            frame, tracks, viewport, timestamp, hsv, self_track
         )
         minions = self._read_minions(frame, viewport, trusted, hsv)
         self._judge_last_hits(
@@ -941,6 +969,7 @@ class Pipeline:
         viewport: Viewport | None,
         timestamp: float,
         hsv: np.ndarray | None = None,
+        self_track: Track | None = None,
     ) -> tuple[list[Nameplate], dict[int, int], dict[int, Cast]]:
         """Read nameplates, attach them to tracks, and call any casts.
 
@@ -949,6 +978,14 @@ class Pipeline:
         many teammates are alive -- but it is the same read for free, and an
         ally's resource is the one case where a cast can be checked against
         something else that was observed.
+
+        The player's own plate is the exception to matching by distance: its
+        green bar names it outright, so it goes to the self track and nowhere
+        else, and no teammate's plate goes to the player. Matched by distance
+        alone, a teammate's bar could land on the player's track the moment
+        the green one vanished in a death -- the likeliest source of a live
+        reading that jumped from 23% to 90% health, with a level-up, in the
+        instant the player died.
         """
         if self.plate_reader is None:
             return [], {}, {}
@@ -963,6 +1000,19 @@ class Pipeline:
             if not indices:
                 continue
             side = [t for t in tracks if t.team is team]
+            if team is Team.BLUE:
+                mine = [i for i in indices if plates[i].side is Side.SELF]
+                if self_track is not None and len(mine) == 1:
+                    pairing[mine[0]] = self_track.id
+                indices = [i for i in indices if plates[i].side is not Side.SELF]
+                player = self.self_champion
+                side = [
+                    t for t in side
+                    if t is not self_track
+                    and (player is None or t.identity != player)
+                ]
+                if not indices:
+                    continue
             local = associate(
                 [plates[i] for i in indices], side, viewport, self.projection,
                 (width, height),
@@ -997,6 +1047,54 @@ class Pipeline:
                 casts[track_id] = cast
 
         return plates, pairing, casts
+
+    def _named_self_on_screen(
+        self, tracks: list[Track], viewport: Viewport | None, timestamp: float
+    ) -> Track | None:
+        """The track under the player's settled name, if it is visible and
+        inside the camera box -- on screen, which is where the player is."""
+        name = self.self_champion
+        if name is None or viewport is None:
+            return None
+        lost_after = self.tracker.config.lost_after
+        for track in tracks:
+            if (track.identity == name
+                    and track.age(timestamp) < lost_after
+                    and viewport.x <= track.x <= viewport.x + viewport.width
+                    and viewport.y <= track.y <= viewport.y + viewport.height):
+                return track
+        return None
+
+    def _hold_self(
+        self, dead: bool, self_blip: Blip | None, timestamp: float
+    ) -> Track | None:
+        """Keep the player's track where they fell until they respawn.
+
+        While the self portrait reads dead, the track carrying the player's
+        name is held out of association (see `Tracker.hold`) and returned, so
+        it can stand as the self row. Once the portrait reads alive and the
+        player's marker is found again -- at the fountain -- the track is
+        released onto that marker, and the name comes back with the player
+        instead of being left on whatever the tracker would have paired.
+
+        Only the player is held this way: theirs is the one death the pipeline
+        can pin on a track, and theirs is the one marker it can find again
+        without the gallery.
+        """
+        held = self.tracker.held
+        if dead:
+            corpse = next((t for t in self.tracker.tracks if t.id in held), None)
+            if corpse is not None:
+                return corpse
+            name = self.self_champion
+            track = None if name is None else self.tracker.identified().get(name)
+            if track is not None:
+                self.tracker.hold(track.id)
+            return track
+        if self_blip is not None:
+            for track_id in held:
+                self.tracker.release(track_id, self_blip.x, self_blip.y, timestamp)
+        return None
 
     def _attribute_deaths(
         self,
