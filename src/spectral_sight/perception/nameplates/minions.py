@@ -40,7 +40,11 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
-from spectral_sight.perception.nameplates.plates import NameplateLayout
+from spectral_sight.perception.nameplates.playfield import Playfield
+from spectral_sight.perception.nameplates.plates import (
+    NameplateLayout,
+    playfield_for,
+)
 from spectral_sight.types import Team
 
 
@@ -141,7 +145,11 @@ class MinionReader:
     """Frame in, minion health bars out."""
 
     def __init__(
-        self, layout: NameplateLayout, config: MinionConfig | None = None
+        self,
+        layout: NameplateLayout,
+        config: MinionConfig | None = None,
+        *,
+        crop: bool = True,
     ) -> None:
         if layout.minion_width is None or layout.minion_height is None:
             raise ValueError(
@@ -152,6 +160,16 @@ class MinionReader:
         self.config = config or MinionConfig()
         self.width = layout.minion_width
         self.height = layout.minion_height
+        self.crop = crop
+        """Build the masks over the playfield only -- see `playfield`."""
+        self._playfield: Playfield | None = None
+
+    def playfield(self, width: int, height: int) -> Playfield:
+        """The field the champion plate reader uses: see `playfield_for`."""
+        field = self._playfield
+        if field is None or (field.width, field.height) != (width, height):
+            field = self._playfield = playfield_for(self.layout, width, height)
+        return field
 
     def _masks(
         self, frame: np.ndarray, hsv: np.ndarray | None = None
@@ -161,11 +179,19 @@ class MinionReader:
             hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         sat, val = cfg.min_saturation, cfg.min_value
         lo, hi = cfg.red_hue
-        red = cv2.inRange(hsv, (lo, sat, val), (179, 255, 255)) | cv2.inRange(
-            hsv, (0, sat, val), (hi, 255, 255)
-        )
+        red_ranges = (((lo, sat, val), (179, 255, 255)),
+                      ((0, sat, val), (hi, 255, 255)))
         lo, hi = cfg.blue_hue
-        blue = cv2.inRange(hsv, (lo, sat, val), (hi, 255, 255))
+        blue_range = ((lo, sat, val), (hi, 255, 255))
+        if self.crop:
+            field = self.playfield(hsv.shape[1], hsv.shape[0])
+            red = field.in_range(hsv, *red_ranges)
+            blue = field.in_range(hsv, blue_range)
+        else:
+            red = cv2.inRange(hsv, *red_ranges[0]) | cv2.inRange(
+                hsv, *red_ranges[1]
+            )
+            blue = cv2.inRange(hsv, *blue_range)
         # uint8 0/255 throughout: converting a full frame's mask to bool and
         # back cost as much as building it.
         return red, blue, hsv[..., 2]
@@ -187,11 +213,21 @@ class MinionReader:
         red, blue, value = self._masks(frame, hsv)
         either = cv2.bitwise_or(red, blue)
         minions: list[Minion] = []
+        # Components over the playfield's band of rows only -- see
+        # `NameplateReader.read`.
+        top_row, bottom_row = (
+            self.playfield(width, height).rows if self.crop else (0, height)
+        )
+        if bottom_row <= top_row:
+            return []
         for team, mask in ((Team.RED, red), (Team.BLUE, blue)):
-            _, _, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=4)
+            _, _, stats, _ = cv2.connectedComponentsWithStats(
+                mask[top_row:bottom_row], connectivity=4
+            )
             # A full frame of team colour is thousands of specks; the size
             # gates `_judge` opens with are applied here first, in bulk.
-            rows = stats[1:]
+            rows = stats[1:].copy()
+            rows[:, cv2.CC_STAT_TOP] += top_row
             cfg = self.config
             h = rows[:, cv2.CC_STAT_HEIGHT]
             w = rows[:, cv2.CC_STAT_WIDTH]
