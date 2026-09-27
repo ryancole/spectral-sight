@@ -5,8 +5,8 @@
 Watches the window until `--seconds` or Ctrl+C. Joins the three stages a skillshot needs: the ability HUD says a button was
 pressed, the world view says a bolt left the player's model, and an enemy
 nameplate's health bar says whether it reached anyone. Every frame feeds the
-projectile tracker; the plates are read every `--stride` frames, the rate the
-pipeline reads them at when coaching.
+projectile tracker; the plates are read at 10 Hz, on the same clock the
+pipeline samples them on (`MINIMAP_INTERVAL`).
 
 The report has two halves. The first is the census -- how many casts, how many
 launched a bolt, how many had an enemy on screen to aim at, and how they came
@@ -42,6 +42,7 @@ from spectral_sight.perception.screen import (
     ProjectileTracker,
     WorldView,
 )
+from spectral_sight.pipeline import MINIMAP_INTERVAL, MINIMAP_SLACK
 
 PLATE_ABOVE_MODEL = 95.0
 """Pixels from the nameplate's bar down to the champion model -- the same
@@ -68,7 +69,7 @@ def run(args) -> tuple[list, float]:
     vx, vy, _, _ = view.box(width, height)
 
     shots, anchor = [], None
-    index = 0
+    last_read: float | None = None
     elapsed = 0.0
     # Ctrl+C ends the watching, not the report.
     with source, contextlib.suppress(KeyboardInterrupt):
@@ -76,7 +77,9 @@ def run(args) -> tuple[list, float]:
             t = elapsed = frame.timestamp
             for cast in abilities.read(frame.image, t):
                 aim.observe_cast(cast.slot, cast.at)
-            if index % args.stride == 0:
+            if (last_read is None or t - last_read
+                    >= MINIMAP_INTERVAL * (1 - MINIMAP_SLACK)):
+                last_read = t
                 read = plates.read(frame.image)
                 mine = [p for p in read if p.side is Side.SELF]
                 anchor = None
@@ -98,7 +101,6 @@ def run(args) -> tuple[list, float]:
                 aim.observe_motion(t, motion)
             aim.consider(candidates, anchor)
             shots.extend(aim.resolve(t))
-            index += 1
     tracker.flush()
     shots.extend(aim.flush())
     return shots, elapsed
@@ -115,8 +117,6 @@ def main() -> int:
                              "is gone in a few tenths of a second, so keep it high")
     parser.add_argument("--seconds", type=float, default=0.0,
                         help="stop after this long; 0 watches until Ctrl+C")
-    parser.add_argument("--stride", type=int, default=3,
-                        help="frames per nameplate read; 3 is 10 Hz at --fps 30")
     parser.add_argument("--radius", type=float, default=None,
                         help="override AimConfig.hit_radius")
     parser.add_argument("--list", action="store_true", help="print every shot")

@@ -217,9 +217,9 @@ class AimConfig:
 
     target_span: float = 0.4
     """How far back the target's own screen velocity is measured, s. Enemy
-    plates are read at the sampled rate, so this is four points at a stride
-    of three, against a champion moving a measured median 146 px/s once the
-    camera is taken out of it."""
+    plates are read at the sampled rate, so this is four points at 10 Hz
+    (`MINIMAP_INTERVAL`), against a champion moving a measured median 146 px/s
+    once the camera is taken out of it."""
 
     min_target_speed: float = 60.0
     """Below this the target was standing still and `lead` is not reported:
@@ -317,9 +317,9 @@ class AimDetector:
     ASSOCIATE_GATE = 200.0
     """How far an enemy plate may move between sampled frames and still be
     the same champion. A champion walks a measured median 146 px/s and the
-    camera can carry them as fast again; at a stride of three that is well
-    under this, and two enemy plates are rarely within 200 px of each other
-    without the reader marking both occluded."""
+    camera can carry them as fast again; a tenth of a second apart that is
+    well under this, and two enemy plates are rarely within 200 px of each
+    other without the reader marking both occluded."""
 
     STALE = 0.5
     """A plate track unseen this long is over: the champion left the view,

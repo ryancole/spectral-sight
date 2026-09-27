@@ -31,7 +31,7 @@ from spectral_sight.pipeline import PipelineResult
 from spectral_sight.types import Frame, Team
 
 META = TimelineMeta(
-    source="clip.mp4", width=420, height=400, stride=3,
+    source="clip.mp4", width=420, height=400,
     created="2026-08-19T00:00:00+00:00",
 )
 """`created` is pinned so two writers given this meta emit identical bytes."""
@@ -177,7 +177,7 @@ class TestStdoutSink:
 
     def test_stamps_an_unstamped_meta(self) -> None:
         stream = io.StringIO()
-        unstamped = TimelineMeta(source="x.mp4", width=1, height=1, stride=1)
+        unstamped = TimelineMeta(source="x.mp4", width=1, height=1)
         with StdoutSink(unstamped, stream):
             pass
         header = json.loads(stream.getvalue().splitlines()[0])

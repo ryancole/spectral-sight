@@ -141,7 +141,8 @@ The `threat` event (with `at`, `arrival`, `closest`, `speed`, `heading`,
 `outcome`, `damage`, `moved_across`, `origin`) is in `docs/output-format.md`
 and rides the self row through feed, replay and dashboard unchanged. The
 pipeline gained a two-rate mode (`--coach`): every frame fed, minimap stages
-sampled every `--stride`.
+sampled on a 10 Hz clock. *(Originally every `--stride` frames; the stride was
+removed 2026-09-27 because a live capture has no fixed rate to count in.)*
 
 ### Phase 4 — aim coaching
 

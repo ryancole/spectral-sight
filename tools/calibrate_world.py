@@ -81,6 +81,11 @@ from spectral_sight.perception.minimap import MinimapRegion, WorldTransform
 from spectral_sight.perception.minimap.world import WORLD_DIR
 from spectral_sight.pipeline import Pipeline
 
+SAMPLE_FPS = 10.0
+"""Frames per second asked of the window while validating: the rate the
+pipeline samples the minimap at (`MINIMAP_INTERVAL`), so the tracks measured
+here are the tracks a real run makes."""
+
 WINDOW = 1.0
 """Seconds between the two sightings a speed sample is measured across. Long
 enough that pixel jitter stops dominating, short enough that a champion's path
@@ -170,6 +175,8 @@ def _validate(source, pipeline: Pipeline, transform: WorldTransform,
     with contextlib.suppress(KeyboardInterrupt):
         for frame in source.frames():
             result = pipeline.process(frame.image, frame.timestamp)
+            if not result.sampled:
+                continue
             processed += 1
             for track in result.tracks:
                 # Only positions actually seen this frame. A track coasting
@@ -241,8 +248,6 @@ def main() -> int:
                         help="validate the untuned transform that takes the whole "
                              "minimap crop as the map area")
     parser.add_argument("--icons", help="icon set directory; defaults to newest")
-    parser.add_argument("--stride", type=int, default=3,
-                        help="process every Nth frame while validating")
     parser.add_argument("--limit", type=int, default=1500,
                         help="stop validating after N processed frames "
                              "(0 = until Ctrl+C)")
@@ -307,7 +312,7 @@ def main() -> int:
         print(exc, file=sys.stderr)
         return 1
 
-    with WindowSource(args.window, stride=args.stride) as source:
+    with WindowSource(args.window, target_fps=SAMPLE_FPS) as source:
         pipeline = Pipeline.for_resolution(width, height, icons)
         ok = _validate(source, pipeline, transform, args.limit)
     return 0 if ok else 1

@@ -13,11 +13,16 @@ from a timeline file, an envelope on stdout, or an SSE record from the server �
 byte for byte, pinned by tests. Recorded clips are therefore valid fixtures for
 the live path, and a consumer needs exactly one reader.
 
-**Versioning.** The schema version is a single integer, currently **1**,
+**Versioning.** The schema version is a single integer, currently **2**,
 carried in the meta header. Adding an optional field is not a version bump;
 removing or repurposing one is. A reader should reject a file or feed whose
 `schema` is *greater* than the version it understands, and otherwise ignore
 keys it does not recognise.
+
+| Schema | Change |
+|---|---|
+| 1 | The first format. |
+| 2 | `stride` removed from the header (2026-09-27). The minimap is sampled on a 10 Hz clock rather than every Nth frame, so there is no decimation to record. Schema-1 files still load; their `stride` is ignored. |
 
 ## Message discrimination
 
@@ -54,7 +59,6 @@ disagree with the body.
 | `schema` | int | Format version. Reject if greater than you understand. |
 | `source` | string | Basename of the source clip or window. |
 | `width`, `height` | int | Frame size the calibrations were valid for. |
-| `stride` | int | Source frames per processed frame (3 ≈ 10 Hz on 30 fps). |
 | `created` | string | UTC ISO 8601, stamped at write time. |
 | `has_game_time` | bool | Clock calibrated. When false, every `game_time` is null. |
 | `has_liveness` | bool | HUD portraits calibrated. When false, every `alive` is null because nothing was read — distinct from the null meaning "read and inconclusive". |

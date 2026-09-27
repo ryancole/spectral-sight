@@ -34,6 +34,11 @@ from spectral_sight.capture import DEFAULT_WINDOW, WindowSource
 from spectral_sight.perception.hud.alive import AliveReader
 from spectral_sight.perception.hud.portraits import LAYOUT_DIR, PortraitLayout
 
+SAMPLE_FPS = 2.0
+"""Frames per second asked of the window while validating. A death greys a
+portrait for many seconds, so a couple of looks a second sees every one, and a
+sparse sample keeps a long validation cheap."""
+
 
 def circle_from_box(box: tuple[int, ...]) -> tuple[float, float, int] | None:
     """Centre and radius of the circle a dragged box encloses."""
@@ -49,8 +54,7 @@ def mark(image, prompt: str) -> tuple[float, float, int] | None:
     return circle_from_box(box)
 
 
-def validate(window: str, layout: PortraitLayout, stride: int,
-             limit: int = 0) -> int:
+def validate(window: str, layout: PortraitLayout, limit: int = 0) -> int:
     """Run the reader over the window and report what it learned and found.
 
     `limit` of 0 watches until Ctrl+C, which ends the check rather than the
@@ -59,7 +63,7 @@ def validate(window: str, layout: PortraitLayout, stride: int,
     reader = AliveReader(layout)
     history: dict[str, list[tuple[float, bool | None]]] = {}
 
-    with (WindowSource(window, stride=stride) as source,
+    with (WindowSource(window, target_fps=SAMPLE_FPS) as source,
           contextlib.suppress(KeyboardInterrupt)):
         for sampled, frame in enumerate(source.frames()):
             if limit and sampled >= limit:
@@ -74,7 +78,7 @@ def validate(window: str, layout: PortraitLayout, stride: int,
         return 1
 
     frames = len(next(iter(history.values())))
-    print(f"\n{frames} frames at stride {stride}\n")
+    print(f"\n{frames} frames at {SAMPLE_FPS:g} fps\n")
     print(f"{'slot':>6} {'baseline':>9} {'readable':>9}  deaths")
     total_deaths = 0
     for slot, rows in history.items():
@@ -117,8 +121,6 @@ def main() -> int:
                              f"(default {DEFAULT_WINDOW!r})")
     parser.add_argument("--validate", action="store_true",
                         help="check the saved layout against the game")
-    parser.add_argument("--stride", type=int, default=15,
-                        help="frames per sample when validating")
     parser.add_argument("--limit", type=int, default=0,
                         help="stop after N sampled frames; 0 watches until Ctrl+C")
     parser.add_argument("--out", help="override the output path")
@@ -139,7 +141,7 @@ def main() -> int:
             print(f"no layout at {path}; run without --validate first",
                   file=sys.stderr)
             return 1
-        return validate(args.window, layout, args.stride, args.limit)
+        return validate(args.window, layout, args.limit)
 
     print(f"frame is {width}x{height}. Drag each portrait, ENTER to accept.")
     first = mark(frame.image, "1/3: the LEFTMOST teammate portrait")

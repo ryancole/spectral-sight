@@ -161,6 +161,28 @@ TURRET_COVER_MEMORY = 0.35
 last detected -- a few readings, for the frames the detector drops a marker
 that has not moved."""
 
+MINIMAP_INTERVAL = 0.1
+"""Seconds between runs of the minimap stages: 10 Hz, whatever rate the window
+delivers frames at.
+
+Different signals have different natural rates. Minimap positions do not need
+more than 10 Hz -- champions have a speed cap -- and the gallery pass that
+identifies them cannot afford more. The world view does: a bolt is gone in a
+few tenths of a second, so anything reading it has to see every frame. Feeding
+every frame and sampling the slow stages on a clock, rather than decimating at
+the source, is what lets both run in one pass.
+
+A clock rather than every Nth frame, because a live capture has no fixed frame
+rate to count in: frames are dropped whenever the pipeline falls behind, and a
+count tied to `--fps` silently ran the minimap at 3 Hz at the default 10. The
+enemy-plate gates in `AimConfig` assume this rate."""
+
+MINIMAP_SLACK = 0.25
+"""Share of `MINIMAP_INTERVAL` a frame may arrive early and still be sampled.
+Live timestamps jitter by a few milliseconds, and at 10 fps a strict
+threshold would skip every frame that landed at 99 ms -- halving the rate the
+constant promises. A quarter keeps 30 fps at every third frame."""
+
 SELF_MIN_SIGHTINGS = 10
 SELF_MIN_LEAD = 2.0
 """How much the viewport must favour one champion before it is called the local
@@ -209,7 +231,7 @@ class PipelineResult:
     sampled: bool = True
     """Whether the minimap stages ran on this frame. False on the frames
     between samples when the pipeline is fed faster than it samples -- see
-    `Pipeline.every` -- and then `tracks` and `observations` are empty
+    `MINIMAP_INTERVAL` -- and then `tracks` and `observations` are empty
     because nothing looked, not because nothing was there. A caller
     publishing rows skips those frames."""
 
@@ -236,23 +258,15 @@ class Pipeline:
         abilities: AbilityLayout | None = None,
         resolution: tuple[int, int] | None = None,
         place_self: bool = True,
-        every: int = 1,
         coach: bool = False,
     ) -> None:
         self.region = region
         self.gallery = gallery
-        self.every = max(1, every)
-        """Run the minimap stages on every Nth call, the HUD stages on all.
-
-        Different signals have different natural rates. Minimap positions do
-        not need more than 10 Hz -- champions have a speed cap -- and the
-        gallery pass that identifies them cannot afford more. The world view
-        does: a projectile is four to six frames long at the recording's own
-        rate, so anything reading it has to see every frame. Feeding every
-        frame and sampling the slow stages here, rather than decimating at
-        the source, is what lets both run in one pass. Rows are produced on
-        sampled frames only, so the timeline's cadence is unchanged."""
-        self._calls = 0
+        self._last_sample: float | None = None
+        """When the minimap stages last ran -- see `MINIMAP_INTERVAL`. The HUD
+        stages and the world view run on every call; rows are produced on
+        sampled frames only, so the timeline stays at 10 Hz however fast
+        frames are fed."""
         self.timer: StageTimer | None = None
         """Set to time each stage of `process` -- see `profiling`. None costs
         nothing, which is the default for every run that did not ask."""
@@ -366,9 +380,9 @@ class Pipeline:
         # The world-view stage: projectiles at every frame, threats to the
         # player resolved against their printed health. Only when asked for
         # (`coach`), because it costs a frame's worth of work on every frame
-        # and needs every frame to be fed -- see `every` -- and only with a
-        # nameplate calibration, since the player's own plate is the anchor
-        # a bolt is judged against.
+        # and wants every frame it can get -- see `MINIMAP_INTERVAL` -- and
+        # only with a nameplate calibration, since the player's own plate is
+        # the anchor a bolt is judged against.
         self.projectiles: ProjectileTracker | None = None
         self.threats: ThreatDetector | None = None
         self.aim: AimDetector | None = None
@@ -471,7 +485,7 @@ class Pipeline:
     @classmethod
     def for_resolution(
         cls, width: int, height: int, icons: str | Path, *,
-        every: int = 1, coach: bool = False,
+        coach: bool = False,
     ) -> Pipeline:
         """Build from the calibrated region for a resolution plus an icon set.
 
@@ -505,7 +519,6 @@ class Pipeline:
             nameplates=nameplates,
             abilities=AbilityLayout.for_resolution(width, height),
             resolution=(width, height),
-            every=every,
             coach=coach,
         )
 
@@ -523,8 +536,13 @@ class Pipeline:
             self.timer.lap(stage)
 
     def _process(self, frame: np.ndarray, timestamp: float) -> PipelineResult:
-        sampled = self._calls % self.every == 0
-        self._calls += 1
+        sampled = (
+            self._last_sample is None
+            or timestamp - self._last_sample
+            >= MINIMAP_INTERVAL * (1 - MINIMAP_SLACK)
+        )
+        if sampled:
+            self._last_sample = timestamp
         clock = None
         if self.clock is not None:
             clock = self._clock_filter.update(self.clock.read(frame), timestamp)
@@ -1385,7 +1403,6 @@ class Pipeline:
     def timeline_meta(
         self,
         source: str | Path,
-        stride: int,
         size: tuple[int, int] | None = None,
     ) -> TimelineMeta:
         """Header describing what this pipeline is configured to produce.
@@ -1410,7 +1427,6 @@ class Pipeline:
             source=Path(source).name,
             width=resolution[0],
             height=resolution[1],
-            stride=stride,
             has_game_time=self.clock is not None,
             has_liveness=self.liveness is not None,
             has_nameplates=self.plate_reader is not None
