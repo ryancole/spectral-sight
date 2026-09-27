@@ -462,16 +462,20 @@ def main() -> int:
                     down = f"  down={who}"
 
                 if args.quiet:
-                    allies = sorted(n for n, t in named.items() if t.team is Team.BLUE)
+                    # The player is a blue track too; name them on the self
+                    # field rather than among the allies, so a self row that
+                    # has latched onto a teammate reads as wrong at a glance.
+                    me = result.self_track
+                    allies = sorted(n for n, t in named.items()
+                                    if t.team is Team.BLUE and t is not me)
                     enemies = sorted(n for n, t in named.items() if t.team is Team.RED)
                     where = ""
-                    if result.self_track is not None:
-                        position = pipeline.world_position(
-                            result.self_track.x, result.self_track.y
-                        )
+                    if me is not None:
+                        where = f"  self={me.identity or '?'}"
+                        position = pipeline.world_position(me.x, me.y)
                         if position is not None:
-                            where = (f"  self=({position[0]:5.0f},"
-                                     f"{position[1]:5.0f})")
+                            where += (f"({position[0]:5.0f},"
+                                      f"{position[1]:5.0f})")
                     print(f"{clock:>7}  t={frame.timestamp:7.2f}s  "
                           f"visible={len(visible):2d}"
                           f"{where}  allies={','.join(allies) or '-':40s} "
