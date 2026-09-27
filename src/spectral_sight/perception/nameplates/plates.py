@@ -74,6 +74,7 @@ from spectral_sight.perception.hud.clock import (
     glyph_boxes,
     lit_mask,
 )
+from spectral_sight.perception.nameplates.playfield import Playfield
 
 LAYOUT_DIR = Path(__file__).resolve().parents[4] / "etc" / "nameplates"
 
@@ -365,12 +366,19 @@ class NameplateReader:
         layout: NameplateLayout,
         glyphs: GlyphSet | None = None,
         config: NameplateConfig | None = None,
+        *,
+        crop: bool = True,
     ) -> None:
         self.layout = layout
         self.glyphs = glyphs
         """The clock's glyph set. Levels are read only when it is supplied."""
         self.config = config or NameplateConfig()
         self._clock_config = ClockConfig()
+        self.crop = crop
+        """Build the masks over the playfield only -- see `playfield`. Off
+        reads the whole frame, which is what the cropped reading is checked
+        against."""
+        self._playfield: Playfield | None = None
 
     # -- masks ------------------------------------------------------------
 
@@ -383,22 +391,43 @@ class NameplateReader:
         cfg = self.config
         if hsv is None:
             hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        in_range = self._in_range(hsv)
         lo, hi = cfg.health_hue
         sat, val = cfg.min_saturation + 1, cfg.min_value + 1
-        red = cv2.inRange(hsv, (lo, sat, val), (hi, 255, 255)) | cv2.inRange(
-            hsv, (0, sat, val), (3, 255, 255)
-        )
+        red = in_range(((lo, sat, val), (hi, 255, 255)),
+                       ((0, sat, val), (3, 255, 255)))
         lo, hi = cfg.self_hue
-        green = cv2.inRange(
-            hsv, (lo, cfg.self_min_saturation + 1, val), (hi, 255, 255)
+        green = in_range(
+            ((lo, cfg.self_min_saturation + 1, val), (hi, 255, 255))
         )
         lo, hi = cfg.resource_hue
-        blue = cv2.inRange(
-            hsv,
+        blue = in_range((
             (lo, cfg.resource_min_saturation + 1, cfg.resource_min_value + 1),
             (hi, 255, 255),
-        )
+        ))
         return red > 0, green > 0, blue > 0
+
+    def _in_range(self, hsv: np.ndarray):
+        """A mask builder: over the playfield when cropping, else everywhere."""
+        if self.crop:
+            field = self.playfield(hsv.shape[1], hsv.shape[0])
+            return lambda *ranges: field.in_range(hsv, *ranges)
+
+        def whole(image, *ranges):
+            mask = cv2.inRange(image, *ranges[0])
+            for lower, upper in ranges[1:]:
+                mask |= cv2.inRange(image, lower, upper)
+            return mask
+        return lambda *ranges: whole(hsv, *ranges)
+
+    def playfield(self, width: int, height: int) -> Playfield:
+        """Where a plate can start, grown by how far `read` looks from it."""
+        field = self._playfield
+        if field is None or (field.width, field.height) != (width, height):
+            field = self._playfield = playfield_for(
+                self.layout, width, height, self.config
+            )
+        return field
 
     def _excluded(self, x: int, y: int, width: int, height: int) -> bool:
         for x0, y0, x1, y1 in self.layout.exclude:
@@ -527,11 +556,21 @@ class NameplateReader:
             binary, cv2.MORPH_CLOSE,
             cv2.getStructuringElement(cv2.MORPH_RECT, (5, 1)),
         )
-        _, _, stats, _ = cv2.connectedComponentsWithStats(binary, 8)
+        # Components over the playfield's band of rows only: nothing outside
+        # it can start a bar, and its masks are zero there anyway.
+        top_row, bottom_row = (
+            self.playfield(width, height).rows if self.crop else (0, height)
+        )
+        if bottom_row <= top_row:
+            return []
+        _, _, stats, _ = cv2.connectedComponentsWithStats(
+            binary[top_row:bottom_row], 8
+        )
 
         bars = []
         for row in stats[1:]:
-            bx, by = int(row[cv2.CC_STAT_LEFT]), int(row[cv2.CC_STAT_TOP])
+            bx = int(row[cv2.CC_STAT_LEFT])
+            by = int(row[cv2.CC_STAT_TOP]) + top_row
             bw, bh = int(row[cv2.CC_STAT_WIDTH]), int(row[cv2.CC_STAT_HEIGHT])
             if bw < cfg.min_bar_width or bh > cfg.max_bar_height or bw < bh * 4:
                 continue
@@ -693,3 +732,37 @@ class NameplateReader:
                 )
             )
         return out
+
+
+def playfield_for(
+    layout: NameplateLayout,
+    width: int,
+    height: int,
+    config: NameplateConfig | None = None,
+) -> Playfield:
+    """The playfield both bar readers mask over, for one frame size.
+
+    One field serves both readers, so the reach is the larger of the two in
+    each direction, plus a few pixels of slack:
+
+    - left: the plate's level box, and the separation within which two plate
+      starts are folded into one -- a start inside the HUD can still absorb one
+      just outside it. A minion looks 4px left, well inside that.
+    - right: the full bar, which is where the fills and a split resource run's
+      fragments are read; a minion's bar and the 5px past its end.
+    - above: the health bar over a plate's resource run, and its level box.
+    - below: the resource run itself, and the frame under a minion's fill.
+    """
+    cfg = config or NameplateConfig()
+    slack = 4
+    minion_w = layout.minion_width or 0
+    minion_h = layout.minion_height or 0
+    return Playfield.of(
+        layout.exclude, width, height,
+        left=max(-layout.level_dx[0], cfg.min_plate_separation, 4) + slack,
+        right=max(layout.bar_width, minion_w + 5) + slack,
+        above=max(layout.resource_dy[1] + layout.bar_height,
+                  -layout.level_dy[0], cfg.fragment_dy) + slack,
+        below=max(cfg.max_bar_height, layout.level_dy[1], minion_h + 3,
+                  cfg.fragment_dy) + slack,
+    )

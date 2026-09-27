@@ -76,6 +76,7 @@ from spectral_sight.calibration import (
 from spectral_sight.perception.minimap.locate import locate_panel
 from spectral_sight.perception.minimap.region import REGION_DIR, MinimapRegion
 from spectral_sight.pipeline import Pipeline
+from spectral_sight.profiling import StageTimer
 from spectral_sight.types import Frame, Team
 
 DEFAULT_ICONS = Path(__file__).resolve().parents[1] / "etc" / "icons"
@@ -287,6 +288,9 @@ def main() -> int:
     parser.add_argument("--limit", type=int, help="stop after N processed frames")
     parser.add_argument("--start", type=int, default=0,
                         help="skip to this source frame before starting; --input only")
+    parser.add_argument("--timings", action="store_true",
+                        help="time each pipeline stage and print the table at "
+                             "the end -- see tools/profile_frames.py")
     parser.add_argument("--no-calibrate", action="store_true",
                         help="run with whatever calibration already exists instead "
                              "of deriving what is missing")
@@ -342,6 +346,9 @@ def main() -> int:
         except FileNotFoundError as exc:
             print(exc, file=sys.stderr)
             return 1
+
+        if args.timings:
+            pipeline.timer = StageTimer()
 
         extras = []
         if pipeline.clock is not None:
@@ -535,6 +542,8 @@ def main() -> int:
         behind = f", dropped {source.dropped} ({share:.0%}) to keep up"
     print(f"\n{processed} frames in {elapsed:.1f}s "
           f"({processed / max(elapsed, 1e-9):.1f} fps{behind})", file=console)
+    if pipeline.timer is not None:
+        print(pipeline.timer.report(), file=console)
     if args.save:
         print(f"wrote {args.save}", file=console)
     if timeline is not None:
