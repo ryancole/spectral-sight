@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from collections.abc import Iterable
 
 import cv2
 import numpy as np
@@ -15,36 +14,6 @@ TEAM_COLORS: dict[Team, tuple[int, int, int]] = {
     Team.RED: (0, 80, 255),
     Team.UNKNOWN: (160, 160, 160),
 }
-
-CAST_COLOR = (0, 255, 255)
-"""Yellow, and specifically not white.
-
-White marks the local player, and a cast ring two pixels outside that one in the
-same colour is invisible on the champion who casts most and is watched hardest.
-Nothing else in this palette is yellow: the teams are cyan and red-orange, fog
-is a dimmed team colour, and death is a cross."""
-
-CAST_FLASH = 2.0
-"""Seconds a cast stays marked, fading out over that window.
-
-Long enough to catch at 10 Hz, short enough that a champion trading
-abilities does not simply stay marked the whole fight."""
-
-
-@dataclass(frozen=True, slots=True)
-class CastMark:
-    """A recent cast, as the overlay needs to draw it."""
-
-    since: float
-    """Seconds since it was reported."""
-
-    continuous: bool
-    """Whether the cast was measured across consecutive readings.
-
-    When False the champion was away and the cast happened somewhere in a window
-    that can be seconds wide, so the ring is drawn thin: it says a cast happened
-    recently, not that it happened now. Drawing the two the same way would put a
-    precise claim and a vague one on screen in identical ink."""
 
 
 def draw_blips(
@@ -78,88 +47,6 @@ def draw_blips(
                 1,
                 cv2.LINE_AA,
             )
-    return canvas
-
-
-def draw_tracks(
-    image: np.ndarray,
-    tracks: Iterable,
-    timestamp: float,
-    *,
-    scale: float = 1.0,
-    self_track=None,
-    lost_after: float = 0.5,
-    dead: frozenset[str] = frozenset(),
-    casts: Mapping[int, CastMark] | None = None,
-) -> np.ndarray:
-    """Draw tracked champions with their names.
-
-    Champions currently visible are drawn solid; those in fog are drawn hollow
-    at their last known position, which is the state a player actually cares
-    about -- "Yorick was bottom river four seconds ago" is the useful readout.
-
-    A champion in `dead` is crossed out instead of dimmed. Absence and death
-    look identical on the minimap and mean opposite things -- one is a champion
-    who might walk out of the fog at you, the other is a champion who cannot --
-    so they should not be drawn the same way.
-
-    `casts` maps a track id to its most recent `CastMark`, marking that champion
-    for `CAST_FLASH` seconds. Held as an age rather than a flag because a cast is
-    instantaneous: drawn on the one frame it settles it is unreadable at 10 Hz,
-    and drawn permanently it stops meaning anything.
-    """
-    canvas = image.copy()
-    if scale != 1.0:
-        canvas = cv2.resize(
-            canvas, None, fx=scale, fy=scale, interpolation=cv2.INTER_NEAREST
-        )
-
-    for track in sorted(tracks, key=lambda t: t.age(timestamp), reverse=True):
-        age = track.age(timestamp)
-        visible = age < lost_after
-        color = TEAM_COLORS[track.team]
-        center = (int(round(track.x * scale)), int(round(track.y * scale)))
-        radius = int(round(14 * scale))
-
-        is_dead = track.identity is not None and track.identity in dead
-        if not visible:
-            color = tuple(int(c * 0.55) for c in color)
-        cv2.circle(canvas, center, radius, color, 2 if visible else 1, cv2.LINE_AA)
-
-        if is_dead:
-            offset = int(round(radius * 0.7))
-            for dx in (offset, -offset):
-                cv2.line(canvas,
-                         (center[0] - offset, center[1] - dx),
-                         (center[0] + offset, center[1] + dx),
-                         color, 1, cv2.LINE_AA)
-
-        mark = (casts or {}).get(track.id)
-        if mark is not None and mark.since <= CAST_FLASH:
-            # Outside the team ring rather than inside it, so it reads as a
-            # thing that just happened to the champion rather than as part
-            # of how the champion is drawn.
-            fade = 1.0 - mark.since / CAST_FLASH
-            cv2.circle(canvas, center, radius + 2,
-                       tuple(int(c * fade) for c in CAST_COLOR),
-                       2 if mark.continuous else 1, cv2.LINE_AA)
-
-        if track is self_track:
-            cv2.circle(canvas, center, radius + 4, (255, 255, 255), 1, cv2.LINE_AA)
-
-        label = track.identity or "?"
-        if track is self_track:
-            label = f"{label} (you)"
-        if is_dead:
-            label = f"{label} dead"
-        elif not visible:
-            label = f"{label} {age:.0f}s"
-
-        origin = (center[0] - radius, center[1] - radius - 4)
-        cv2.putText(canvas, label, origin, cv2.FONT_HERSHEY_SIMPLEX,
-                    0.40 * scale, (0, 0, 0), 3, cv2.LINE_AA)
-        cv2.putText(canvas, label, origin, cv2.FONT_HERSHEY_SIMPLEX,
-                    0.40 * scale, color, 1, cv2.LINE_AA)
     return canvas
 
 

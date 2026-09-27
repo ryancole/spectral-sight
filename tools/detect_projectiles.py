@@ -1,10 +1,11 @@
 """Find projectile candidates on the world view and report what they are worth.
 
-    python tools/detect_projectiles.py --input "data/your clip.mp4" --from 150 --to 330
+    python tools/detect_projectiles.py --seconds 180
 
-Runs at every frame (repeats skipped), stabilises the camera, segments what
+Watches the window until `--seconds` or Ctrl+C, at every frame it delivers
+(`--fps`, repeats skipped), stabilises the camera, segments what
 moved relative to the ground, tracks it, and keeps the fast, straight, brief
-tracks. Then scores the one thing the footage can score without labels: the
+tracks. Then scores the one thing the game can score without labels: the
 local player's own Q and W, timestamped by the ability HUD reader, each launch
 a bolt from the player's own nameplate -- so every cast should have a
 candidate born beside the plate within half a second. That is recall. The
@@ -19,11 +20,12 @@ which is the raw material of a threat.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import sys
 
 import numpy as np
 
-from spectral_sight.capture import open_source
+from spectral_sight.capture import DEFAULT_WINDOW, WindowSource, lasting
 from spectral_sight.perception.hud.abilities import load_ability_reader
 from spectral_sight.perception.hud.clock import load_clock_reader
 from spectral_sight.perception.nameplates import NameplateLayout, NameplateReader, Side
@@ -43,9 +45,14 @@ the 2026-08-30 clip; the model is what a bolt comes from and goes to."""
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--input", required=True)
-    parser.add_argument("--from", dest="start", type=float, default=0.0, help="seconds")
-    parser.add_argument("--to", dest="end", type=float, default=0.0, help="seconds; 0 = end")
+    parser.add_argument("--window", default=DEFAULT_WINDOW,
+                        help="capture the window whose title contains this "
+                             f"(default {DEFAULT_WINDOW!r})")
+    parser.add_argument("--fps", type=float, default=30.0,
+                        help="frames per second to ask the window for; a bolt "
+                             "is gone in a few tenths of a second, so keep it high")
+    parser.add_argument("--seconds", type=float, default=0.0,
+                        help="stop after this long; 0 watches until Ctrl+C")
     parser.add_argument("--min-speed", type=float, default=None)
     parser.add_argument("--repeat-pixels", type=int, default=None,
                         help="override the repeat floor (changed pixels)")
@@ -56,11 +63,8 @@ def main() -> int:
                         help="re-draw the gate over a grid of thresholds from the same run")
     args = parser.parse_args()
 
-    with open_source(args.input) as probe:
-        first = next(iter(probe.frames()), None)
-    if first is None:
-        raise SystemExit(f"no frames in {args.input}")
-    width, height = first.size
+    source = WindowSource(args.window, target_fps=args.fps)
+    width, height = source.size
     try:
         clock = load_clock_reader(width, height)
     except FileNotFoundError:
@@ -84,12 +88,11 @@ def main() -> int:
     tracks, casts, anchors = [], [], {}
     repeats = distinct = 0
     speeds, inliers, blobs = [], [], []
-    fps = 30.0
-    with open_source(args.input, start=int(args.start * fps)) as source:
-        for frame in source.frames():
-            t = frame.timestamp
-            if args.end and t > args.end:
-                break
+    elapsed = 0.0
+    # Ctrl+C ends the watching, not the report.
+    with source, contextlib.suppress(KeyboardInterrupt):
+        for frame in lasting(source.frames(), args.seconds):
+            t = elapsed = frame.timestamp
             if abilities is not None:
                 for cast in abilities.read(frame.image, t):
                     if cast.slot in ("Q", "W"):
@@ -113,7 +116,7 @@ def main() -> int:
     if abilities is not None:
         casts.extend(c for c in abilities.flush() if c.slot in ("Q", "W"))
 
-    minutes = max(1e-9, (distinct + repeats) / fps / 60)
+    minutes = max(1e-9, elapsed / 60)
     print(f"{distinct} distinct frames, {repeats} repeats ({repeats/max(1,distinct+repeats):.0%}), {minutes:.1f} min")
     if speeds:
         print(f"camera: speed px/s p50={np.median(speeds):.0f} p90={np.percentile(speeds,90):.0f}; "

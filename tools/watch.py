@@ -1,71 +1,53 @@
 """Watch the whole pipeline run: detect, identify, track.
 
-Live, against a window -- this is the real-time path:
+Always live, against the kilrogg receiver as it plays:
 
-    # read the kilrogg receiver as it plays
-    python tools/watch.py --window kilrogg
+    # read the receiver, serve the feed on 127.0.0.1:8723
+    python tools/watch.py
 
     # ...and keep the timeline while you watch
-    python tools/watch.py --window kilrogg --export session.jsonl
+    python tools/watch.py --export session.jsonl
 
     # ...or stream frame envelopes to another program as they happen
-    python tools/watch.py --window kilrogg --quiet --export - | your-tool
+    python tools/watch.py --export - | your-tool
 
-    # ...or serve them over HTTP, to as many programs as care to listen
-    python tools/watch.py --window kilrogg --serve
+    # the feed is served over HTTP by default, to as many programs as care
+    # to listen; --serve PORT moves it, --no-serve turns it off
     curl http://127.0.0.1:8723/stream
 
-Or offline, against a recorded clip -- the development path:
+    # a receiver whose title has changed
+    python tools/watch.py --window "some other title"
 
-    # play a clip in a window
-    python tools/watch.py --input "data/my clip.mp4"
+    # the minimap stages on every frame too, not just the world view
+    python tools/watch.py --fps 30 --stride 1
 
-    # every frame instead of 10 Hz, and write an annotated video out
-    python tools/watch.py --input clip.mp4 --stride 1 --save out.mp4
+Frames arrive from the window whether or not the pipeline is ready for them, so
+the ones it cannot keep up with are dropped on arrival rather than queued -- see
+`Mailbox`. The run reports the drop count at the end, which is the number to
+watch if the printed state looks like it is lagging the game.
 
-    # print the tracked state instead of showing it
-    python tools/watch.py --input clip.mp4 --quiet
-
-    # extract the whole clip to a timeline, as fast as it will go
-    python tools/watch.py --input clip.mp4 --quiet --export clip.jsonl
-
-The two differ in how they fall behind, and only in that. A clip waits; a window
-does not. Frames arrive from a window whether or not the pipeline is ready for
-them, so the ones it cannot keep up with are dropped on arrival rather than
-queued -- see `Mailbox`. The run reports the drop count at the end, which is the
-number to watch if the overlay looks like it is lagging the game.
-
-Keys: Q or ESC to quit, SPACE to pause, any key to step while paused.
-
-Champions currently visible are drawn solid; champions in fog are drawn hollow
-at their last known position with the time since they were seen, which is the
-readout that actually matters on player-perspective footage. A champion the HUD
-confirms is dead is crossed out rather than dimmed, since a champion who cannot
-walk out of the fog at you is a different thing from one who can.
+Ctrl+C ends the run.
 """
 
 from __future__ import annotations
 
 import argparse
 import contextlib
+import errno
 import sys
 import time
 from collections.abc import Iterator
 from pathlib import Path
 
-import cv2
-
 from spectral_sight.capture import (
+    DEFAULT_WINDOW,
     FrameSizeChanged,
     FrameSource,
     WindowSource,
-    open_source,
 )
-from spectral_sight.debug import draw_tracks
-from spectral_sight.debug.overlay import CastMark
 from spectral_sight.events import EventDeriver
 from spectral_sight.feed import FanOut, FrameState, JsonlSink, RateMeter, StdoutSink
-from spectral_sight.serve import FeedServer
+from spectral_sight.serve import DEFAULT_PORT, FeedServer
 from spectral_sight.calibration import (
     MISSING_CLOCK,
     Reference,
@@ -129,16 +111,6 @@ class Session:
             yield from self.source.frames()
         except FrameSizeChanged as exc:
             self.error = str(exc)
-
-
-def open_target(args: argparse.Namespace) -> FrameSource:
-    """The clip or the window, whichever was asked for."""
-    if args.window:
-        return WindowSource(args.window, target_fps=args.fps)
-    # Coaching reads the world view at every frame and samples the minimap
-    # stages inside the pipeline instead, so the source is not decimated.
-    stride = 1 if args.coach else args.stride
-    return open_source(args.input, stride=stride, start=args.start)
 
 
 SAMPLE_FRAMES = 8
@@ -256,48 +228,52 @@ def calibrate(source: FrameSource, width: int, height: int) -> bool:
     return True
 
 
+def port_taken(exc: OSError) -> bool:
+    """Whether a bind was refused because something else holds the port.
+
+    Windows says so in `winerror`, and reports a port held exclusively (or
+    reserved by the OS) as access denied rather than in use."""
+    return (exc.errno == errno.EADDRINUSE
+            or getattr(exc, "winerror", None) in (10048, 10013))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    target = parser.add_mutually_exclusive_group(required=True)
-    target.add_argument("--input", help="video or image path")
-    target.add_argument("--window",
-                        help="capture a live window whose title contains this")
+    parser.add_argument("--window", default=DEFAULT_WINDOW,
+                        help="capture the window whose title contains this "
+                             f"(default {DEFAULT_WINDOW!r})")
     parser.add_argument("--icons", help="icon set directory; defaults to newest")
     parser.add_argument("--stride", type=int, default=3,
-                        help="process every Nth frame (3 = 10 Hz on 30 fps); "
-                             "--input only")
-    parser.add_argument("--coach", action="store_true",
-                        help="feed every frame; sample the minimap stages every "
-                             "--stride frames instead of decimating the source. "
-                             "Needed by anything reading the world view at speed.")
+                        help="with coaching, run the minimap stages every Nth "
+                             "captured frame (3 = 10 Hz at --fps 30)")
+    parser.add_argument("--coach", action=argparse.BooleanOptionalAction,
+                        default=True,
+                        help="read the world view (projectiles, threats, "
+                             "skillshots) on every frame, sampling the minimap "
+                             "stages every --stride. On by default; --no-coach "
+                             "for the minimap stages only, on every frame")
     parser.add_argument("--fps", type=float, default=10.0,
-                        help="frames per second to ask the window for; --window only")
-    parser.add_argument("--zoom", type=float, default=2.5, help="preview upscale")
-    parser.add_argument("--save", help="write an annotated video here")
+                        help="frames per second to ask the window for")
     parser.add_argument("--export",
                         help="write a JSONL timeline here, or '-' to stream "
                              "frame envelopes to stdout for another program")
-    parser.add_argument("--serve", nargs="?", const=8723, type=int,
-                        metavar="PORT",
-                        help="serve the feed over HTTP on 127.0.0.1 "
-                             "(default port 8723): /meta, /state, /stream, "
-                             "/events. Composes with --export")
-    parser.add_argument("--quiet", action="store_true",
-                        help="print state instead of opening a window")
+    parser.add_argument("--serve", nargs="?", const=DEFAULT_PORT,
+                        default=DEFAULT_PORT, type=int, metavar="PORT",
+                        help="serve the feed over HTTP on 127.0.0.1, on by "
+                             f"default (port {DEFAULT_PORT}): /meta, /state, "
+                             "/stream, /events. Composes with --export")
+    parser.add_argument("--no-serve", dest="serve", action="store_const",
+                        const=None, help="do not serve the feed over HTTP")
     parser.add_argument("--limit", type=int, help="stop after N processed frames")
-    parser.add_argument("--start", type=int, default=0,
-                        help="skip to this source frame before starting; --input only")
     parser.add_argument("--timings", action="store_true",
                         help="time each pipeline stage and print the table at "
-                             "the end -- see tools/profile_frames.py")
+                             "the end -- see tools/profile_frames.py for the "
+                             "pipeline alone")
     parser.add_argument("--no-calibrate", action="store_true",
                         help="run with whatever calibration already exists instead "
                              "of deriving what is missing")
     args = parser.parse_args()
-
-    if args.window and args.start:
-        parser.error("--start is a seek into a file; a live window has no past")
 
     # When stdout is the data channel, everything said *about* the run moves to
     # stderr, or the consumer's JSON parser meets a status line.
@@ -314,7 +290,8 @@ def main() -> int:
         # side: a window that cannot be found and one that never paints are the
         # same failure to report, and neither is worth a traceback.
         try:
-            source = stack.enter_context(open_target(args))
+            source = stack.enter_context(
+                WindowSource(args.window, target_fps=args.fps))
             width, height = source.size
         except (RuntimeError, TimeoutError) as exc:
             print(exc, file=sys.stderr)
@@ -324,19 +301,10 @@ def main() -> int:
         # absent -- it starts quite happily with no clock, no world units and no
         # deaths, which is not what anyone asked for.
         if not args.no_calibrate and missing(width, height):
-            if args.window:
-                print(f"The window is {width}x{height}, and that size is part of "
-                      "the calibration -- leave it there once this is done.",
-                      file=console)
-                calibrated = calibrate(source, width, height)
-            else:
-                # A file gets a throwaway reader of its own. Calibrating costs
-                # several frames, and taking them from the run would quietly
-                # skip the start of the clip -- a live window has no such
-                # problem, since those frames are seconds that really passed.
-                with open_target(args) as scratch:
-                    calibrated = calibrate(scratch, width, height)
-            if not calibrated:
+            print(f"The window is {width}x{height}, and that size is part of "
+                  "the calibration -- leave it there once this is done.",
+                  file=console)
+            if not calibrate(source, width, height):
                 return 1
         try:
             pipeline = Pipeline.for_resolution(
@@ -356,19 +324,18 @@ def main() -> int:
         if pipeline.world is not None:
             ux, _ = pipeline.world.units_per_pixel
             extras.append(f"world {ux:.0f}u/px")
-        rate = (f"live {args.fps:g} fps" if args.window
-                else f"every {args.stride} frames")
         print(f"{width}x{height} | minimap {pipeline.region.width}px | "
-              f"{len(pipeline.gallery)} champion icons | {rate}"
+              f"{len(pipeline.gallery)} champion icons | live {args.fps:g} fps"
               + (f" | {', '.join(extras)}" if extras else ""), file=console)
 
         # The optional calibrations are skipped quietly, which is right for the
         # run and wrong for the person watching it: without them there is no
         # game time, no world coordinates, no deaths and no casts, and nothing
         # would say so. Naming the command that fixes each is only useful now
-        # that these tools can be pointed at a live window -- before the
-        # `window:` scheme the answer was still "go and find a screenshot".
-        spec = f"window:{args.window}" if args.window else args.input
+        # that these tools can be pointed at a live window -- before that the
+        # answer was still "go and find a screenshot".
+        target = ("" if args.window == DEFAULT_WINDOW
+                  else f' --window "{args.window}"')
         absent = [(what, tool) for what, got, tool in (
             ("game time", pipeline.clock, "calibrate_clock.py"),
             ("world units", pipeline.world, "calibrate_world.py"),
@@ -379,14 +346,14 @@ def main() -> int:
             print(f"no {', '.join(what for what, _ in absent)}. Add with:",
                   file=console)
             for _, tool in absent:
-                print(f"  python tools/{tool} --input \"{spec}\"", file=console)
+                print(f"  python tools/{tool}{target}", file=console)
 
         # A live run has no stride -- it takes whichever frames it can keep up
         # with -- so the timeline records 1, meaning "no frames deliberately
         # skipped", rather than a number that would read as a decimation the
         # run did not perform.
-        stride = 1 if args.window else args.stride
-        origin = args.window or args.input
+        stride = 1
+        origin = args.window
 
         timeline: JsonlSink | None = None
         server: FeedServer | None = None
@@ -406,21 +373,26 @@ def main() -> int:
                        if calibration is None]
             if unkeyed:
                 print(f"warning: no calibrated {' and '.join(unkeyed)}; the "
-                      "feed will be missing the keys that join this clip to "
+                      "feed will be missing the keys that join this session to "
                       "anything else", file=sys.stderr)
-        feed = stack.enter_context(FanOut(sinks))
+        try:
+            feed = stack.enter_context(FanOut(sinks))
+        except OSError as exc:
+            # Serving is the default, so a second run or a replay already on
+            # the port is the likely way to get here, not a real fault.
+            if server is None or not port_taken(exc):
+                raise
+            print(f"cannot serve on port {args.serve}: {exc.strerror or exc}. "
+                  "Pick another with --serve PORT, or --no-serve.",
+                  file=sys.stderr)
+            return 1
         if server is not None:
             print(f"serving {server.url}/stream", file=console)
 
-        writer: cv2.VideoWriter | None = None
-        paused = False
         processed = 0
         meter = RateMeter()
         deriver = EventDeriver()
         started = time.perf_counter()
-        # When each track last cast, so the overlay can mark it for a moment
-        # rather than for the single frame the cast settles on.
-        last_cast: dict[int, tuple[float, bool]] = {}
 
         with Session(source) as session:
             for frame in session:
@@ -444,12 +416,6 @@ def main() -> int:
                     for event in deriver.update(state):
                         feed.publish_event(event)
 
-                for observation in result.observations:
-                    if observation.cast_drop is not None:
-                        last_cast[observation.track_id] = (
-                            frame.timestamp, bool(observation.cast_continuous)
-                        )
-
                 lost_after = pipeline.tracker.config.lost_after
                 visible = [t for t in result.tracks
                            if t.age(frame.timestamp) < lost_after]
@@ -468,84 +434,40 @@ def main() -> int:
                     who = ",".join(sorted(dead)) or result.liveness.dead_count
                     down = f"  down={who}"
 
-                if args.quiet:
-                    # The player is a blue track too; name them on the self
-                    # field rather than among the allies, so a self row that
-                    # has latched onto a teammate reads as wrong at a glance.
-                    me = result.self_track
-                    allies = sorted(n for n, t in named.items()
-                                    if t.team is Team.BLUE and t is not me)
-                    enemies = sorted(n for n, t in named.items() if t.team is Team.RED)
-                    where = ""
-                    if me is not None:
-                        where = f"  self={me.identity or '?'}"
-                        position = pipeline.world_position(me.x, me.y)
-                        if position is not None:
-                            where += (f"({position[0]:5.0f},"
-                                      f"{position[1]:5.0f})")
-                    print(f"{clock:>7}  t={frame.timestamp:7.2f}s  "
-                          f"visible={len(visible):2d}"
-                          f"{where}  allies={','.join(allies) or '-':40s} "
-                          f"enemies={','.join(enemies) or '-'}{down}", file=console)
-                else:
-                    minimap = pipeline.region.crop(frame.image)
-                    canvas = draw_tracks(
-                        minimap, result.tracks, frame.timestamp,
-                        scale=args.zoom, self_track=result.self_track,
-                        lost_after=lost_after,
-                        dead=dead,
-                        casts={
-                            track_id: CastMark(frame.timestamp - when, continuous)
-                            for track_id, (when, continuous) in last_cast.items()
-                        },
-                    )
-                    cv2.putText(
-                        canvas,
-                        f"{clock}  ({frame.timestamp:.1f}s)  "
-                        f"tracked {len(result.tracks)}  "
-                        f"visible {len(visible)}  named {len(named)}{down}",
-                        (8, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1,
-                        cv2.LINE_AA,
-                    )
-
-                    if args.save:
-                        if writer is None:
-                            h, w = canvas.shape[:2]
-                            writer = cv2.VideoWriter(
-                                args.save, cv2.VideoWriter_fourcc(*"mp4v"),
-                                args.fps if args.window else 30.0 / max(args.stride, 1),
-                                (w, h),
-                            )
-                        writer.write(canvas)
-                    else:
-                        cv2.imshow("spectral-sight", canvas)
-                        key = cv2.waitKey(0 if paused else 1) & 0xFF
-                        if key in (ord("q"), 27):
-                            break
-                        if key == ord(" "):
-                            paused = not paused
+                # The player is a blue track too; name them on the self field
+                # rather than among the allies, so a self row that has latched
+                # onto a teammate reads as wrong at a glance.
+                me = result.self_track
+                allies = sorted(n for n, t in named.items()
+                                if t.team is Team.BLUE and t is not me)
+                enemies = sorted(n for n, t in named.items() if t.team is Team.RED)
+                where = ""
+                if me is not None:
+                    where = f"  self={me.identity or '?'}"
+                    position = pipeline.world_position(me.x, me.y)
+                    if position is not None:
+                        where += (f"({position[0]:5.0f},"
+                                  f"{position[1]:5.0f})")
+                print(f"{clock:>7}  t={frame.timestamp:7.2f}s  "
+                      f"visible={len(visible):2d}"
+                      f"{where}  allies={','.join(allies) or '-':40s} "
+                      f"enemies={','.join(enemies) or '-'}{down}", file=console)
 
                 if args.limit and processed >= args.limit:
                     break
 
-        if writer is not None:
-            writer.release()
-        cv2.destroyAllWindows()
-
     elapsed = time.perf_counter() - started
     # Frames dropped on arrival, which is the number that says whether the
-    # pipeline kept up: a high count means the overlay is describing a moment
-    # the game has already moved on from, and the answer is a lower --fps.
+    # pipeline kept up: a high count means the printed state is describing a
+    # moment the game has already moved on from, and the answer is a lower --fps.
     behind = ""
-    if isinstance(source, WindowSource) and source.dropped:
+    if source.dropped:
         share = source.dropped / max(processed + source.dropped, 1)
         behind = f", dropped {source.dropped} ({share:.0%}) to keep up"
     print(f"\n{processed} frames in {elapsed:.1f}s "
           f"({processed / max(elapsed, 1e-9):.1f} fps{behind})", file=console)
     if pipeline.timer is not None:
         print(pipeline.timer.report(), file=console)
-    if args.save:
-        print(f"wrote {args.save}", file=console)
     if timeline is not None:
         print(f"wrote {timeline.path} ({timeline.rows} observations)", file=console)
     if session.error is not None:

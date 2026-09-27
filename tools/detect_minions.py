@@ -1,9 +1,10 @@
 """Read minion health bars off the world view, and draw what was found.
 
-    python tools/detect_minions.py --input "data/your clip.mp4" --from 150 --to 330
-    python tools/detect_minions.py --input "data/your clip.mp4" --at 260 --overlay out/
+    python tools/detect_minions.py --seconds 180
+    python tools/detect_minions.py --every 5 --overlay out/
 
-Prints one line per sampled frame -- how many ally and enemy minions, how many
+Watches the window until `--seconds` or Ctrl+C. Prints one line per sampled
+frame -- how many ally and enemy minions, how many
 of them had a readable health, and how many of those are low enough to be a
 last hit -- then a summary. `--overlay` writes each sampled frame with every
 bar boxed and its fill printed over it, which is how the reader is checked:
@@ -13,11 +14,12 @@ there is no automatic ground truth for minions, so the check is by eye.
 from __future__ import annotations
 
 import argparse
+import contextlib
 from pathlib import Path
 
 import cv2
 
-from spectral_sight.capture import open_source
+from spectral_sight.capture import DEFAULT_WINDOW, WindowSource, lasting
 from spectral_sight.perception.nameplates import NameplateLayout
 from spectral_sight.perception.nameplates.minions import MinionReader
 from spectral_sight.types import Team
@@ -42,19 +44,10 @@ def draw(image, minions, reader):
 
 
 def sampled(args):
-    """The frames to read: each `--at` time, or one per `--every` seconds."""
-    if args.at:
-        for at in sorted(args.at):
-            with open_source(args.input, start=round(at * 30)) as source:
-                frame = next(iter(source.frames()), None)
-            if frame is not None:
-                yield frame
-        return
-    next_at = args.start
-    with open_source(args.input, start=int(args.start * 30)) as source:
-        for frame in source.frames():
-            if args.end is not None and frame.timestamp > args.end:
-                break
+    """One frame per `--every` seconds, for `--seconds` or until Ctrl+C."""
+    next_at = 0.0
+    with WindowSource(args.window) as source:
+        for frame in lasting(source.frames(), args.seconds):
             if frame.timestamp + 1e-6 >= next_at:
                 next_at = frame.timestamp + args.every
                 yield frame
@@ -62,11 +55,11 @@ def sampled(args):
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--input", required=True)
-    parser.add_argument("--from", dest="start", type=float, default=0.0)
-    parser.add_argument("--to", dest="end", type=float, default=None)
-    parser.add_argument("--at", type=float, nargs="*", default=None,
-                        help="read only these video times")
+    parser.add_argument("--window", default=DEFAULT_WINDOW,
+                        help="capture the window whose title contains this "
+                             f"(default {DEFAULT_WINDOW!r})")
+    parser.add_argument("--seconds", type=float, default=0.0,
+                        help="stop after this long; 0 watches until Ctrl+C")
     parser.add_argument("--every", type=float, default=1.0,
                         help="seconds between sampled frames")
     parser.add_argument("--low", type=float, default=0.25,
@@ -80,25 +73,27 @@ def main() -> None:
 
     totals = {Team.BLUE: 0, Team.RED: 0}
     readable = low = frames = 0
-    for frame in sampled(args):
-        t = frame.timestamp
-        if reader is None:
-            width, height = frame.size
-            reader = MinionReader(NameplateLayout.for_resolution(width, height))
-        minions = reader.read(frame.image)
-        frames += 1
-        counts = {team: sum(m.team is team for m in minions) for team in totals}
-        read = [m for m in minions if m.health is not None]
-        weak = [m for m in read if m.health <= args.low]
-        for team in totals:
-            totals[team] += counts[team]
-        readable += len(read)
-        low += len(weak)
-        print(f"{t:8.2f}  blue {counts[Team.BLUE]:2d}  red {counts[Team.RED]:2d}"
-              f"  readable {len(read):2d}  low {len(weak):2d}")
-        if args.overlay:
-            cv2.imwrite(str(args.overlay / f"minions_{t:08.2f}.png"),
-                        draw(frame.image, minions, reader))
+    # Ctrl+C ends the watching, not the summary.
+    with contextlib.suppress(KeyboardInterrupt):
+        for frame in sampled(args):
+            t = frame.timestamp
+            if reader is None:
+                width, height = frame.size
+                reader = MinionReader(NameplateLayout.for_resolution(width, height))
+            minions = reader.read(frame.image)
+            frames += 1
+            counts = {team: sum(m.team is team for m in minions) for team in totals}
+            read = [m for m in minions if m.health is not None]
+            weak = [m for m in read if m.health <= args.low]
+            for team in totals:
+                totals[team] += counts[team]
+            readable += len(read)
+            low += len(weak)
+            print(f"{t:8.2f}  blue {counts[Team.BLUE]:2d}  red {counts[Team.RED]:2d}"
+                  f"  readable {len(read):2d}  low {len(weak):2d}")
+            if args.overlay:
+                cv2.imwrite(str(args.overlay / f"minions_{t:08.2f}.png"),
+                            draw(frame.image, minions, reader))
 
     if frames:
         total = totals[Team.BLUE] + totals[Team.RED]

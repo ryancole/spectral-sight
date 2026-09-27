@@ -1,10 +1,10 @@
-"""Read the local player's ability casts off a clip and report them.
+"""Read the local player's ability casts off the game and report them.
 
-    # run the reader over a clip
-    python tools/detect_abilities.py --input "data/your clip.mp4"
+    # run the reader over the game as it plays; Ctrl+C ends it and reports
+    python tools/detect_abilities.py
 
     # score against the player's printed mana, the free ground truth
-    python tools/detect_abilities.py --input "data/your clip.mp4" --validate
+    python tools/detect_abilities.py --validate --seconds 300
 
 The HUD draws the local player's cooldowns, so a cast is the slot's ability art
 being replaced by the cooldown veil. That names the button -- Q, W, E, R, or a
@@ -27,10 +27,11 @@ from __future__ import annotations
 
 import argparse
 import collections
+import contextlib
 import sys
 from pathlib import Path
 
-from spectral_sight.capture import open_source
+from spectral_sight.capture import DEFAULT_WINDOW, WindowSource, lasting
 from spectral_sight.perception.hud.abilities import load_ability_reader
 from spectral_sight.perception.hud.clock import load_clock_reader
 from spectral_sight.perception.hud.resources import load_resource_reader
@@ -49,40 +50,37 @@ def _readers(width: int, height: int):
     return reader, resources, points
 
 
-def run(path: str, stride: int, limit: int) -> tuple[list, list, list]:
+def run(window: str, fps: float, seconds: float) -> tuple[list, list, list]:
     """Every ability cast, the player's mana series, and every change in the
-    level-up chevrons, over the clip."""
-    with open_source(path) as probe:
-        first = next(iter(probe.frames()), None)
-    if first is None:
-        raise SystemExit(f"no frames in {path}")
-    width, height = first.size
-
-    reader, resources, points = _readers(width, height)
-    if reader is None:
-        raise SystemExit(
-            f"no ability calibration for {width}x{height}; it derives from the "
-            f"minimap fit on a normal run, or drag one with the receiver open"
-        )
-
+    level-up chevrons, for as long as it watched."""
     casts: list = []
     mana: list[tuple[float, int, int]] = []
     changes: list[tuple[float, tuple[str, ...]]] = []
     learnable: tuple[str, ...] | None = None
-    with open_source(path, stride=stride) as source:
-        for sampled, frame in enumerate(source.frames()):
-            if limit and sampled >= limit:
-                break
-            casts.extend(reader.read(frame.image, frame.timestamp))
-            if resources is not None:
-                reading = resources.read_line(frame.image, resources.layout.mana)
-                if reading is not None:
-                    mana.append((frame.timestamp, reading.current, reading.maximum))
-            if points is not None:
-                now = points.read(frame.image, frame.timestamp)
-                if now is not None and now != learnable:
-                    changes.append((frame.timestamp, now))
-                    learnable = now
+    with WindowSource(window, target_fps=fps) as source:
+        width, height = source.size
+        reader, resources, points = _readers(width, height)
+        if reader is None:
+            raise SystemExit(
+                f"no ability calibration for {width}x{height}; it derives from "
+                f"the minimap fit on a normal run, or drag one with the receiver "
+                f"open"
+            )
+        # Ctrl+C ends the watching, not the report.
+        with contextlib.suppress(KeyboardInterrupt):
+            for frame in lasting(source.frames(), seconds):
+                casts.extend(reader.read(frame.image, frame.timestamp))
+                if resources is not None:
+                    reading = resources.read_line(frame.image,
+                                                  resources.layout.mana)
+                    if reading is not None:
+                        mana.append((frame.timestamp, reading.current,
+                                     reading.maximum))
+                if points is not None:
+                    now = points.read(frame.image, frame.timestamp)
+                    if now is not None and now != learnable:
+                        changes.append((frame.timestamp, now))
+                        learnable = now
     casts.extend(reader.flush())
     return casts, mana, changes
 
@@ -136,7 +134,7 @@ def validate(casts: list, mana: list[tuple[float, int, int]]) -> int:
     lands on. A clean precision figure is harder, because rapid casts merge
     their falls and E/R fire at low mana, so this reports the falls caught and
     the casts left uncorroborated rather than a single ratio that would flatter
-    or malign the reader depending on the clip.
+    or malign the reader depending on the game.
     """
     if not mana:
         print("no mana readings; cannot validate", file=sys.stderr)
@@ -170,19 +168,20 @@ def main() -> int:
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--input", required=True, help="clip or window:name")
+    parser.add_argument("--window", default=DEFAULT_WINDOW,
+                        help="capture the window whose title contains this "
+                             f"(default {DEFAULT_WINDOW!r})")
     parser.add_argument("--validate", action="store_true",
                         help="score against the player's printed mana")
     parser.add_argument("--list", action="store_true",
                         help="print every cast, not just the summary")
-    parser.add_argument("--stride", type=int, default=3,
-                        help="source frames per sample; 3 is 10 Hz on 30 fps")
-    parser.add_argument("--limit", type=int, default=0,
-                        help="stop after N sampled frames; 0 walks the whole "
-                             "source, which a live window never finishes")
+    parser.add_argument("--fps", type=float, default=10.0,
+                        help="frames per second to ask the window for")
+    parser.add_argument("--seconds", type=float, default=0.0,
+                        help="stop after this long; 0 watches until Ctrl+C")
     args = parser.parse_args()
 
-    casts, mana, changes = run(args.input, args.stride, args.limit)
+    casts, mana, changes = run(args.window, args.fps, args.seconds)
     report(casts, args.list)
     report_points(changes)
     if args.validate:

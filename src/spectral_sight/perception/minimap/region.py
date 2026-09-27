@@ -129,6 +129,6 @@ class MinimapRegion:
         if not path.exists():
             raise FileNotFoundError(
                 f"no calibrated minimap region at {path}. Run: python "
-                f"tools/calibrate_minimap.py --image <clip, still or window:name>"
+                f"tools/calibrate_minimap.py [--window TITLE]"
             )
         return cls.load(path)

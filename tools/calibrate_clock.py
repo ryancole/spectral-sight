@@ -1,13 +1,13 @@
-"""Teach the clock reader its digits from a clip, with no hand labelling.
+"""Teach the clock reader its digits from a running game, with no hand labelling.
 
     # drag a rough box around the timer, then let it learn the glyphs
-    python tools/calibrate_clock.py --input "data/my clip.mp4"
+    python tools/calibrate_clock.py
 
     # skip the drag if you already know where the timer is
-    python tools/calibrate_clock.py --input clip.mp4 --region 2044,43,47,13
+    python tools/calibrate_clock.py --region 2044,43,47,13
 
     # check an existing calibration without rebuilding it
-    python tools/calibrate_clock.py --input clip.mp4 --validate-only
+    python tools/calibrate_clock.py --validate-only
 
 The box does not have to be tight -- it is shrunk to the glyphs, and the gold
 clock icon beside them is dropped by saturation, so including it is harmless.
@@ -35,7 +35,7 @@ from collections import defaultdict
 import cv2
 import numpy as np
 
-from spectral_sight.capture import open_source
+from spectral_sight.capture import DEFAULT_WINDOW, WindowSource
 from spectral_sight.perception.hud.clock import (
     COLON,
     ClockConfig,
@@ -90,7 +90,7 @@ def _sizing_pass(source, region: ClockRegion, config: ClockConfig,
 
 def _learn(source, region: ClockRegion, size: tuple[int, int],
            config: ClockConfig) -> GlyphSet | None:
-    """Walk the clip and label glyphs off the seconds counter."""
+    """Watch the timer and label glyphs off the seconds counter."""
     samples: dict[str, list[np.ndarray]] = defaultdict(list)
     previous: list[np.ndarray] | None = None
     ones: int | None = None
@@ -199,10 +199,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument("--input", required=True, help="clip containing a running game")
+    parser.add_argument("--window", default=DEFAULT_WINDOW,
+                        help="capture the window whose title contains this "
+                             f"(default {DEFAULT_WINDOW!r})")
     parser.add_argument("--region", help="skip the drag: x,y,width,height")
-    parser.add_argument("--start", type=int, default=0,
-                        help="skip to this source frame first")
     parser.add_argument("--validate-only", action="store_true",
                         help="test the saved calibration instead of rebuilding it")
     parser.add_argument("--validate-frames", type=int, default=2000,
@@ -211,7 +211,7 @@ def main() -> int:
 
     config = ClockConfig()
 
-    with open_source(args.input, start=args.start) as source:
+    with WindowSource(args.window) as source:
         width, height = source.size
 
         if args.validate_only:
@@ -226,7 +226,7 @@ def main() -> int:
 
         frame = next(iter(source.frames()), None)
         if frame is None:
-            print(f"no frames in {args.input}", file=sys.stderr)
+            print(f"window {args.window!r} closed", file=sys.stderr)
             return 1
 
         if args.region:
@@ -251,14 +251,14 @@ def main() -> int:
             return 1
         print(f"tightened {box} -> {region}")
 
-    with open_source(args.input, start=args.start) as source:
+    with WindowSource(args.window) as source:
         size = _sizing_pass(source, region, config)
     if size is None:
         print("found no glyphs while sizing", file=sys.stderr)
         return 1
     print(f"glyph canvas {size[0]}x{size[1]}px")
 
-    with open_source(args.input, start=args.start) as source:
+    with WindowSource(args.window) as source:
         glyphs = _learn(source, region, size, config)
     if glyphs is None:
         return 1
@@ -267,7 +267,7 @@ def main() -> int:
     region_path, glyph_path = save_calibration(region, glyphs, width, height)
     print(f"saved {region_path}\n      {glyph_path}")
 
-    with open_source(args.input, start=args.start) as source:
+    with WindowSource(args.window) as source:
         ok = _validate(source, ClockReader(region, glyphs, config),
                        args.validate_frames)
     return 0 if ok else 1

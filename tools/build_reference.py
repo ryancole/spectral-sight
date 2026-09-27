@@ -1,6 +1,6 @@
 """Build the map-art reference that the panel locator recognises.
 
-    python tools/build_reference.py --input "data/your clip.mp4"
+    python tools/build_reference.py
 
 The panel is found by correlating this picture against the frame, so what it
 has to be is the map with nothing on it. Averaging many frames does that
@@ -11,9 +11,8 @@ source should span enough of a game for vision to have moved around.
 
 The source needs a calibrated minimap region already, because this reads the
 panel out of the frame using it -- the one bootstrap in the project. Run it
-against a clip you have calibrated by hand, or against a live window after
-`watch.py` has calibrated it, and the reference then works at every other
-resolution and window shape.
+against the window after it has been calibrated, by hand or by `watch.py`, and
+the reference then works at every other resolution and window shape.
 
 It also records which frame size the source was, because that size's
 calibrations are the ones every other size is derived from -- see
@@ -35,7 +34,7 @@ import cv2
 import numpy as np
 
 from spectral_sight.calibration import Reference
-from spectral_sight.capture import open_source
+from spectral_sight.capture import DEFAULT_WINDOW, WindowSource
 from spectral_sight.perception.minimap.locate import REFERENCE_PATH
 from spectral_sight.perception.minimap.region import MinimapRegion
 
@@ -57,8 +56,10 @@ def main() -> int:
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--input", required=True,
-                        help="clip, still or window:name with a calibrated region")
+    parser.add_argument("--window", default=DEFAULT_WINDOW,
+                        help="capture the window whose title contains this "
+                             f"(default {DEFAULT_WINDOW!r}); its size needs a "
+                             "calibrated region")
     parser.add_argument("--stride", type=int, default=10,
                         help="sample every Nth frame; the map does not move, so "
                              "neighbouring frames add nothing")
@@ -68,13 +69,17 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
-        source = open_source(args.input, stride=args.stride)
+        source = WindowSource(args.window, stride=args.stride)
     except (RuntimeError, TimeoutError, ValueError) as exc:
         print(exc, file=sys.stderr)
         return 1
 
     with source:
-        width, height = source.size
+        try:
+            width, height = source.size
+        except RuntimeError as exc:
+            print(exc, file=sys.stderr)
+            return 1
         try:
             region = MinimapRegion.for_resolution(width, height)
         except FileNotFoundError as exc:

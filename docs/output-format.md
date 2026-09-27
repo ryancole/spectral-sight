@@ -60,8 +60,8 @@ disagree with the body.
 | `has_liveness` | bool | HUD portraits calibrated. When false, every `alive` is null because nothing was read — distinct from the null meaning "read and inconclusive". |
 | `has_nameplates` | bool | Nameplates read. When false, `health`/`resource`/`level` are absent because nothing looked — distinct from "champion not on screen". |
 | `has_abilities` | bool | Local player's ability slots read. When false, no row carries `abilities` because nothing looked — distinct from "nothing was cast". |
-| `has_threats` | bool | The world view was read for projectiles at the local player. Needs every source frame, so it is true only for a run made with `--coach`. When false, no row carries `threats` because nothing looked. |
-| `has_skillshots` | bool | The local player's own casts were followed to the bolts they launched. Needs the world view, the ability HUD and nameplates together, so it is true only for a `--coach` run with all three calibrated. When false, no row carries `skillshots` because nothing looked. |
+| `has_threats` | bool | The world view was read for projectiles at the local player. Needs every source frame, so it is true only for a coaching run (`watch.py`'s default; false under `--no-coach`). When false, no row carries `threats` because nothing looked. |
+| `has_skillshots` | bool | The local player's own casts were followed to the bolts they launched. Needs the world view, the ability HUD and nameplates together, so it is true only for a coaching run with all three calibrated. When false, no row carries `skillshots` because nothing looked. |
 | `has_minions` | bool | Minion health bars were read off the world view. When false, no row carries `minions` because nothing looked. |
 | `has_minion_dots` | bool | Minion dots were read off the minimap. Needs a minimap panel of at least 400px (the in-game minimap scale turned up); off for the small default panel, where a dot is too few pixels to tell from the map's decoration. When false, no row carries `minion_dots`. |
 | `has_turrets` | bool | Turret icons were read off the minimap. Needs the world calibration (it places each icon) and a minimap panel of at least 400px, like `has_minion_dots`. When false, no row carries `turrets` and no `turret_destroyed` / `turret_rebuilt` event is derived. |
@@ -211,7 +211,7 @@ boundary — any language that can read lines.
 
 ## The HTTP feed
 
-`watch.py --serve` (or `tools/replay.py`) binds `http://127.0.0.1:8723` —
+`watch.py` (unless `--no-serve`) or `tools/replay.py` binds `http://127.0.0.1:8723` —
 localhost only, by design. Four endpoints, one schema:
 
 | Endpoint | Returns |

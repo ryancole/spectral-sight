@@ -195,7 +195,7 @@ class WorldTransform:
         if not path.exists():
             raise FileNotFoundError(
                 f"no world calibration at {path}. "
-                f"Run: python tools/calibrate_world.py --input <clip>"
+                f"Run: python tools/calibrate_world.py"
             )
         return cls.load(path)
 

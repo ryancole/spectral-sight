@@ -1,28 +1,26 @@
 """Frame sources. The rest of the pipeline never knows where pixels came from.
 
-The live sources are safe to import anywhere: `windows-capture` is an optional
-extra, so it is imported when a session is actually opened rather than when the
-module is, and the offline path keeps working on a machine without it.
+Every source is live: a named window, normally the kilrogg receiver, or a whole
+monitor. `windows-capture` is an optional extra, so it is imported when a
+session is actually opened rather than when the module is.
 """
 
 from spectral_sight.capture.base import FrameSource
-from spectral_sight.capture.open import WINDOW_SCHEME, open_source
-from spectral_sight.capture.video import ImageSource, VideoFileSource
 from spectral_sight.capture.window import (
+    DEFAULT_WINDOW,
     FrameSizeChanged,
     MonitorSource,
     WindowClosed,
     WindowSource,
+    lasting,
 )
 
 __all__ = [
-    "WINDOW_SCHEME",
+    "DEFAULT_WINDOW",
     "FrameSizeChanged",
     "FrameSource",
-    "ImageSource",
     "MonitorSource",
-    "VideoFileSource",
     "WindowClosed",
     "WindowSource",
-    "open_source",
+    "lasting",
 ]

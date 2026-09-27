@@ -285,7 +285,7 @@ it are the timeline's rows byte for byte (pinned by a test that diffs the
 files), which is what keeps recorded clips usable as fixtures for the live
 path and leaves every consumer with exactly one row schema to learn.
 
-    python tools/watch.py --window kilrogg --quiet --export - | your-tool
+    python tools/watch.py --window kilrogg --export - | your-tool
 
 Three kinds of field ride on the envelope and not on the rows, because they
 describe the feed rather than the game. `seq` is the identity of a frame — an
@@ -299,7 +299,7 @@ envelope another process can compare against its own clock. And `fps`,
 vision process is wedged" — the same distinction the timeline spends its
 `has_*` flags on, applied to liveness instead of calibration.
 
-Arrival stamping also quietly improved the offline story: a live frame's
+Arrival stamping also quietly improved the recorded timeline: a live frame's
 `timestamp` now comes from when it arrived rather than when the pipeline got
 around to it, which stops every waited-for frame being aged by exactly the
 processing time of its predecessor — an error that landed precisely when
@@ -367,14 +367,15 @@ debugger. Server-Sent Events rather than WebSockets because the stream is
 strictly one-way and SSE is plain HTTP — no dependency on either end, and
 resume built into the protocol.
 
-    python tools/watch.py --window kilrogg --serve
+    python tools/watch.py --window kilrogg
 
 Four endpoints, one schema. `/stream` is every message as it happens, each
 SSE record's `data:` exactly what the stdout sink writes; `/events` is the
 same stream with the frames filtered out; `/state` is the latest envelope
 plus the meta, for pollers and late joiners; `/meta` is the capability
 header, so a consumer can tell "no nameplate calibration" from "a quiet
-game". `--serve` composes with `--export` — the file stays the log of record
+game". Every run serves: `--serve PORT` moves it off 8723 and `--no-serve`
+turns it off. It composes with `--export` — the file stays the log of record
 while the socket carries the live copy.
 
 **The pipeline thread never touches a socket.** Publishing is an append to a
@@ -408,7 +409,7 @@ leaving consumers hanging on a dead socket.
     python tools/replay.py session.jsonl
     python tools/replay.py session.jsonl --speed 4 --from 260
 
-To anything listening this is `watch.py --serve` — same endpoints, same
+To anything listening this is `watch.py` — same endpoints, same
 messages, same events, paced by the recording's own clock — except that no
 League client, no capture and no vision is running. Which is how the
 downstream tool gets built: against a clip whose deaths and casts are known,
@@ -455,7 +456,7 @@ consumer as exists, speaking the same four endpoints as everything else — no
 private channel, no build step, one self-contained file with no external
 references, so it works on a machine that has never seen the internet and
 doubles as an OBS browser source. Minimap with fog drawn hollow and deaths
-crossed out (the same vocabulary as the debug overlay), rosters with levels,
+crossed out, rosters with levels,
 the game clock, feed health, and an event log that hides fog traffic by
 default — 444 vanishes on the sample clip is what player-perspective footage
 is, and not what a person watching wants scrolling past. Reconnection is
@@ -591,7 +592,7 @@ holds is a cast.
 That window is much narrower than the minimap's, and it is the pipeline that
 reads it: `perception/nameplates/casts.py` folds each champion's resource series
 and writes what it finds onto the timeline's `cast_*` fields, with
-`tools/detect_casts.py` reporting over a clip.
+`tools/detect_casts.py` reporting over a timeline.
 
 That window is much narrower than the minimap's. Measured on the coop-vs-AI clip
 at 10 Hz, an enemy is somewhere on the minimap in **87.9%** of frames but inside
@@ -964,8 +965,9 @@ Three measurements shaped it, all on the 2026-08-30 session:
   health text. The classifier the plan describes is what turns that into a
   verdict, and it needs Phase 0's footage.
 
-Run it with `--coach`, which feeds every frame and samples the minimap
-stages every `--stride` instead of decimating the source; rows and the feed
+`watch.py` runs it by default (`--coach`; `--no-coach` turns it off), feeding
+every frame and sampling the minimap stages every `--stride` instead of
+decimating the source; rows and the feed
 keep their 10 Hz cadence, and `threats` ride the self row like `abilities`
 with a `threat` event per entry. Through the whole pipeline on the same
 three minutes: **14 threats, 4.7 a minute -- 5 hit, 4 dodged, 5 unknown** --
@@ -1054,7 +1056,7 @@ Two consequences follow, and both are load-bearing:
   its reader; a window does not. Frames the pipeline cannot keep up with are
   dropped on arrival rather than queued, because a queued frame describes a
   fight that has already resolved. The drop count is reported at the end of a
-  run, and it is the number to watch if the overlay looks like it is lagging.
+  run, and it is the number to watch if the printed state looks like it is lagging.
 
 Time only moves forward. There is no seeking, so the tracker, the roster lock
 and the accumulated self-champion evidence all keep the monotonic input they
@@ -1192,10 +1194,11 @@ falls back to dragging a box by hand.
 `--no-calibrate` turns the whole thing back into a hard failure, for runs with
 nobody watching. To override the automatic answer, or for a second minimap scale
 via `--profile`, the manual tool is still there — and like every tool here it
-takes `window:name` as a source, so none of them need a screenshot on disk:
+captures the receiver directly (`--window` if its title changes), so none of
+them need a screenshot on disk:
 
 ```bash
-.venv/Scripts/python tools/calibrate_minimap.py --image window:kilrogg
+.venv/Scripts/python tools/calibrate_minimap.py
 ```
 
 The reference lives in `etc/map/reference.png` and is an average of many frames
@@ -1204,7 +1207,7 @@ champions, wards, pings and fog move and wash out. Rebuild it when the map art
 changes, which shows up as `watch.py` starting to ask for a drag it used to skip:
 
 ```bash
-.venv/Scripts/python tools/build_reference.py --input "data/your clip.mp4"
+.venv/Scripts/python tools/build_reference.py
 ```
 
 ### The other five
@@ -1246,32 +1249,32 @@ can be. `--no-calibrate` runs with whatever exists and derives nothing.
 Reach for the tools below to redo one by hand, or when the derivation declines.
 
 Teach the clock its digits — drag a rough box around the match timer and it does
-the rest, including checking itself against video time:
+the rest, including checking itself against elapsed time:
 
 ```bash
-.venv/Scripts/python tools/calibrate_clock.py --input "data/your clip.mp4"
+.venv/Scripts/python tools/calibrate_clock.py
 ```
 
 Mark the rendered map area inside the minimap panel — the terrain square, not
 the ornate frame and not the border band inside it:
 
 ```bash
-.venv/Scripts/python tools/calibrate_world.py --input "data/your clip.mp4"
+.venv/Scripts/python tools/calibrate_world.py
 ```
 
 ```bash
-.venv/Scripts/python tools/calibrate_world.py --input "data/your clip.mp4" --validate
+.venv/Scripts/python tools/calibrate_world.py --validate
 ```
 
 Mark the friendly HUD portraits, which is what makes death readable — three
 boxes: your leftmost teammate, your rightmost teammate, and yourself:
 
 ```bash
-.venv/Scripts/python tools/calibrate_hud.py --input "data/your clip.mp4"
+.venv/Scripts/python tools/calibrate_hud.py
 ```
 
 ```bash
-.venv/Scripts/python tools/calibrate_hud.py --input "data/your clip.mp4" --validate
+.venv/Scripts/python tools/calibrate_hud.py --validate
 ```
 
 That check is worth running. A box a few pixels off still reads a portrait and
@@ -1281,57 +1284,46 @@ just quietly stops noticing deaths.
 Then watch the whole pipeline run — live, against the receiver as it plays:
 
 ```bash
-.venv/Scripts/python tools/watch.py --window kilrogg
+.venv/Scripts/python tools/watch.py
 ```
 
-`--window` matches any window whose title contains the string, so the receiver
-is found whatever else it has put in its title bar. `--fps` sets the rate to ask
-the window for, defaulting to 10 to match the offline `--stride 3`. Ctrl+C ends
-the session and closes the timeline properly rather than leaving half a file.
+Every tool captures the `kilrogg` window by default. `--window` matches any
+window whose title contains the string, so the receiver is found whatever else
+it has put in its title bar, and it is how to point a tool at a receiver whose
+title has changed. `--fps` sets the rate to ask the window for, defaulting to
+10. Ctrl+C ends the session and closes the timeline properly rather than
+leaving half a file. There is no offline path: nothing reads a video file, and
+the only recorded input is a timeline served back by `tools/replay.py`.
+
+Each processed frame prints one line: the game clock (`*` when estimated rather
+than read), the champions visible, the local player with their world position,
+the named allies and enemies, and anyone the HUD confirms is dead. Every frame
+goes through the world-view stages (`--coach`, on by default); `--stride N` sets
+how often the minimap stages run among them. `--no-coach` skips the world view
+and runs the minimap stages on every frame.
 
 The startup line names whichever calibrations are missing and prints the command
 for each, for the case where derivation declined and you want to supply one by
-hand. All of them take `window:kilrogg` too, so none of this needs footage.
+hand. None of this needs footage.
 
-One catch on a live source: the passes that *sample* rather than ask — the
-nameplate `--fit`, and the `--validate` reports — walk until the source ends,
-and a window never does. They take `--limit N` for that. It defaults to 0,
-meaning walk the whole thing, which is still right for a clip.
+The passes that *sample* rather than ask — the nameplate `--fit`, the
+`--validate` reports, and the `detect_*` measurement tools — watch until Ctrl+C,
+which ends the watching and still prints the report. `--limit N` (or
+`--seconds N` on the measurement tools) stops them on their own.
 
 `tools/grab.py` saves a still from a window if you want one to keep, to look at,
 or to hand to something else; nothing in this workflow needs it.
 
-Or against a recorded clip, which behaves identically in every respect except
-that it waits for the pipeline instead of dropping frames past it:
+Keep the timeline while watching, and ask questions of the file afterwards:
 
 ```bash
-.venv/Scripts/python tools/watch.py --input "data/your clip.mp4"
-```
-
-Solid circles are champions currently visible; hollow dimmed circles are
-champions in fog, drawn at their last known position with the seconds since they
-were seen. A champion the HUD confirms is dead is crossed out rather than
-dimmed. A white outer ring marks the local player. A **yellow ring** marks a
-champion who has just cast, fading over two seconds — thick when the cast was
-pinned to consecutive readings, thin when it was measured across a gap and so
-happened somewhere in a window rather than at an instant. Q quits, SPACE pauses.
-
-Useful flags: `--save out.mp4` to write the annotated video, and `--quiet` to
-print the tracked roster per frame instead of opening a window. `--start N` to
-skip into the clip and `--stride 1` to process every frame instead of 10 Hz are
-`--input` only — a live window has no past to seek into, and no frames to skip
-that it did not already drop.
-
-Or extract the clip to a timeline once and ask questions of the file afterwards:
-
-```bash
-.venv/Scripts/python tools/watch.py --input "data/your clip.mp4" --quiet --export clip.jsonl
+.venv/Scripts/python tools/watch.py --export session.jsonl
 ```
 
 ```python
 from spectral_sight.export import read_timeline
 
-meta, rows = read_timeline("clip.jsonl")
+meta, rows = read_timeline("session.jsonl")
 seen = [r for r in rows if r.champion == "Xerath" and r.visible]
 print(f"{seen[0].game_time}s at {seen[0].world_x:.0f}, {seen[0].world_y:.0f}")
 
@@ -1347,7 +1339,7 @@ Casts are already on those rows, but the report is what says whether to believe
 them:
 
 ```bash
-.venv/Scripts/python tools/detect_casts.py --timeline clip.jsonl --list
+.venv/Scripts/python tools/detect_casts.py --timeline session.jsonl --list
 ```
 
 It prints the drop sizes per champion — the clustering is the whole claim — how
@@ -1357,21 +1349,10 @@ which should be zero. `--min-drop` and `--continuity` re-derive from the raw
 resource series in the file, so retuning costs a read rather than another run of
 the vision.
 
-To score it rather than describe it, against the player's own printed mana:
-
-```bash
-.venv/Scripts/python tools/validate_casts.py --input "data/your clip.mp4" --timeline clip.jsonl
-```
-
-This is the only check here with both halves. It reports precision and recall,
-and for every missed cast it prints what the plate held at that moment — which
-is how the misses were traced to plate association rather than to the
-threshold.
-
 For working on stage 1 specifically:
 
 ```bash
-.venv/Scripts/python tools/detect_blips.py --input data/clip.mp4 --masks
+.venv/Scripts/python tools/detect_blips.py --masks
 ```
 
 `--masks` shows the colour masks beside the detections, which is how the HSV
@@ -1382,7 +1363,7 @@ bands were fitted. `--benchmark N` times the detector instead of displaying it.
 ```
 src/spectral_sight/
   types.py                    Blip, Frame, Team
-  capture/                    frame sources: video, still, live window
+  capture/                    frame sources: live window, monitor
   perception/minimap/
     region.py                 where the minimap sits in the frame
     locate.py                 finding that, by recognising the map art

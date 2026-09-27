@@ -1,20 +1,21 @@
-"""Run the stage 1 detector over a still or a clip and show what it found.
+"""Run the stage 1 detector over the live window and show what it found.
 
-    # single frame, region loaded from etc/regions/
-    python tools/detect_blips.py --input data/frame.png
+    # region loaded from etc/regions/
+    python tools/detect_blips.py
 
-    # explicit region, write an annotated copy instead of opening a window
-    python tools/detect_blips.py --input data/clip.mp4 --region 1610,790,290,290 --save out.mp4
+    # explicit region, save one annotated frame instead of opening a window
+    python tools/detect_blips.py --region 1610,790,290,290 --save out.png
 
-    # how fast is it, really
-    python tools/detect_blips.py --input data/frame.png --benchmark 2000
+    # how fast is it, really, on the current frame
+    python tools/detect_blips.py --benchmark 2000
 
-Press Q to quit playback, SPACE to pause.
+Press Q to quit, SPACE to pause.
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import statistics
 import sys
 import time
@@ -22,7 +23,7 @@ import time
 import cv2
 import numpy as np
 
-from spectral_sight.capture import open_source
+from spectral_sight.capture import DEFAULT_WINDOW, WindowSource
 from spectral_sight.debug import draw_blips, stack_masks
 from spectral_sight.perception.minimap import (
     BlipDetector,
@@ -67,10 +68,13 @@ def benchmark(detector: BlipDetector, minimap: np.ndarray, iterations: int) -> N
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--input", required=True, help="image or video path")
+    parser.add_argument("--window", default=DEFAULT_WINDOW,
+                        help="capture the window whose title contains this "
+                             f"(default {DEFAULT_WINDOW!r})")
+    parser.add_argument("--fps", type=float, default=10.0,
+                        help="frames per second to ask the window for")
     parser.add_argument("--region", help="x,y,width,height; else load by resolution")
-    parser.add_argument("--save", help="write an annotated image/video here")
-    parser.add_argument("--stride", type=int, default=1, help="process every Nth frame")
+    parser.add_argument("--save", help="write one annotated frame here and stop")
     parser.add_argument("--zoom", type=float, default=2.0, help="preview upscale")
     parser.add_argument("--masks", action="store_true", help="show the colour masks")
     parser.add_argument("--benchmark", type=int, metavar="N", help="time N iterations")
@@ -81,7 +85,8 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    with open_source(args.input, stride=args.stride) as source:
+    with (WindowSource(args.window, target_fps=args.fps) as source,
+          contextlib.suppress(KeyboardInterrupt)):
         try:
             region = resolve_region(args.region, source.size)
         except FileNotFoundError as exc:
@@ -89,7 +94,6 @@ def main() -> int:
             return 1
 
         detector = build_detector(region, autoscale=not args.no_autoscale)
-        writer: cv2.VideoWriter | None = None
         paused = False
         counts: list[int] = []
 
@@ -113,24 +117,16 @@ def main() -> int:
                 canvas = np.hstack([canvas, masks])
 
             if args.save:
-                if writer is None:
-                    writer = _open_writer(args.save, canvas, source)
-                if writer is not None:
-                    writer.write(canvas)
-                else:
-                    cv2.imwrite(args.save, canvas)
-                    break
-            else:
-                cv2.imshow("stage 1 - blips", canvas)
-                key = cv2.waitKey(0 if paused else 1) & 0xFF
-                if key == ord("q"):
-                    break
-                if key == ord(" "):
-                    paused = not paused
+                cv2.imwrite(args.save, canvas)
+                break
+            cv2.imshow("stage 1 - blips", canvas)
+            key = cv2.waitKey(0 if paused else 1) & 0xFF
+            if key == ord("q"):
+                break
+            if key == ord(" "):
+                paused = not paused
 
-        if writer is not None:
-            writer.release()
-        cv2.destroyAllWindows()
+    cv2.destroyAllWindows()
 
     if counts:
         print(
@@ -141,17 +137,6 @@ def main() -> int:
         full = sum(1 for c in counts if c == 10)
         print(f"frames with all 10 champions: {full}/{len(counts)} ({full / len(counts):.1%})")
     return 0
-
-
-def _open_writer(path: str, canvas: np.ndarray, source) -> cv2.VideoWriter | None:
-    """Video writer for clips; None signals 'this is a still, use imwrite'."""
-    if not path.lower().endswith((".mp4", ".avi", ".mkv")):
-        return None
-    fps = getattr(source, "fps", 30.0)
-    height, width = canvas.shape[:2]
-    return cv2.VideoWriter(
-        path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height)
-    )
 
 
 if __name__ == "__main__":

@@ -1,12 +1,12 @@
 """Follow the player's own casts to their bolts, and report what landed.
 
-    python tools/detect_skillshots.py --input "data/your clip.mp4" --from 150 --to 700
+    python tools/detect_skillshots.py --seconds 600
 
-Joins the three stages a skillshot needs: the ability HUD says a button was
+Watches the window until `--seconds` or Ctrl+C. Joins the three stages a skillshot needs: the ability HUD says a button was
 pressed, the world view says a bolt left the player's model, and an enemy
 nameplate's health bar says whether it reached anyone. Every frame feeds the
 projectile tracker; the plates are read every `--stride` frames, the rate the
-pipeline reads them at in `--coach` mode.
+pipeline reads them at when coaching.
 
 The report has two halves. The first is the census -- how many casts, how many
 launched a bolt, how many had an enemy on screen to aim at, and how they came
@@ -26,10 +26,11 @@ verdict does not rest on it.
 from __future__ import annotations
 
 import argparse
+import contextlib
 
 import numpy as np
 
-from spectral_sight.capture import open_source
+from spectral_sight.capture import DEFAULT_WINDOW, WindowSource, lasting
 from spectral_sight.perception.hud.abilities import load_ability_reader
 from spectral_sight.perception.hud.clock import load_clock_reader
 from spectral_sight.perception.nameplates import NameplateLayout, NameplateReader, Side
@@ -47,12 +48,10 @@ PLATE_ABOVE_MODEL = 95.0
 constant the pipeline uses; the model is what a bolt comes from and goes to."""
 
 
-def run(args) -> list:
-    with open_source(args.input) as probe:
-        first = next(iter(probe.frames()), None)
-    if first is None:
-        raise SystemExit(f"no frames in {args.input}")
-    width, height = first.size
+def run(args) -> tuple[list, float]:
+    """Every shot, and how many seconds were watched to find them."""
+    source = WindowSource(args.window, target_fps=args.fps)
+    width, height = source.size
     try:
         clock = load_clock_reader(width, height)
     except FileNotFoundError:
@@ -69,13 +68,12 @@ def run(args) -> list:
     vx, vy, _, _ = view.box(width, height)
 
     shots, anchor = [], None
-    fps = 30.0
     index = 0
-    with open_source(args.input, start=int(args.start * fps)) as source:
-        for frame in source.frames():
-            t = frame.timestamp
-            if args.end and t > args.end:
-                break
+    elapsed = 0.0
+    # Ctrl+C ends the watching, not the report.
+    with source, contextlib.suppress(KeyboardInterrupt):
+        for frame in lasting(source.frames(), args.seconds):
+            t = elapsed = frame.timestamp
             for cast in abilities.read(frame.image, t):
                 aim.observe_cast(cast.slot, cast.at)
             if index % args.stride == 0:
@@ -103,18 +101,22 @@ def run(args) -> list:
             index += 1
     tracker.flush()
     shots.extend(aim.flush())
-    return shots
+    return shots, elapsed
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--input", required=True)
-    parser.add_argument("--from", dest="start", type=float, default=0.0, help="seconds")
-    parser.add_argument("--to", dest="end", type=float, default=0.0,
-                        help="seconds; 0 = end")
+    parser.add_argument("--window", default=DEFAULT_WINDOW,
+                        help="capture the window whose title contains this "
+                             f"(default {DEFAULT_WINDOW!r})")
+    parser.add_argument("--fps", type=float, default=30.0,
+                        help="frames per second to ask the window for; a bolt "
+                             "is gone in a few tenths of a second, so keep it high")
+    parser.add_argument("--seconds", type=float, default=0.0,
+                        help="stop after this long; 0 watches until Ctrl+C")
     parser.add_argument("--stride", type=int, default=3,
-                        help="frames per nameplate read; 3 is the pipeline's 10 Hz")
+                        help="frames per nameplate read; 3 is 10 Hz at --fps 30")
     parser.add_argument("--radius", type=float, default=None,
                         help="override AimConfig.hit_radius")
     parser.add_argument("--list", action="store_true", help="print every shot")
@@ -122,11 +124,11 @@ def main() -> int:
                         help="the validation: health falls grouped by miss distance")
     args = parser.parse_args()
 
-    shots = run(args)
+    shots, elapsed = run(args)
 
     launched = [s for s in shots if s.launched is not None]
     aimed = [s for s in launched if s.miss is not None]
-    minutes = max(1e-9, ((args.end or 0) - args.start) / 60)
+    minutes = max(1e-9, elapsed / 60)
     print(f"{len(shots)} casts in ability slots ({len(shots)/minutes:.1f}/min)")
     print(f"  launched a bolt: {len(launched)} ({len(launched)/max(1,len(shots)):.0%})")
     print(f"  with an enemy in front of it: {len(aimed)} "
@@ -157,11 +159,11 @@ def main() -> int:
     if args.sweep:
         # The verdict is geometric, so this is not a scoring of it -- it is
         # the check on whether the geometry means anything, run against the
-        # one other observer the footage has. `fall` is the target's bar
+        # one other observer the game has. `fall` is the target's bar
         # moving in the arrival window, and the shares below are only
         # readable against the baseline rate at which it moves in any window
         # of that length -- which is recorded in `AimConfig.hit_radius`,
-        # because it takes the whole clip's plate tracks to compute and not
+        # because it takes a whole game's plate tracks to compute and not
         # just the shots.
         print()
         print("does the bolt's geometry agree with the target's health bar?")

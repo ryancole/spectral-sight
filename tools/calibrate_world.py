@@ -1,13 +1,13 @@
 """Mark the rendered map area, and check the resulting scale against physics.
 
     # drag the terrain square inside the minimap panel
-    python tools/calibrate_world.py --input "data/my clip.mp4"
+    python tools/calibrate_world.py
 
     # check what that scale implies about how fast champions move
-    python tools/calibrate_world.py --input clip.mp4 --validate
+    python tools/calibrate_world.py --validate
 
     # and compare against pretending the whole crop is the map
-    python tools/calibrate_world.py --input clip.mp4 --validate --assume-crop
+    python tools/calibrate_world.py --validate --assume-crop
 
 The drag is shown zoomed, because a few pixels here is a hundred world units.
 Drag the *terrain*, not the ornate frame and not the black gutter inside it. The
@@ -68,6 +68,7 @@ the last few pixels of the calibration, and should not be quoted as if it did.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import math
 import statistics
 import sys
@@ -75,7 +76,7 @@ from pathlib import Path
 
 import cv2
 
-from spectral_sight.capture import open_source
+from spectral_sight.capture import DEFAULT_WINDOW, WindowSource
 from spectral_sight.perception.minimap import MinimapRegion, WorldTransform
 from spectral_sight.perception.minimap.world import WORLD_DIR
 from spectral_sight.pipeline import Pipeline
@@ -165,22 +166,24 @@ def _validate(source, pipeline: Pipeline, transform: WorldTransform,
     ys: list[float] = []
     processed = 0
 
-    for frame in source.frames():
-        result = pipeline.process(frame.image, frame.timestamp)
-        processed += 1
-        for track in result.tracks:
-            # Only positions actually seen this frame. A track coasting through
-            # fog moves at whatever the filter last believed, which would be
-            # measuring the tracker rather than the transform.
-            if track.age(frame.timestamp) > 1e-6:
-                continue
-            wx, wy = transform.from_minimap(pipeline.region, track.x, track.y)
-            xs.append(wx)
-            ys.append(wy)
-            history.setdefault(track.id, []).append((frame.timestamp, wx, wy))
+    # Ctrl+C ends the watching, not the check.
+    with contextlib.suppress(KeyboardInterrupt):
+        for frame in source.frames():
+            result = pipeline.process(frame.image, frame.timestamp)
+            processed += 1
+            for track in result.tracks:
+                # Only positions actually seen this frame. A track coasting
+                # through fog moves at whatever the filter last believed, which
+                # would be measuring the tracker rather than the transform.
+                if track.age(frame.timestamp) > 1e-6:
+                    continue
+                wx, wy = transform.from_minimap(pipeline.region, track.x, track.y)
+                xs.append(wx)
+                ys.append(wy)
+                history.setdefault(track.id, []).append((frame.timestamp, wx, wy))
 
-        if limit and processed >= limit:
-            break
+            if limit and processed >= limit:
+                break
 
     speeds = _window_speeds(history, WINDOW)
     if not speeds:
@@ -225,7 +228,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument("--input", required=True, help="clip or screenshot")
+    parser.add_argument("--window", default=DEFAULT_WINDOW,
+                        help="capture the window whose title contains this "
+                             f"(default {DEFAULT_WINDOW!r})")
     parser.add_argument("--area", help="skip the drag: x,y,width,height in frame pixels")
     parser.add_argument("--zoom", type=float, default=3.0, help="drag magnification")
     parser.add_argument("--no-snap", action="store_true",
@@ -239,16 +244,15 @@ def main() -> int:
     parser.add_argument("--stride", type=int, default=3,
                         help="process every Nth frame while validating")
     parser.add_argument("--limit", type=int, default=1500,
-                        help="stop validating after N processed frames (0 = all)")
-    parser.add_argument("--start", type=int, default=0,
-                        help="skip to this source frame first")
+                        help="stop validating after N processed frames "
+                             "(0 = until Ctrl+C)")
     args = parser.parse_args()
 
-    with open_source(args.input) as source:
+    with WindowSource(args.window) as source:
         width, height = source.size
         frame = next(iter(source.frames()), None)
     if frame is None:
-        print(f"no frames in {args.input}", file=sys.stderr)
+        print(f"window {args.window!r} closed", file=sys.stderr)
         return 1
 
     try:
@@ -282,8 +286,9 @@ def main() -> int:
         ux, uy = transform.units_per_pixel
         print(f"map area {w}x{h} at ({x}, {y}) | {ux:.1f} units/px")
         print(f"saved {path}")
-        print("\nNow check it: "
-              f"python tools/calibrate_world.py --input {args.input!r} --validate")
+        target = ("" if args.window == DEFAULT_WINDOW
+                  else f' --window "{args.window}"')
+        print(f"\nNow check it: python tools/calibrate_world.py{target} --validate")
         return 0
 
     if args.assume_crop:
@@ -302,7 +307,7 @@ def main() -> int:
         print(exc, file=sys.stderr)
         return 1
 
-    with open_source(args.input, stride=args.stride, start=args.start) as source:
+    with WindowSource(args.window, stride=args.stride) as source:
         pipeline = Pipeline.for_resolution(width, height, icons)
         ok = _validate(source, pipeline, transform, args.limit)
     return 0 if ok else 1

@@ -268,7 +268,7 @@ class NameplateLayout:
         if not path.exists():
             raise FileNotFoundError(
                 f"no nameplate calibration at {path}. "
-                f"Run: python tools/calibrate_nameplates.py --input <clip>"
+                f"Run: python tools/calibrate_nameplates.py"
             )
         return cls.load(path)
 
