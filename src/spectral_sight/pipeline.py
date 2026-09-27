@@ -1310,7 +1310,7 @@ class Pipeline:
                     turrets=(
                         tuple(
                             TurretStatus(
-                                team=t.turret.team.value,
+                                team=t.team.value,
                                 lane=t.turret.lane,
                                 tier=t.turret.tier.value,
                                 standing=t.standing,
@@ -1319,6 +1319,14 @@ class Pipeline:
                             for t in turrets
                         )
                         if turrets is not None
+                        and self_track is not None
+                        and track.id == self_track.id
+                        else None
+                    ),
+                    map_side=(
+                        self.turret_reader.side.value
+                        if self.turret_reader is not None
+                        and self.turret_reader.side is not None
                         and self_track is not None
                         and track.id == self_track.id
                         else None

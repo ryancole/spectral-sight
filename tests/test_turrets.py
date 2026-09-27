@@ -51,16 +51,20 @@ def centre(turret: Turret) -> tuple[int, int]:
 
 
 def scene(
-    standing: set[Turret] | None = None, grey: set[Turret] = frozenset()
+    standing: set[Turret] | None = None,
+    grey: set[Turret] = frozenset(),
+    side: Team = Team.BLUE,
 ) -> np.ndarray:
     """Every turret in `standing` drawn in colour (all of them by default);
-    those in `grey` drawn as the destroyed nexus turret's grey outline."""
+    those in `grey` drawn as the destroyed nexus turret's grey outline. The
+    player's base is in the `side` corner, so their own turrets -- that
+    corner's -- are drawn with the blue icon, as the client does."""
     standing = set(TURRETS) if standing is None else standing
     canvas = np.full((*SIZE, 3), GROUND_BGR, np.uint8)
     for turret in TURRETS:
         if turret not in standing and turret not in grey:
             continue
-        icon = TEMPLATES[(turret.team, turret.kind)]
+        icon = TEMPLATES[(TurretReader.colour(turret, side), turret.kind)]
         if turret in grey:
             icon = cv2.cvtColor(cv2.cvtColor(icon, cv2.COLOR_BGR2GRAY), cv2.COLOR_GRAY2BGR)
         h, w = icon.shape[:2]
@@ -69,27 +73,27 @@ def scene(
     return canvas
 
 
-def reader(**config: object) -> TurretReader:
-    return TurretReader(ANCHORS, config=TurretConfig(**config))
+def reader(side: Team | None = Team.BLUE, **config: object) -> TurretReader:
+    return TurretReader(ANCHORS, config=TurretConfig(**config), side=side)
 
 
-def find(team: Team, lane: str, tier: Tier) -> Turret:
+def find(corner: Team, lane: str, tier: Tier) -> Turret:
     return next(
-        t for t in TURRETS if t.team is team and t.lane == lane and t.tier is tier
+        t for t in TURRETS if t.corner is corner and t.lane == lane and t.tier is tier
     )
 
 
 BLUE_MID_INNER = find(Team.BLUE, "mid", Tier.INNER)
 RED_BOT_OUTER = find(Team.RED, "bot", Tier.OUTER)
 BLUE_NEXUS_TOP = next(
-    t for t in TURRETS if t.team is Team.BLUE and t.tier is Tier.NEXUS and t.side == "top"
+    t for t in TURRETS if t.corner is Team.BLUE and t.tier is Tier.NEXUS and t.side == "top"
 )
 
 
 def test_the_set_is_the_twenty_two() -> None:
     assert len(TURRETS) == 22
     for team in (Team.BLUE, Team.RED):
-        mine = [t for t in TURRETS if t.team is team]
+        mine = [t for t in TURRETS if t.corner is team]
         assert len(mine) == 11
         assert {t.side for t in mine if t.tier is Tier.NEXUS} == {"top", "bot"}
         assert all(t.lane == "base" for t in mine if t.tier is Tier.NEXUS)
@@ -268,10 +272,120 @@ def test_other_panel_sizes_scale_the_icons(width: int) -> None:
     for turret in TURRETS:
         x, y = ANCHORS[turret]
         scaled_anchors[turret] = (x * factor, y * factor)
-        icon = scaled[(turret.team, turret.kind)]
+        icon = scaled[(TurretReader.colour(turret, Team.BLUE), turret.kind)]
         dx, dy = ICON_OFFSET["nexus" if turret.tier is Tier.NEXUS else "shield"]
         cx, cy = round((x + dx) * factor), round((y + dy) * factor)
         h, w = icon.shape[:2]
         canvas[cy - h // 2 : cy - h // 2 + h, cx - w // 2 : cx - w // 2 + w] = icon
-    r = TurretReader(scaled_anchors, minimap_width=width)
+    r = TurretReader(scaled_anchors, minimap_width=width, side=Team.BLUE)
     assert set(r.read_once(canvas).values()) == {Reading.STANDING}
+
+
+def test_a_team_coloured_icon_on_other_ground_is_no_reading() -> None:
+    """The templates carry the ground they were captured on. On the red-side
+    capture the player's mid inner shield sat on black and matched at 0.24
+    with the colour all there; that is not bare map."""
+    image = scene(set(TURRETS) - {BLUE_MID_INNER})
+    icon = TEMPLATES[(Team.BLUE, "shield")].copy()
+    icon[~reader()._fills[(Team.BLUE, "shield")]] = 0
+    h, w = icon.shape[:2]
+    cx, cy = centre(BLUE_MID_INNER)
+    image[cy - h // 2 : cy - h // 2 + h, cx - w // 2 : cx - w // 2 + w] = icon
+    assert reader().read_once(image)[BLUE_MID_INNER] is Reading.UNKNOWN
+
+
+# -- red side -------------------------------------------------------------
+#
+# The client colours by ally and enemy: on red side the upper-right turrets
+# are the blue ones. `team` in the output stays relative; the corner stays
+# where it is on the map.
+
+RED_MID_INNER = find(Team.RED, "mid", Tier.INNER)
+
+
+def test_red_side_reads_the_upper_right_as_ours() -> None:
+    readings = reader(Team.RED).read_once(scene(side=Team.RED))
+    assert set(readings.values()) == {Reading.STANDING}
+
+
+def test_red_side_footage_read_as_blue_side_finds_nothing() -> None:
+    """What the reader did before it knew about sides: every spot has the
+    other team's icon on it."""
+    readings = reader(Team.BLUE).read_once(scene(side=Team.RED))
+    assert Reading.STANDING not in readings.values()
+
+
+def test_red_side_states_put_ours_first_with_relative_teams() -> None:
+    states = feed(reader(Team.RED), scene(side=Team.RED), 0.0, 2)
+    assert [s.turret.corner for s in states] == [Team.RED] * 11 + [Team.BLUE] * 11
+    assert [s.team for s in states] == [Team.BLUE] * 11 + [Team.RED] * 11
+    # Each half keeps the fixed lane order the feed documents.
+    assert [(s.turret.lane, s.turret.tier) for s in states[:11]] == [
+        (s.turret.lane, s.turret.tier) for s in states[11:]
+    ]
+
+
+def test_red_side_loss_of_our_turret() -> None:
+    r = reader(Team.RED, destroy_hold=1.5, destroy_readings=3)
+    feed(r, scene(side=Team.RED), 0.0, 2)
+    states = feed(r, scene(set(TURRETS) - {RED_MID_INNER}, side=Team.RED), 1.0, 8)
+    state = next(s for s in states if s.turret == RED_MID_INNER)
+    assert state.team is Team.BLUE and state.standing is False
+    assert all(s.standing for s in states if s.turret != RED_MID_INNER)
+
+
+def test_the_turrets_keep_their_world_positions_on_either_side() -> None:
+    """Positions are absolute: the red-side player's own mid inner turret is
+    still the upper-right one."""
+    states = feed(reader(Team.RED), scene(side=Team.RED), 0.0, 2)
+    ours = next(s for s in states if s.team is Team.BLUE and s.turret.lane == "mid"
+                and s.turret.tier is Tier.INNER)
+    assert ours.turret.world == (9767, 10113)
+
+
+# -- reading the side -----------------------------------------------------
+
+
+@pytest.mark.parametrize("side", [Team.BLUE, Team.RED])
+def test_the_side_is_read_off_the_icons(side: Team) -> None:
+    r = reader(None)
+    assert r.read(scene(side=side), 0.0) is None
+    assert r.side is None
+    states = r.read(scene(side=side), 0.3)
+    assert r.side is side
+    assert states is not None and states[0].turret.corner is side
+
+
+def test_the_side_needs_crops_in_a_row() -> None:
+    """A crop that says nothing (not the map) breaks the run."""
+    r = reader(None)
+    blank = np.full((*SIZE, 3), GROUND_BGR, np.uint8)
+    r.read(scene(side=Team.RED), 0.0)
+    r.read(blank, 0.3)
+    r.read(scene(side=Team.RED), 0.6)
+    assert r.side is None
+    r.read(scene(side=Team.RED), 0.9)
+    assert r.side is Team.RED
+
+
+def test_a_late_game_map_still_tells_the_side() -> None:
+    """Half the turrets down on both sides, and the nexus turrets with them."""
+    down = {t for i, t in enumerate(TURRETS) if i % 2}
+    r = reader(None)
+    feed(r, scene(set(TURRETS) - down, side=Team.RED), 0.0, 2)
+    assert r.side is Team.RED
+
+
+def test_reset_forgets_a_side_it_read_but_not_one_it_was_given() -> None:
+    read = reader(None)
+    feed(read, scene(side=Team.RED), 0.0, 2)
+    read.reset()
+    assert read.side is None
+    given = reader(Team.RED)
+    given.reset()
+    assert given.side is Team.RED
+
+
+def test_no_side_no_single_reading() -> None:
+    with pytest.raises(ValueError):
+        reader(None).read_once(scene())

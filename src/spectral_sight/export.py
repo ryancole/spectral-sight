@@ -567,6 +567,12 @@ class Observation:
     yet seen clearly enough to call has `standing` None. The field itself is
     None when the minimap was not read."""
 
+    map_side: str | None = None
+    """Which corner the player's base is in -- "blue" the lower left, "red"
+    the upper right -- read off the turret icons. The self row only; None
+    until it is known. Every `team` in the feed is relative; this is the
+    one thing that ties it to the map."""
+
     cs: int | None = None
     """The local player's creep score, from the score bar -- the self row
     only. Filtered: it never falls and a rise is adopted only once readings
@@ -650,6 +656,8 @@ class Observation:
             row["minion_dots"] = [m.to_dict() for m in self.minion_dots]
         if self.turrets is not None:
             row["turrets"] = [t.to_dict() for t in self.turrets]
+        if self.map_side is not None:
+            row["map_side"] = self.map_side
         return row
 
     @classmethod
@@ -721,6 +729,7 @@ class Observation:
                 None if data.get("turrets") is None
                 else tuple(TurretStatus.from_dict(t) for t in data["turrets"])
             ),
+            map_side=None if data.get("map_side") is None else str(data["map_side"]),
             allies_dead=(
                 None if data.get("allies_dead") is None
                 else int(data["allies_dead"])

@@ -56,6 +56,27 @@ not called until the spot clears -- the player standing on it, say. A lane
 turret's loss is never reverted. A nexus turret's is, once it has read
 standing for `rebuild_hold`.
 
+**The colours are ally and enemy, not blue and red side.** The client draws
+the player's own turrets in blue and the enemy's in red whichever corner the
+player starts in, and the two icons differ in more than colour -- the ally
+nexus turret is a pentagon, the enemy's comes to a point below -- and the
+ally base's ground is drawn pale. On the red-side client captures of
+2024-05-12 and 2026-04-23 the upper-right turrets are blue and the lower-left
+red, on a map that is not flipped: the blue base is still drawn lower left.
+So a template's team is the colour it is drawn in (blue: the player's), and
+which spots are checked for which colour turns on the player's side,
+`TurretReader.side`. Each `Turret` keeps its `corner`, fixed like its world
+position; its `TurretState` carries the relative `team`.
+
+**The side is read off the icons** unless the caller knows it: every crop is
+read under both sides until one of them reads at least `side_min_standing`
+turrets standing and more than `side_ratio` times the other's, on
+`side_readings` crops in a row, and that side is kept for the game. The wrong
+side reads next to nothing -- it looks for ally icons where enemy ones are
+drawn and the other way round, and shape, colour and ground all disagree --
+so this settles as soon as the map is in view, whenever the feed joins,
+which a check of the player's marker in the fountain would not.
+
 The digit on a shield changed as the recorded turrets were hit -- the blue
 mid-lane inhibitor turret went 5, 4, 2 and then vanished -- so it looks like
 a coarse health reading. It is not read: nothing here has checked what the
@@ -79,6 +100,9 @@ TEMPLATE_DIR = Path(__file__).resolve().parents[4] / "etc" / "turrets"
 REFERENCE_MINIMAP_WIDTH = 486
 """Panel width the templates and offsets were captured at."""
 
+SIDES = (Team.BLUE, Team.RED)
+"""The two corners, and the two colours an icon is drawn in."""
+
 
 class Tier(Enum):
     OUTER = "outer"
@@ -89,9 +113,13 @@ class Tier(Enum):
 
 @dataclass(frozen=True, slots=True)
 class Turret:
-    """One of the 22 turrets: who owns it and where it stands."""
+    """One of the 22 turrets: whose base it guards and where it stands."""
 
-    team: Team
+    corner: Team
+    """The base it guards, by map corner: BLUE the lower left, RED the upper
+    right. Absolute, like `world` -- whether it is the player's own turret
+    depends on the player's side (see `TurretState.team`)."""
+
     lane: str
     """"top", "mid", "bot", or "base" for the nexus turrets."""
 
@@ -115,9 +143,9 @@ class Turret:
 
 
 def _lane_turrets(
-    team: Team, positions: dict[tuple[str, Tier], tuple[float, float]]
+    corner: Team, positions: dict[tuple[str, Tier], tuple[float, float]]
 ) -> list[Turret]:
-    return [Turret(team, lane, tier, world) for (lane, tier), world in positions.items()]
+    return [Turret(corner, lane, tier, world) for (lane, tier), world in positions.items()]
 
 
 TURRETS: tuple[Turret, ...] = (
@@ -148,9 +176,10 @@ TURRETS: tuple[Turret, ...] = (
     Turret(Team.RED, "base", Tier.NEXUS, (12611, 13084), side="top"),
     Turret(Team.RED, "base", Tier.NEXUS, (13052, 12612), side="bot"),
 )
-"""The 22 turrets in the order the feed reports them. World positions are
-the game's own; projected through the 2026-09-25 world calibration every one
-lands within a few pixels of its icon."""
+"""The 22 turrets, blue corner first. World positions are the game's own;
+projected through the 2026-09-25 world calibration every one lands within a
+few pixels of its icon. The feed lists the player's own turrets first, so on
+blue side this is its order."""
 
 ICON_OFFSET = {"shield": (3.0, -6.0), "nexus": (3.0, -5.0)}
 """Icon centre minus projected world position, in minimap pixels at the
@@ -171,7 +200,15 @@ class TurretConfig:
 
     min_colour: float = 0.4
     """Share of the icon's filled pixels in team colour for a standing
-    reading. The grey outline of a destroyed nexus turret stops at 0.33."""
+    reading. The grey outline of a destroyed nexus turret stops at 0.33.
+
+    At or above it a spot is never read `GONE`, whatever the shape: the
+    templates carry the ground they were captured on, and on the red-side
+    capture of 2026-04-23 two of the player's icons -- the mid inner shield
+    on black, a nexus turret against its nexus -- matched at 0.24 and 0.40
+    with 0.5-0.7 colour, every frame. On the three 2026-09-25 clips this
+    turns 0-17 of each fallen spot's hundreds of bare readings to `UNKNOWN`
+    and removes every false `GONE` on a standing turret."""
 
     max_grey: float = 0.2
     """Below this colour share a matched shape reads destroyed. Between it
@@ -214,6 +251,13 @@ class TurretConfig:
     """How long a destroyed nexus turret must read standing again before it
     is taken to have rebuilt."""
 
+    side_min_standing: int = 4
+    side_ratio: float = 3.0
+    side_readings: int = 2
+    """What settles the player's side when it is not given: one side reading
+    at least `side_min_standing` turrets standing and more than `side_ratio`
+    times the other side's count, on `side_readings` crops in a row."""
+
 
 class Reading(Enum):
     STANDING = "standing"
@@ -230,13 +274,20 @@ class TurretState:
     """None until the turret has been seen clearly enough to call -- the
     live receiver's mouse cursor sat on one for five minutes."""
 
+    team: Team
+    """Relative, as everywhere in the feed: BLUE for the player's own turret,
+    RED for the enemy's, whichever corner the player started in."""
+
 
 def load_templates(
     directory: Path = TEMPLATE_DIR,
 ) -> dict[tuple[Team, str], np.ndarray]:
-    """The averaged icons, keyed by (team, kind) -- `<team>_<kind>.png`."""
+    """The averaged icons, keyed by (colour, kind) -- `<colour>_<kind>.png`.
+    The colour is the team as drawn: blue is the player's own icon. All six
+    were captured on blue side, so the blue ones sit on the lower-left base's
+    ground and the red ones on the upper right's."""
     templates = {}
-    for key in {(t.team, t.kind) for t in TURRETS}:
+    for key in {(colour, t.kind) for colour in SIDES for t in TURRETS}:
         path = directory / f"{key[0].value}_{key[1]}.png"
         image = cv2.imread(str(path), cv2.IMREAD_COLOR)
         if image is None:
@@ -303,10 +354,18 @@ class TurretReader:
         minimap_width: int = REFERENCE_MINIMAP_WIDTH,
         config: TurretConfig | None = None,
         templates: dict[tuple[Team, str], np.ndarray] | None = None,
+        side: Team | None = None,
     ) -> None:
         """`anchors` are the turrets' world positions projected to
-        minimap-crop pixels -- see `project_anchors`."""
+        minimap-crop pixels -- see `project_anchors`. `side` is the corner
+        the player's base is in, if known; otherwise it is read off the
+        icons."""
         self.config = config or TurretConfig()
+        self._given_side = side
+        self.side = side
+        """The player's corner: BLUE the lower left, RED the upper right.
+        None until it has been read."""
+        self._side_votes: list[Team] = []
         self.scale = minimap_width / REFERENCE_MINIMAP_WIDTH
         raw = templates or load_templates()
         self._templates: dict[tuple[Team, str], np.ndarray] = {}
@@ -327,9 +386,18 @@ class TurretReader:
         self._read = False
 
     def reset(self) -> None:
-        """Forget every verdict -- a different game is on screen."""
+        """Forget every verdict -- a different game is on screen, and the
+        player may be on the other side of it."""
         self._verdicts = {turret: _Verdict() for turret in TURRETS}
         self._read = False
+        self.side = self._given_side
+        self._side_votes = []
+
+    @staticmethod
+    def colour(turret: Turret, side: Team) -> Team:
+        """The team colour `turret` is drawn in when the player's base is in
+        the `side` corner: blue for the player's own."""
+        return Team.BLUE if turret.corner is side else Team.RED
 
     def _team_mask(self, image: np.ndarray, team: Team) -> np.ndarray:
         cfg = self.config
@@ -344,14 +412,19 @@ class TurretReader:
         self,
         minimap: np.ndarray,
         markers: Iterable[tuple[float, float, float]] = (),
+        side: Team | None = None,
     ) -> dict[Turret, Reading]:
-        """This crop's reading of every turret, unfiltered.
+        """This crop's reading of every turret, unfiltered, taking the
+        player's base to be in the `side` corner (default: `self.side`).
 
         `markers` are champion markers as (x, y, radius); a turret under one
         reads `UNKNOWN`.
         """
         if minimap.ndim != 3 or minimap.shape[2] != 3:
             raise ValueError(f"expected a BGR image, got shape {minimap.shape}")
+        side = side or self.side
+        if side is None:
+            raise ValueError("the player's side is not known yet")
         cfg = self.config
         markers = list(markers)
         image = minimap.astype(np.float32)
@@ -363,7 +436,8 @@ class TurretReader:
 
         readings = {}
         for turret in TURRETS:
-            key = (turret.team, turret.kind)
+            colour = self.colour(turret, side)
+            key = (colour, turret.kind)
             template = self._templates[key]
             th, tw = template.shape[:2]
             ax, ay = self._anchors[turret]
@@ -375,7 +449,7 @@ class TurretReader:
             window = image[y0 : y0 + th + 2 * search, x0 : x0 + tw + 2 * search]
             scores = cv2.matchTemplate(window, template, cv2.TM_CCOEFF_NORMED)
             _, shape, _, (lx, ly) = cv2.minMaxLoc(scores)
-            patch = masks[turret.team][y0 + ly : y0 + ly + th, x0 + lx : x0 + lx + tw]
+            patch = masks[colour][y0 + ly : y0 + ly + th, x0 + lx : x0 + lx + tw]
             colour = float(patch[self._fills[key]].mean())
 
             if shape >= cfg.min_shape and colour >= cfg.min_colour:
@@ -385,6 +459,11 @@ class TurretReader:
             ):
                 readings[turret] = Reading.UNKNOWN
             elif shape >= cfg.min_shape and colour > cfg.max_grey:
+                readings[turret] = Reading.UNKNOWN
+            elif colour >= cfg.min_colour:
+                # The team's colour fills the icon's pixels but the shape
+                # fell short: the icon on unfamiliar ground (see
+                # `min_colour`), or an inhibitor beside the spot. Not bare.
                 readings[turret] = Reading.UNKNOWN
             elif self._clutter(hsv, turret, key) > cfg.max_clutter:
                 readings[turret] = Reading.UNKNOWN
@@ -426,19 +505,56 @@ class TurretReader:
         A crop where no turret at all reads standing is not taken as
         evidence: something other than the map is in the panel. The two
         nexus turrets alone keep this from triggering in a real game until
-        its last seconds.
+        its last seconds. Nor is one read before the player's side is
+        settled, since which spots should be blue depends on it.
         """
-        readings = self.read_once(minimap, markers)
+        markers = list(markers)
+        if self.side is None:
+            readings = self._read_side(minimap, markers)
+            if readings is None:
+                return self.states()
+        else:
+            readings = self.read_once(minimap, markers)
         if Reading.STANDING in readings.values():
             self._read = True
             for turret, reading in readings.items():
                 self._verdicts[turret].update(reading, timestamp, turret, self.config)
         return self.states()
 
-    def states(self) -> tuple[TurretState, ...] | None:
-        if not self._read:
+    def _read_side(
+        self, minimap: np.ndarray, markers: list[tuple[float, float, float]]
+    ) -> dict[Turret, Reading] | None:
+        """Read the crop under both sides and vote. The readings under the
+        side once it is settled, None before."""
+        cfg = self.config
+        both = {side: self.read_once(minimap, markers, side) for side in SIDES}
+        counts = {
+            side: sum(r is Reading.STANDING for r in readings.values())
+            for side, readings in both.items()
+        }
+        best = max(counts, key=counts.__getitem__)
+        other = counts[Team.RED if best is Team.BLUE else Team.BLUE]
+        if counts[best] < cfg.side_min_standing or counts[best] <= cfg.side_ratio * other:
+            self._side_votes = []
             return None
-        return tuple(TurretState(t, self._verdicts[t].standing) for t in TURRETS)
+        if self._side_votes and self._side_votes[-1] is not best:
+            self._side_votes = []
+        self._side_votes.append(best)
+        if len(self._side_votes) < cfg.side_readings:
+            return None
+        self.side = best
+        return both[best]
+
+    def states(self) -> tuple[TurretState, ...] | None:
+        """All 22, the player's own first, each half in `TURRETS` order.
+        None until a crop has been evidence under a settled side."""
+        if not self._read or self.side is None:
+            return None
+        side = self.side
+        return tuple(
+            TurretState(t, self._verdicts[t].standing, self.colour(t, side))
+            for t in sorted(TURRETS, key=lambda t: t.corner is not side)
+        )
 
 
 def project_anchors(
