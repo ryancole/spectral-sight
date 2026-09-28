@@ -103,47 +103,84 @@ class PatchDescriptor:
         return float(np.dot(self.vector, other.vector))
 
 
+_BLUR_KSIZE = 7
+"""The kernel OpenCV picks itself for `MATCH_BLUR` on 8-bit images, spelled
+out so `describe_batch` knows how much border each patch needs."""
+
+
 def describe(patch: np.ndarray, mask: np.ndarray | None = None) -> PatchDescriptor:
     """Build a descriptor from a square BGR crop centred on a champion icon."""
-    if patch.ndim != 3 or patch.shape[2] != 3:
-        raise ValueError(f"expected a BGR patch, got shape {patch.shape}")
-    if patch.size == 0:
-        raise ValueError("empty patch")
+    return PatchDescriptor(vector=describe_batch([patch], mask)[0])
+
+
+def describe_batch(
+    patches: list[np.ndarray], mask: np.ndarray | None = None
+) -> np.ndarray:
+    """Descriptor vectors for many crops at once, one row per patch.
+
+    Identical to calling `describe` on each, but the blur, colour conversion
+    and normalisation run once over the whole batch. On 32px patches those
+    calls are nearly all fixed overhead: a marker is described in 45 framings
+    and a frame has about ten markers, and doing that one patch at a time
+    cost about 55 ms of every frame.
+
+    The patches are blurred as one tall image, each padded with the same
+    reflected border OpenCV would give it alone, so no pixel's kernel reaches
+    into a neighbouring patch.
+    """
     if mask is None:
         mask = CIRCLE_MASK
+    count = len(patches)
+    if count == 0:
+        return np.zeros((0, 3 * int(mask.sum())), np.float32)
 
-    resized = cv2.resize(patch, (PATCH_SIZE, PATCH_SIZE), interpolation=cv2.INTER_AREA)
+    resized = np.empty((count, PATCH_SIZE, PATCH_SIZE, 3), np.uint8)
+    for i, patch in enumerate(patches):
+        if patch.ndim != 3 or patch.shape[2] != 3:
+            raise ValueError(f"expected a BGR patch, got shape {patch.shape}")
+        if patch.size == 0:
+            raise ValueError("empty patch")
+        resized[i] = cv2.resize(patch, (PATCH_SIZE, PATCH_SIZE),
+                                interpolation=cv2.INTER_AREA)
+
     if MATCH_BLUR > 0:
-        resized = cv2.GaussianBlur(resized, (0, 0), MATCH_BLUR)
+        pad = _BLUR_KSIZE // 2
+        side = PATCH_SIZE + 2 * pad
+        # numpy's "reflect" is OpenCV's default BORDER_REFLECT_101.
+        padded = np.pad(resized, ((0, 0), (pad, pad), (pad, pad), (0, 0)),
+                        mode="reflect")
+        blurred = cv2.GaussianBlur(padded.reshape(count * side, side, 3),
+                                   (_BLUR_KSIZE, _BLUR_KSIZE), MATCH_BLUR)
+        resized = np.ascontiguousarray(
+            blurred.reshape(count, side, side, 3)[:, pad:-pad, pad:-pad]
+        )
 
-    lab = cv2.cvtColor(resized, cv2.COLOR_BGR2LAB).astype(np.float32)
-    selected = lab[mask]
+    lab = cv2.cvtColor(resized.reshape(count * PATCH_SIZE, PATCH_SIZE, 3),
+                       cv2.COLOR_BGR2LAB).astype(np.float32)
+    selected = lab.reshape(count, PATCH_SIZE * PATCH_SIZE, 3)[:, mask.ravel()]
 
     # Per-channel z-normalisation: structure and relative colour, not exposure.
-    centered = selected - selected.mean(axis=0)
-    spread = centered.std(axis=0)
+    centered = selected - selected.mean(axis=1, keepdims=True)
+    spread = centered.std(axis=1, keepdims=True)
     spread[spread < 1e-6] = 1.0
-    vector = (centered / spread).ravel()
+    vectors = (centered / spread).reshape(count, -1)
 
-    norm = np.linalg.norm(vector)
-    if norm > 1e-6:
-        vector = vector / norm
-    return PatchDescriptor(vector=vector.astype(np.float32))
+    norms = np.linalg.norm(vectors, axis=1, keepdims=True)
+    norms[norms <= 1e-6] = 1.0
+    return (vectors / norms).astype(np.float32)
 
 
-def describe_variants(
+def _variant_patches(
     image: np.ndarray,
     cx: float,
     cy: float,
     radius: float,
-    *,
-    mask: np.ndarray | None = None,
     scales: tuple[float, ...] = ALIGN_SCALES,
     offsets: tuple[float, ...] = ALIGN_OFFSETS,
-) -> list[PatchDescriptor]:
-    """Descriptors for several plausible framings of one marker."""
+) -> list[np.ndarray]:
+    """Crops for several plausible framings of one marker."""
     height, width = image.shape[:2]
-    variants: list[PatchDescriptor] = []
+    patches: list[np.ndarray] = []
     for scale in scales:
         scaled = radius * scale
         for dx in offsets:
@@ -157,8 +194,23 @@ def describe_variants(
                 patch = image[y0:y1, x0:x1]
                 if patch.size == 0 or min(patch.shape[:2]) < 6:
                     continue
-                variants.append(describe(patch, mask))
-    return variants
+                patches.append(patch)
+    return patches
+
+
+def describe_variants(
+    image: np.ndarray,
+    cx: float,
+    cy: float,
+    radius: float,
+    *,
+    mask: np.ndarray | None = None,
+    scales: tuple[float, ...] = ALIGN_SCALES,
+    offsets: tuple[float, ...] = ALIGN_OFFSETS,
+) -> list[PatchDescriptor]:
+    """Descriptors for several plausible framings of one marker."""
+    patches = _variant_patches(image, cx, cy, radius, scales, offsets)
+    return [PatchDescriptor(vector=v) for v in describe_batch(patches, mask)]
 
 
 @dataclass(frozen=True, slots=True)
@@ -267,15 +319,20 @@ class Gallery:
             return [None] * len(regions)
         names, matrix = self._stack()
 
-        rows = []
-        for cx, cy, radius in regions:
-            variants = describe_variants(image, cx, cy, radius, mask=self.mask)
-            if not variants:
-                rows.append(np.full(len(names), -1.0, np.float32))
-                continue
-            stacked = np.stack([v.vector for v in variants])
-            rows.append((stacked @ matrix.T).max(axis=0))
-        return self._resolve(names, np.stack(rows), min_similarity)
+        # Every framing of every marker is described in one batch, then each
+        # marker takes its best score per entry over its own framings.
+        patches: list[np.ndarray] = []
+        owners: list[int] = []
+        for index, (cx, cy, radius) in enumerate(regions):
+            framings = _variant_patches(image, cx, cy, radius)
+            patches.extend(framings)
+            owners.extend([index] * len(framings))
+
+        rows = np.full((len(regions), len(names)), -1.0, np.float32)
+        if patches:
+            scores = describe_batch(patches, self.mask) @ matrix.T
+            np.maximum.at(rows, np.asarray(owners), scores)
+        return self._resolve(names, rows, min_similarity)
 
     def _resolve(
         self, names: list[str], scores: np.ndarray, min_similarity: float
