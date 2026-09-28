@@ -53,27 +53,6 @@
   #rosters .dead { text-decoration: line-through; color: var(--dim); }
   #rosters .fog { color: var(--dim); }
   #rosters .self::after { content: " ◈"; color: var(--gold); }
-  #coach-panel { max-height: 200px; display: flex; flex-direction: column; }
-  #coach-panel .bar { display: flex; gap: 12px; align-items: baseline; margin-bottom: 6px; }
-  #coach-panel h2 { font-size: 12px; color: var(--gold); }
-  #coach-status { color: var(--dim); font-size: 12px; }
-  #coach-status.live { color: #6fdc8c; }
-  #coach-status.paused { color: var(--red); }
-  #coach-thinking { color: var(--gold); font-size: 12px; margin-left: auto; }
-  #coach-thinking[hidden] { display: none; }
-  #coach-thinking .dot {
-    display: inline-block; width: 7px; height: 7px; border-radius: 50%;
-    background: var(--gold); margin-right: 6px; vertical-align: middle;
-    animation: pulse 0.9s ease-in-out infinite;
-  }
-  @keyframes pulse { 50% { opacity: 0.25; } }
-  @media (prefers-reduced-motion: reduce) { #coach-thinking .dot { animation: none; } }
-  #coach-log { overflow-y: auto; flex: 1; min-height: 0; }
-  #coach-log div { padding: 1px 0; border-bottom: 1px solid #10141b; }
-  #coach-log .t { color: var(--dim); margin-right: 8px; }
-  #coach-log .p3 { color: var(--red); font-weight: bold; }
-  #coach-log .p2 { color: var(--gold); }
-  #coach-log .ai { color: var(--gold); margin-right: 6px; cursor: help; }
   #log-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; }
   #log-panel .bar { display: flex; gap: 12px; align-items: center; margin-bottom: 6px; }
   #log-panel h2 { font-size: 12px; color: var(--dim); }
@@ -105,14 +84,6 @@
       <div class="blue"><h2>ORDER</h2><ul id="blue"></ul></div>
       <div class="red"><h2>CHAOS</h2><ul id="red"></ul></div>
     </div>
-    <div class="panel" id="coach-panel">
-      <div class="bar">
-        <h2>COACHING</h2>
-        <span id="coach-status">offline — start mind-control to see feedback</span>
-        <span id="coach-thinking" hidden><span class="dot"></span>thinking… <span id="coach-asking"></span></span>
-      </div>
-      <div id="coach-log"></div>
-    </div>
     <div class="panel" id="log-panel">
       <div class="bar">
         <h2>EVENTS</h2>
@@ -127,7 +98,6 @@
 const $ = id => document.getElementById(id);
 const canvas = $("map"), ctx = canvas.getContext("2d");
 let meta = null, frame = null, cropMax = 300;
-let ghost = null;  // mind-control's attention cursor: {nx, ny, at} in map space
 
 // The meta is the capability header: without world bounds the map falls back
 // to crop pixels, and the header tells us which timeline this even is.
@@ -185,22 +155,6 @@ function draw() {
       ctx.textAlign = "center";
       ctx.fillText(c.champion, x, y - 12);
     }
-    ctx.globalAlpha = 1.0;
-  }
-  // Where mind-control says attention should sit: a gold crosshair that
-  // fades once the ghost has been quiet for a while.
-  if (ghost) {
-    const age = Date.now() - ghost.at;
-    if (age > 6000) { ghost = null; return; }
-    const nx = Math.min(Math.max(ghost.nx, 0), 1), ny = Math.min(Math.max(ghost.ny, 0), 1);
-    const x = 12 + nx * (w - 24), y = 12 + ny * (h - 24);
-    ctx.globalAlpha = Math.max(0.25, 1 - age / 6000);
-    ctx.strokeStyle = "#e8c36a";
-    ctx.beginPath(); ctx.arc(x, y, 11, 0, Math.PI * 2); ctx.stroke();
-    ctx.beginPath();
-    ctx.moveTo(x - 17, y); ctx.lineTo(x - 6, y); ctx.moveTo(x + 6, y); ctx.lineTo(x + 17, y);
-    ctx.moveTo(x, y - 17); ctx.lineTo(x, y - 6); ctx.moveTo(x, y + 6); ctx.lineTo(x, y + 17);
-    ctx.stroke();
     ctx.globalAlpha = 1.0;
   }
 }
@@ -268,95 +222,6 @@ stream.addEventListener("event", e => logLine(JSON.parse(e.data)));
 stream.addEventListener("gap", e => logLine({ kind: "gap", ...JSON.parse(e.data) }));
 stream.onopen = () => { $("status").textContent = "● live"; $("status").className = "live"; };
 stream.onerror = () => { $("status").textContent = "reconnecting…"; $("status").className = "down"; };
-
-// mind-control's coaching feedback: a separate, optional process publishing
-// its own SSE stream. The panel and the map crosshair light up when it runs;
-// while it does not, EventSource just keeps retrying quietly.
-//
-// Four kinds of feedback share the log. A `glance` is attention -- somewhere
-// on the map worth looking, so it moves the crosshair too. A `cue` is execution
-// -- what the player's own cast or a bolt at them came to -- which the log can
-// say and the map cannot show. A `key` is the keyboard half of the
-// demonstration: the press the coach would have made here and why; a `step`
-// is the feet, the dodge it would have taken. A line that carries `model` is
-// the model's answer (the coach names the Jev release that gave it) and is
-// marked ✦; a line without one is the code's own report.
-// Unrecognized kinds are ignored on purpose: this panel is optional and must
-// never break on a coach that knows more than it.
-function coachLine(m) {
-  const line = document.createElement("div");
-  const when = document.createElement("span");
-  when.className = "t";
-  when.textContent = clockText(m.game_time, true);
-  if (m.model) {
-    const ai = document.createElement("span");
-    ai.className = "ai";
-    ai.textContent = "✦";
-    ai.title = `answered by ${m.model}`;
-    line.append(when, ai);
-  } else {
-    line.append(when);
-  }
-  const what = document.createElement("span");
-  what.className = `p${m.priority}`;
-  what.textContent = m.reason;
-  line.append(what);
-  const log = $("coach-log");
-  log.prepend(line);
-  while (log.childElementCount > 100) log.lastElementChild.remove();
-}
-
-// `asking` is not advice but the coach's pulse: the questions waiting on the
-// Jev model right now, oldest first. Each line is the whole current state, so
-// only the latest counts. A question takes ~100 ms, so the indicator would
-// blink every frame; once the list empties it stays lit a little longer, and
-// a new question inside that window just carries on from it.
-const THINKING_HOLD_MS = 300;
-let thinkingHold = null;
-function asking(occasions) {
-  clearTimeout(thinkingHold);
-  thinkingHold = null;
-  if (occasions.length) {
-    $("coach-asking").textContent = [...new Set(occasions)].join(", ");
-    $("coach-thinking").hidden = false;
-  } else if (!$("coach-thinking").hidden) {
-    thinkingHold = setTimeout(stopThinking, THINKING_HOLD_MS);
-  }
-}
-function stopThinking() {
-  clearTimeout(thinkingHold);
-  thinkingHold = null;
-  $("coach-thinking").hidden = true;
-}
-
-const coachOffline = "offline — start mind-control to see feedback";
-const coachUrl = new URLSearchParams(location.search).get("coach")
-  || "http://localhost:8724/stream";
-const coachStream = new EventSource(coachUrl);
-coachStream.onopen = () => { $("coach-status").textContent = "● connected"; $("coach-status").className = "live"; };
-coachStream.onerror = () => { $("coach-status").textContent = coachOffline; $("coach-status").className = ""; ghost = null; stopThinking(); };
-coachStream.onmessage = e => {
-  const m = JSON.parse(e.data);
-  if (m.t === "move") {
-    ghost = { nx: m.nx, ny: m.ny, at: Date.now() };
-  } else if (m.t === "glance") {
-    ghost = { nx: m.nx, ny: m.ny, at: Date.now() };
-    coachLine(m);
-  } else if (m.t === "cue" || m.t === "key" || m.t === "step") {
-    // Coaching with nowhere to look. A glance says "watch the top lane" and
-    // moves the crosshair; a cue says "that Q went 210px wide of them", a
-    // key says "press Q here" and a step says "step up-left here", which are
-    // about the player's own execution and have no place on the map. The
-    // ghost is deliberately left where it is.
-    coachLine(m);
-  } else if (m.t === "status") {
-    const status = $("coach-status");
-    if (m.state === "paused") { status.textContent = `paused: ${m.reason}`; status.className = "paused"; ghost = null; stopThinking(); }
-    else { status.textContent = "● coaching"; status.className = "live"; }
-  } else if (m.t === "asking") {
-    asking(Array.isArray(m.occasions) ? m.occasions : []);
-  }
-};
 </script>
 </body>
 </html>
