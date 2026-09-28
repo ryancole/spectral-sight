@@ -75,6 +75,7 @@ from spectral_sight.perception.hud.creep_score import (
     CreepScoreFilter,
     CreepScoreReader,
 )
+from spectral_sight.perception.hud.gold import GoldFilter, GoldReader
 from spectral_sight.perception.hud.skill_points import load_skill_point_reader
 from spectral_sight.perception.hud.resources import ResourceReader, load_resource_reader
 from spectral_sight.perception.hud.scale import (
@@ -449,6 +450,17 @@ class Pipeline:
         """The last confirmed chevron reading, carried onto the self row.
         State rather than a queue, unlike the casts: a point waiting is true
         for as long as it waits, and the row reports what is true."""
+        self.gold = (
+            None if abilities is None or clock is None
+            else GoldReader.beside(abilities, clock.glyphs)
+        )
+        """The player's gold, under the inventory. Part of the panel, so it
+        is placed from the ability layout and rebuilt with it on a rescale;
+        read with the clock's digits."""
+        self._gold_filter = GoldFilter()
+        self._gold: int | None = None
+        """The filtered gold, set only on a frame whose box read -- see
+        `_read_gold`."""
 
         # The world-view stage: projectiles at every frame, threats to the
         # player resolved against their printed health. It wants every frame
@@ -669,6 +681,10 @@ class Pipeline:
             self._pending_abilities.clear()
             self.skill_points = load_skill_point_reader(scaled)
             self._learnable = None
+            if self.gold is not None:
+                self.gold = GoldReader.beside(scaled, self.gold.glyphs)
+                self._gold_filter.reset()
+                self._gold = None
             if self.aim is not None:
                 self.aim.reset()
         if portraits is not None and self.liveness is not None:
@@ -718,6 +734,8 @@ class Pipeline:
         if self.skill_points is not None:
             self.skill_points.reset()
         self._learnable = None
+        self._gold_filter.reset()
+        self._gold = None
         if self.turret_reader is not None:
             self.turret_reader.reset()
         self._turrets = None
@@ -774,6 +792,8 @@ class Pipeline:
             if self.skill_points is not None:
                 self.skill_points.reset()
                 self._learnable = None
+            self._gold_filter.reset()
+            self._gold = None
             if self.turret_reader is not None:
                 self.turret_reader.reset()
                 self._turrets = None
@@ -856,6 +876,9 @@ class Pipeline:
                 self.skill_points.reset()
                 self._learnable = None
         self._lap("skill points")
+
+        self._read_gold(frame, trusted)
+        self._lap("gold")
 
         if self.projectiles is not None and self.threats is not None:
             self._watch_world(frame, timestamp, trusted)
@@ -1057,6 +1080,7 @@ class Pipeline:
                 minion_dots=minion_dots,
                 turrets=self._turrets,
                 cs=self._cs,
+                gold=self._gold,
                 last_hits=self._take_last_hits(self_track),
             ),
         )
@@ -1093,6 +1117,22 @@ class Pipeline:
                 self._cs,
             )
         self._pending_last_hits.extend(self.last_hits.resolve(timestamp))
+
+    def _read_gold(self, frame: np.ndarray, trusted: bool) -> None:
+        """Read the gold on every trusted frame, dead or alive -- the shop
+        is open to a dead player, and the number is drawn either way.
+
+        `_gold` is the filtered figure on a frame whose box read, and None
+        on one where it did not: a consumer gating a purchase on it should
+        see "not looked at", not the last figure carried past a read that
+        failed."""
+        self._gold = None
+        if self.gold is None or not trusted:
+            return
+        reading = self.gold.read(frame)
+        value = self._gold_filter.update(reading)
+        if reading is not None:
+            self._gold = value
 
     def _take_last_hits(self, self_track: Track | None) -> tuple[LastHit, ...]:
         if self_track is None or not self._pending_last_hits:
@@ -1593,6 +1633,7 @@ class Pipeline:
         minion_dots: tuple[MinionSighting, ...] | None = None,
         turrets: tuple[TurretState, ...] | None = None,
         cs: int | None = None,
+        gold: int | None = None,
         last_hits: tuple[LastHit, ...] = (),
     ) -> list[Observation]:
         """Flatten this frame's tracks into rows.
@@ -1702,6 +1743,11 @@ class Pipeline:
                         if self_track is not None and track.id == self_track.id
                         else None
                     ),
+                    gold=(
+                        gold
+                        if self_track is not None and track.id == self_track.id
+                        else None
+                    ),
                     last_hits=(
                         last_hits
                         if last_hits
@@ -1752,6 +1798,7 @@ class Pipeline:
             has_minion_dots=self.dot_detector is not None,
             has_turrets=self.turret_reader is not None,
             has_last_hits=self.creep_score is not None,
+            has_gold=self.gold is not None,
             has_self_abilities=self.self_reader is not None,
             world_bounds=bounds,
             world_units_per_pixel=scale,

@@ -177,6 +177,21 @@ def test_map_side_round_trips_and_is_absent_until_known() -> None:
     assert "map_side" not in sample_observation(is_self=True).to_dict()
 
 
+def test_gold_round_trips_and_is_absent_when_not_read() -> None:
+    data = sample_observation(is_self=True, gold=1325).to_dict()
+    assert data["gold"] == 1325
+    assert Observation.from_dict(data).gold == 1325
+    # Absent, not null and not zero: nothing looked on this frame.
+    row = sample_observation(is_self=True).to_dict()
+    assert "gold" not in row
+    assert Observation.from_dict(row).gold is None
+
+
+def test_zero_gold_is_a_reading_and_is_written() -> None:
+    data = sample_observation(is_self=True, gold=0).to_dict()
+    assert data["gold"] == 0
+
+
 def test_a_row_with_no_world_omits_the_keys_entirely() -> None:
     """Absent rather than null: a reader should not have to distinguish a
     position of None from a position at the origin."""
@@ -212,8 +227,10 @@ def test_meta_round_trips() -> None:
         world_bounds={"min_x": 0.0, "min_y": 0.0, "max_x": 1.0, "max_y": 1.0},
         world_units_per_pixel=[48.0, 48.3],
         has_minions=True, has_minion_dots=True, has_turrets=True,
+        has_gold=True,
     )
     assert TimelineMeta.from_dict(meta.to_dict()) == meta
+    assert meta.stamped().has_gold is True
 
 
 def test_the_writer_stamps_a_creation_time(tmp_path: Path) -> None:
@@ -379,6 +396,7 @@ def test_meta_records_a_missing_calibration_honestly() -> None:
     assert meta.has_game_time is False
     assert meta.has_minions is False and meta.has_minion_dots is False
     assert meta.has_turrets is False
+    assert meta.has_gold is False
     assert meta.world_bounds is None and meta.world_units_per_pixel is None
     assert meta.schema == SCHEMA
 
