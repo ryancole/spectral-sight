@@ -131,27 +131,6 @@ class TestEndpoints:
         assert body["frame"]["seq"] == 1
         assert body["meta"] == server.meta.to_dict()
 
-    def test_the_root_serves_the_dashboard(self, server: FeedServer) -> None:
-        """One self-contained page speaking the same four endpoints as any
-        other consumer -- the browser is the proof of the cross-language
-        claim, so it must arrive with no build step and no network."""
-        connection = http.client.HTTPConnection(
-            "127.0.0.1", server.port, timeout=5
-        )
-        try:
-            connection.request("GET", "/")
-            response = connection.getresponse()
-            page = response.read().decode("utf-8")
-        finally:
-            connection.close()
-        assert response.status == 200
-        assert "text/html" in response.getheader("Content-Type")
-        # It consumes the public endpoints, not some private channel.
-        assert "/stream" in page and "/meta" in page
-        # And it carries no absolute URLs at all: nothing to break offline,
-        # and no other process it reaches for.
-        assert "http://" not in page and "https://" not in page
-
     def test_an_unknown_path_is_a_404(self, server: FeedServer) -> None:
         assert get(server, "/nope")["status"] == 404
 

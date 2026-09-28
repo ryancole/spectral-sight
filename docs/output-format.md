@@ -228,7 +228,6 @@ localhost only, by design. Four endpoints, one schema:
 | `GET /state` | `{"meta": {...}, "frame": <latest frame envelope or null>}` — what a late joiner reads first, and what a poller reads instead of streaming. |
 | `GET /stream` | Server-Sent Events: every `frame` and `event` as it happens. |
 | `GET /events` | The same stream with frames filtered out. |
-| `GET /` | A self-contained HTML dashboard (a reference consumer, not part of the wire format). |
 
 Unknown paths return 404 with `{"error": ...}`. JSON endpoints send
 `Access-Control-Allow-Origin: *`.
