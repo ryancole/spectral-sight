@@ -21,8 +21,6 @@ Always live, against the kilrogg receiver as it plays:
     # more frames for the world view; the minimap stays at 10 Hz regardless
     python tools/watch.py --fps 30
 
-    # the minimap stages only, without the world view's cost
-    python tools/watch.py --no-coach
 
 Frames arrive from the window whether or not the pipeline is ready for them, so
 the ones it cannot keep up with are dropped on arrival rather than queued -- see
@@ -247,12 +245,6 @@ def main() -> int:
                         help="capture the window whose title contains this "
                              f"(default {DEFAULT_WINDOW!r})")
     parser.add_argument("--icons", help="icon set directory; defaults to newest")
-    parser.add_argument("--coach", action=argparse.BooleanOptionalAction,
-                        default=True,
-                        help="read the world view (projectiles, threats, "
-                             "skillshots) on every frame. On by default; "
-                             "--no-coach for the minimap and HUD only. The "
-                             "minimap runs at 10 Hz either way")
     parser.add_argument("--fps", type=float, default=10.0,
                         help="frames per second to ask the window for")
     parser.add_argument("--export",
@@ -307,9 +299,7 @@ def main() -> int:
             if not calibrate(source, width, height):
                 return 1
         try:
-            pipeline = Pipeline.for_resolution(
-                width, height, icons, coach=args.coach,
-            )
+            pipeline = Pipeline.for_resolution(width, height, icons)
         except FileNotFoundError as exc:
             print(exc, file=sys.stderr)
             return 1

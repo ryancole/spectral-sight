@@ -258,7 +258,6 @@ class Pipeline:
         abilities: AbilityLayout | None = None,
         resolution: tuple[int, int] | None = None,
         place_self: bool = True,
-        coach: bool = False,
     ) -> None:
         self.region = region
         self.gallery = gallery
@@ -378,16 +377,15 @@ class Pipeline:
         for as long as it waits, and the row reports what is true."""
 
         # The world-view stage: projectiles at every frame, threats to the
-        # player resolved against their printed health. Only when asked for
-        # (`coach`), because it costs a frame's worth of work on every frame
-        # and wants every frame it can get -- see `MINIMAP_INTERVAL` -- and
-        # only with a nameplate calibration, since the player's own plate is
-        # the anchor a bolt is judged against.
+        # player resolved against their printed health. It wants every frame
+        # it can get -- see `MINIMAP_INTERVAL` -- and needs a nameplate
+        # calibration, since the player's own plate is the anchor a bolt is
+        # judged against.
         self.projectiles: ProjectileTracker | None = None
         self.threats: ThreatDetector | None = None
         self.aim: AimDetector | None = None
         self.resources: ResourceReader | None = None
-        if coach and nameplates is not None:
+        if nameplates is not None:
             self.projectiles = ProjectileTracker()
             self.threats = ThreatDetector()
             # The other end of the same bolts: what the player threw. Needs
@@ -484,8 +482,7 @@ class Pipeline:
 
     @classmethod
     def for_resolution(
-        cls, width: int, height: int, icons: str | Path, *,
-        coach: bool = False,
+        cls, width: int, height: int, icons: str | Path
     ) -> Pipeline:
         """Build from the calibrated region for a resolution plus an icon set.
 
@@ -519,7 +516,6 @@ class Pipeline:
             nameplates=nameplates,
             abilities=AbilityLayout.for_resolution(width, height),
             resolution=(width, height),
-            coach=coach,
         )
 
     def process(self, frame: np.ndarray, timestamp: float) -> PipelineResult:

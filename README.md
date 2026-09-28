@@ -965,7 +965,7 @@ Three measurements shaped it, all on the 2026-08-30 session:
   health text. The classifier the plan describes is what turns that into a
   verdict, and it needs Phase 0's footage.
 
-`watch.py` runs it by default (`--coach`; `--no-coach` turns it off), feeding
+`watch.py` always runs it, feeding
 every frame and sampling the minimap stages on a 10 Hz clock
 (`MINIMAP_INTERVAL`) instead of decimating the source; rows and the feed
 keep their 10 Hz cadence, and `threats` ride the self row like `abilities`
@@ -1298,9 +1298,8 @@ the only recorded input is a timeline served back by `tools/replay.py`.
 Each processed frame prints one line: the game clock (`*` when estimated rather
 than read), the champions visible, the local player with their world position,
 the named allies and enemies, and anyone the HUD confirms is dead. Every frame
-goes through the world-view stages (`--coach`, on by default); `--no-coach`
-skips them. Either way the minimap stages run at 10 Hz by the frames'
-timestamps, not every Nth frame, so the rate holds whatever `--fps` is and
+goes through the world-view stages, while the minimap stages run at 10 Hz by
+the frames' timestamps, not every Nth frame, so the rate holds whatever `--fps` is and
 however many frames are dropped. Raising `--fps` feeds the world view more
 frames without making the minimap more expensive.
 

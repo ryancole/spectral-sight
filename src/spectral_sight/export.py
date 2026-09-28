@@ -787,12 +787,12 @@ class TimelineMeta:
 
     has_threats: bool = False
     """Whether the world view was read for projectiles at the player. Needs
-    every frame, so it is on only for a coaching run (`--coach`)."""
+    every frame, and a nameplate calibration to anchor the player."""
 
     has_skillshots: bool = False
     """Whether the player's own casts were followed to their bolts. Needs the
     world view, the ability HUD and nameplates all at once, so it is on only
-    for a `--coach` run with each of them calibrated."""
+    when each of them is calibrated."""
 
     has_minions: bool = False
     """Whether minion health bars were read off the world view. When False no
