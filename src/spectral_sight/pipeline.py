@@ -53,6 +53,7 @@ converted rather than leaving `world_position` as a method to be discovered.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -127,7 +128,7 @@ from spectral_sight.perception.nameplates import (
     associate,
 )
 from spectral_sight.profiling import StageTimer
-from spectral_sight.tracking import Track, Tracker, TrackerConfig
+from spectral_sight.tracking import Track, Tracker, TrackerConfig, TrackState
 from spectral_sight.types import Blip, Team
 
 SELF_RADIUS = 12.0
@@ -182,6 +183,19 @@ MINIMAP_SLACK = 0.25
 Live timestamps jitter by a few milliseconds, and at 10 fps a strict
 threshold would skip every frame that landed at 99 ms -- halving the rate the
 constant promises. A quarter keeps 30 fps at every third frame."""
+
+GALLERY_RECHECK = 1.0
+"""Seconds a named track's marker may go without a gallery read that agrees
+with its name. Between reads the marker is carried by position alone -- see
+`_needs_reading` -- and the read that comes due is what feeds swap repair and
+proves the champion alive to the slot naming."""
+
+GALLERY_CARRY_RADIUS = 8.0
+GALLERY_CLEAR_RADIUS = 24.0
+"""Minimap pixels. A marker is carried without a read only when it sits within
+the carry radius of where its track was predicted, and no other marker or
+same-team track is within the clear radius -- anything closer is a tangle, and
+a tangle is where a name can jump markers, so it is read every sample."""
 
 SELF_MIN_SIGHTINGS = 10
 SELF_MIN_LEAD = 2.0
@@ -411,6 +425,9 @@ class Pipeline:
         self.casts = CastBook()
         self._clock_filter = ClockFilter()
         self._restricted: dict[Team, Gallery] = {}
+        self._gallery_read: dict[int, float] = {}
+        """Track id to when the gallery last read its marker as the track's own
+        name -- see `_needs_reading`."""
         self._self_evidence: dict[str, int] = {}
         """How often the viewport has named each champion as the local player.
 
@@ -475,6 +492,58 @@ class Pipeline:
                 cached.add_descriptor(name, self.gallery.entries[name])
             self._restricted[team] = cached
         return cached
+
+    def _needs_reading(self, blips: list[Blip], timestamp: float) -> list[bool]:
+        """Which markers the gallery should read this sample.
+
+        Reading every marker every sample was the most expensive stage in the
+        pipeline, and nearly all of it re-confirmed names the tracker already
+        held. A marker is carried on position alone when all of these hold:
+
+        - its team's roster has locked, so evidence for the lock is not
+          being starved
+        - exactly one same-team track is near it, confirmed, named, not
+          held, and predicted within `GALLERY_CARRY_RADIUS`
+        - no other marker is within `GALLERY_CLEAR_RADIUS`
+        - that track's name was confirmed by a read within `GALLERY_RECHECK`
+
+        Everything else is read, so a tangle, a new arrival or a doubtful
+        track gets the gallery every sample, as before.
+        """
+        held = self.tracker.held
+        predicted = [
+            (t, *t.predict(timestamp - t.last_seen)) for t in self.tracker.tracks
+        ]
+        reading = [True] * len(blips)
+        for i, blip in enumerate(blips):
+            if self.roster.locked(blip.team) is None:
+                continue
+            crowded = any(
+                j != i and math.hypot(o.x - blip.x, o.y - blip.y)
+                < GALLERY_CLEAR_RADIUS
+                for j, o in enumerate(blips)
+            )
+            if crowded:
+                continue
+            near = [
+                (track, math.hypot(x - blip.x, y - blip.y))
+                for track, x, y in predicted
+                if track.team is blip.team
+                and math.hypot(x - blip.x, y - blip.y) < GALLERY_CLEAR_RADIUS
+            ]
+            if len(near) != 1:
+                continue
+            track, distance = near[0]
+            last = self._gallery_read.get(track.id)
+            reading[i] = not (
+                distance < GALLERY_CARRY_RADIUS
+                and track.state is TrackState.CONFIRMED
+                and track.identity is not None
+                and track.id not in held
+                and last is not None
+                and timestamp - last < GALLERY_RECHECK
+            )
+        return reading
 
     def _apply_roster(self) -> None:
         for team, names in self.roster.names().items():
@@ -661,13 +730,15 @@ class Pipeline:
         self._lap("viewport + self")
 
         matches: list[Match | None] = [None] * len(blips)
+        reading = self._needs_reading(blips, timestamp)
         for team in (Team.BLUE, Team.RED):
             # A placed marker is kept away from the gallery: whatever is
             # drawn at the centre is the thing covering the player's icon,
             # most often an enemy's, and a confident match there would hand
             # an enemy's name to the blue roster.
             indices = [i for i, b in enumerate(blips)
-                       if b.team is team and not (placed and b is self_blip)]
+                       if b.team is team and reading[i]
+                       and not (placed and b is self_blip)]
             if not indices:
                 continue
             gallery = self._gallery_for(team)
@@ -679,9 +750,22 @@ class Pipeline:
         self._lap("gallery match")
 
         self.tracker.update(blips, timestamp, matches)
+        carried: set[str] = set()
+        for index, track in self.tracker.assignment.items():
+            match = matches[index]
+            if not reading[index]:
+                if track.identity is not None and track.team is Team.BLUE:
+                    carried.add(track.identity)
+            elif (match is not None and match.confident
+                  and match.name == track.identity):
+                self._gallery_read[track.id] = timestamp
         # Enforcement can drop tracks, so read the surviving set afterwards
         # rather than trusting the snapshot update() returned.
         self._apply_roster()
+        live = {t.id for t in self.tracker.tracks}
+        self._gallery_read = {
+            k: v for k, v in self._gallery_read.items() if k in live
+        }
         tracks = self.tracker.confirmed
         self._lap("tracker")
 
@@ -733,12 +817,14 @@ class Pipeline:
             # An ally is drawn on the minimap exactly while alive, so the
             # champions the gallery matched with confidence this frame are
             # proven living -- the negative space is what names a dead slot.
+            # A marker carried without a read is its track's champion by
+            # the same standard, so it counts as seen too.
             seen = {
                 match.name
                 for blip, match in zip(blips, matches)
                 if match is not None and match.confident
                 and blip.team is Team.BLUE
-            }
+            } | carried
             self.naming.update(
                 liveness, seen, self.roster.locked(Team.BLUE),
                 self.self_champion, timestamp, trusted=trusted,
