@@ -21,6 +21,7 @@ from spectral_sight.feed import (
     FanOut,
     FrameState,
     JsonlSink,
+    KnownRoster,
     RateMeter,
     StdoutSink,
     read_frames,
@@ -206,6 +207,65 @@ class TestJsonlSink:
 
         assert seamed.read_bytes() == direct.read_bytes()
         assert sink.rows == 4
+
+
+class TestKnownRoster:
+    """A champion seen once stays on the team's roster for the run."""
+
+    def rows(self, *names: str, team: Team = Team.BLUE) -> list[Observation]:
+        return [observation(i, champion=name, team=team)
+                for i, name in enumerate(names)]
+
+    def test_a_champion_stays_after_their_row_is_gone(self) -> None:
+        known = KnownRoster()
+        known.update(self.rows("Ahri", "Garen"))
+        roster = known.update(self.rows("Garen"))
+        assert roster[Team.BLUE] == ("Ahri", "Garen")
+        assert known.update([])[Team.BLUE] == ("Ahri", "Garen")
+
+    def test_unnamed_rows_add_nothing(self) -> None:
+        known = KnownRoster()
+        assert known.update([observation(1, champion=None)]) == {
+            Team.BLUE: (), Team.RED: (),
+        }
+
+    def test_teams_are_kept_apart(self) -> None:
+        known = KnownRoster()
+        known.update(self.rows("Ahri") + self.rows("Zed", team=Team.RED))
+        assert known.names() == {Team.BLUE: ("Ahri",), Team.RED: ("Zed",)}
+
+    def test_a_sixth_name_displaces_the_least_seen(self) -> None:
+        """Six names on a team of five means one was a misread, and a
+        misread is on the map for a few frames where the real one is on it
+        all game."""
+        known = KnownRoster()
+        known.update(self.rows("A", "B", "C", "D", "Misread"))
+        for _ in range(3):
+            known.update(self.rows("A", "B", "C", "D", "E"))
+        assert known.names()[Team.BLUE] == ("A", "B", "C", "D", "E")
+
+    def test_a_name_on_both_teams_stays_where_it_was_seen_most(self) -> None:
+        known = KnownRoster()
+        known.update(self.rows("Ahri", team=Team.RED))
+        known.update(self.rows("Ahri"))
+        known.update(self.rows("Ahri"))
+        assert known.names() == {Team.BLUE: ("Ahri",), Team.RED: ()}
+
+    def test_the_envelope_carries_it_by_team_name(self) -> None:
+        known = KnownRoster()
+        state = FrameState.of(
+            PipelineResult(), frame(), seq=0,
+            roster=known.update(self.rows("Zed", team=Team.RED)),
+        )
+        assert state.to_dict()["roster"] == {"blue": [], "red": ["Zed"]}
+
+    def test_a_replay_remembers_like_the_live_run(self, tmp_path: Path) -> None:
+        path = tmp_path / "run.jsonl"
+        with TimelineWriter(path, META) as writer:
+            writer.write([observation(1, champion="Ahri")])
+            writer.write([observation(1, video_time=12.4, champion=None)])
+        frames = list(read_frames(path))
+        assert frames[1].roster[Team.BLUE] == ("Ahri",)
 
 
 class TestReadFrames:

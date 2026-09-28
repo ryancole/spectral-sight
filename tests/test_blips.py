@@ -11,6 +11,7 @@ marked as regressions and should not be relaxed without new measurements.
 
 from __future__ import annotations
 
+import cv2
 import numpy as np
 import pytest
 
@@ -21,6 +22,8 @@ from spectral_sight.perception.minimap.blips import (
 )
 from spectral_sight.types import Team
 from tests.synthetic import (
+    CHAMPION_RADIUS,
+    PORTRAIT_BGR,
     DEFAULT_MARKERS,
     TEAM_BGR,
     Marker,
@@ -120,6 +123,30 @@ def test_finds_champion_whose_portrait_matches_its_own_team(
 
     found = _match(detector.detect(image), 140, 140)
     assert found is not None, "a solid team-coloured marker must still be found"
+    assert found.team is team
+
+
+@pytest.mark.parametrize("team", [Team.BLUE, Team.RED])
+def test_portrait_art_in_the_other_teams_hue_does_not_flip_the_team(
+    detector: BlipDetector, team: Team
+) -> None:
+    """Regression: live, Gragas's red beard filled an inner annulus more
+    fully than his blue ring filled its own, and he was read as an enemy
+    on over half his markers -- enough for the red roster to lock with an
+    ally in it. The ring is the outer edge; art is inside it."""
+    other = Team.RED if team is Team.BLUE else Team.BLUE
+    image = _blank()
+    draw_champion(image, 140, 140, team)
+    # A quarter of the ring covered, as by a neighbouring marker or a ping,
+    # and a full band of the other hue just inside it: the inner band now
+    # fills its annulus better than the ring fills its own.
+    cv2.ellipse(image, (140, 140), (CHAMPION_RADIUS, CHAMPION_RADIUS), 0,
+                0, 90, PORTRAIT_BGR, 4, cv2.LINE_AA)
+    cv2.circle(image, (140, 140), CHAMPION_RADIUS - 4, TEAM_BGR[other], 3,
+               cv2.LINE_AA)
+
+    found = _match(detector.detect(image), 140, 140)
+    assert found is not None
     assert found.team is team
 
 

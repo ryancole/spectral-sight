@@ -47,7 +47,9 @@ from spectral_sight.capture import (
     WindowSource,
 )
 from spectral_sight.events import EventDeriver
-from spectral_sight.feed import FanOut, FrameState, JsonlSink, RateMeter, StdoutSink
+from spectral_sight.feed import (
+    FanOut, FrameState, JsonlSink, KnownRoster, RateMeter, StdoutSink,
+)
 from spectral_sight.serve import DEFAULT_PORT, FeedServer
 from spectral_sight.calibration import (
     MISSING_CLOCK,
@@ -376,6 +378,7 @@ def main() -> int:
         processed = 0
         meter = RateMeter()
         deriver = EventDeriver()
+        known = KnownRoster()
         started = time.perf_counter()
 
         with Session(source) as session:
@@ -393,6 +396,7 @@ def main() -> int:
                         seq=processed - 1,
                         fps=meter.tick(),
                         dropped=getattr(source, "dropped", 0),
+                        roster=known.update(result.observations),
                     )
                     feed.publish(state)
                     # After the frame, so a consumer holds the state an event

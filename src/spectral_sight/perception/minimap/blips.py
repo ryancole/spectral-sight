@@ -268,7 +268,7 @@ class BlipDetector:
         distance = np.hypot(xs - x, ys - y)
         windows = {team: mask[y0:y1, x0:x1] > 0 for team, mask in masks.items()}
 
-        best = (0.0, cfg.min_radius, None)
+        best: dict[Team, tuple[float, float]] = {}
         radius = cfg.min_radius
         while radius <= cfg.max_radius:
             annulus = (distance >= radius - cfg.ring_half_width) & (
@@ -280,10 +280,27 @@ class BlipDetector:
                     # >= so ties resolve to the largest radius. A champion whose
                     # portrait matches its own team hue fills every annulus
                     # inside the ring equally; the outermost is the real edge.
-                    if fill > 0.0 and fill >= best[0]:
-                        best = (fill, radius, team)
+                    if fill > 0.0 and fill >= best.get(team, (0.0, 0.0))[0]:
+                        best[team] = (fill, radius)
             radius += cfg.refine_step
-        return best
+        if not best:
+            return 0.0, cfg.min_radius, None
+
+        # When both colours make a ring, the outer one is the marker's: the
+        # portrait sits inside the ring, so art in the other team's hue peaks
+        # at a smaller radius. Taking the higher fill instead handed Gragas
+        # (a red beard filling 0.83 at r 16.4, inside a blue ring filling 0.80
+        # at r 20.4) to the enemy team on over half his reads, and the red
+        # roster locked with him in it.
+        ringed = [
+            (radius, fill, team) for team, (fill, radius) in best.items()
+            if fill >= cfg.min_ring_fill
+        ]
+        if ringed:
+            radius, fill, team = max(ringed, key=lambda r: (r[0], r[1]))
+            return fill, radius, team
+        team, (fill, radius) = max(best.items(), key=lambda kv: kv[1][0])
+        return fill, radius, team
 
     def _suppress(self, blips: list[Blip]) -> list[Blip]:
         """Greedy non-max suppression by centre distance, across teams as well as

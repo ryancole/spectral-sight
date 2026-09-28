@@ -145,6 +145,7 @@ envelope, not stripped from the rows.
 | `fps` | float (1 dp) \| null | Processed frames per second over a sliding window. Null until measurable. |
 | `dropped` | int | Cumulative frames the source produced that the pipeline never saw. Zero for a file source, which waits. Rising means the feed is describing moments the game has moved past. |
 | `lag` | float (3 dp) \| null | Seconds from frame arrival to this envelope being built — the feed's own staleness, before transport. |
+| `roster` | object: `blue`, `red` → sorted arrays of strings | Every champion named on a row of that team so far this run, whether or not they are on the map now. A player can open the scoreboard at any time, so a champion seen once stays on the roster after their track is forgotten in fog. At most five per team: a sixth name means one was a misread, and the five named on the most frames stay. Rebuilt from the rows alone, so a replayed timeline carries the same roster as the live run. |
 | `champions` | array of rows | One per confirmed track, including champions in fog. |
 
 `fps`, `dropped` and `lag` are how a reactor tells "no enemies visible" from
@@ -191,7 +192,7 @@ Kind-specific fields are flattened onto the same object:
 | `ability` | `slot`, `at`, `confirmed`, `countdown` (int, omitted when unread) — one entry of the row's `abilities` | The local player's own cast, named to a slot from the HUD cooldown veil. One event per entry, always `is_self`. Distinct from `cast`: `cast` is an anonymous resource drop (and works for enemies), `ability` names the button (and sees summoner spells and zero-mana casts). |
 | `turret_destroyed` | `lane`, `tier`; `side` on a nexus turret | A turret in the self row's `turrets` going from standing to not. **The event's `team` is the turret's owner** (blue: we lost one), and `champion` and `track_id` are null -- it is about the turret, like `roster` is about a team. First knowledge is state, as for `level_up`: turrets already down when the feed starts make no events, so read `turrets` for the state and this for the moment. Arrives about five seconds after the turret falls, or later if its spot stays covered (see `turrets`). A turret that falls before it was first called standing is state, not an event, and `standing: null` in between never counts as either side of a transition. |
 | `turret_rebuilt` | as `turret_destroyed` | A destroyed nexus turret standing again. Only the nexus turrets rebuild, so this never names a lane turret. |
-| `roster` | `champions` (sorted array of 5 strings) | A team showing five distinct named champions at once. Re-emitted if the set later changes. |
+| `roster` | `champions` (sorted array of 5 strings) | The envelope's `roster` reaching five champions for a team. They need not have been on the map together. Re-emitted if the set later changes, as when a misread is displaced. |
 
 Two rules a consumer must not re-derive incorrectly:
 
