@@ -13,7 +13,13 @@ from spectral_sight.export import Observation
 from spectral_sight.feed import FrameState, KnownRoster
 from spectral_sight.perception.hud.clock import ClockFilter, GameClock
 from spectral_sight.types import Team
-from tests.test_alive import ScriptedClock, build_pipeline, frame, run
+from tests.test_alive import (
+    ScriptedClock,
+    build_pipeline,
+    frame,
+    prove_player,
+    run,
+)
 
 
 def resync(clock: ClockFilter, seconds: int, at: float) -> GameClock | None:
@@ -104,7 +110,7 @@ def test_a_new_game_starts_the_pipeline_over() -> None:
     assert first.game == 0 and first.observations
     old_ids = {row.track_id for row in first.observations}
     pipeline.roster.observe(Team.RED, "Zed", 5.0)
-    pipeline._self_evidence["Ahri"] = 50
+    prove_player(pipeline, "Ahri")
 
     clock.reading = GameClock(2, 1.0)
     pipeline.process(frame(), 100.0)
@@ -113,7 +119,7 @@ def test_a_new_game_starts_the_pipeline_over() -> None:
     assert result.game == 1 and pipeline.game == 1
     assert all(row.game == 1 for row in result.observations)
     assert pipeline.roster.evidence[Team.RED] == {}
-    assert pipeline.self_champion is None and not pipeline._self_evidence
+    assert pipeline.self_champion is None
     new_ids = {row.track_id for row in result.observations}
     assert new_ids and not (new_ids & old_ids), (
         "track ids keep counting, so one id never names two games' tracks"

@@ -12,6 +12,10 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
+from spectral_sight.perception.hud.self_champion import (
+    SelfChampionReader,
+    SpellGallery,
+)
 from spectral_sight.perception.minimap.viewport import Viewport
 from spectral_sight.perception.nameplates import Nameplate
 from spectral_sight.perception.nameplates.plates import Side
@@ -19,7 +23,14 @@ from spectral_sight.pipeline import SELF_SLOT
 from spectral_sight.tracking import Track, TrackState
 from spectral_sight.types import Team
 from tests.synthetic import Marker
-from tests.test_alive import REGION, build_pipeline, frame, name_tracks, run
+from tests.test_alive import (
+    REGION,
+    build_pipeline,
+    frame,
+    name_tracks,
+    prove_player,
+    run,
+)
 
 PLAYER = Marker(60, 60, Team.BLUE)
 TEAMMATE = Marker(150, 170, Team.BLUE)
@@ -45,7 +56,7 @@ def settle(pipeline) -> float:
                                    markers=(PLAYER, TEAMMATE)), t)
         t += 0.1
     name_tracks(pipeline, "Zilean", "Ryze")
-    pipeline._self_evidence = {"Zilean": 50}
+    prove_player(pipeline, "Zilean")
     return t
 
 
@@ -211,3 +222,222 @@ def test_without_a_self_track_the_green_plate_goes_nowhere() -> None:
     mate = blue_track(2, 50, 50)
     paired = pair([plate(50, 50, Side.SELF, 0.5, 3)], [mate], None)
     assert paired == {}
+
+
+# -- the player's champion from the ability slots ---------------------------
+#
+# Live on 2026-09-28 the feed had no player row for a whole game. The player
+# (Annie) stood AFK in the fountain; her marker sat clipped in the map corner
+# and the gallery read it as Samira -- who was not in the game -- on a third of
+# the frames. The camera votes split between the two, `self_champion` never
+# settled, and with no settled name there was no `is_self` row at all. The
+# ability slots now say who the player is, and the minimap only where.
+
+SPELL_CHAMPIONS = ("Zilean", "Ryze", "Samira", "Annie", "Milio")
+SLOT_BOXES = {slot: (60 + i * 45, 20, 40, 40)
+              for i, slot in enumerate(("Q", "W", "E", "R"))}
+"""Above the synthetic minimap, clear of it and of the portraits."""
+
+
+def spell_icon(champion: str, slot: str) -> np.ndarray:
+    """A textured 64px icon unique to (champion, slot), as Data Dragon's are."""
+    seed = SPELL_CHAMPIONS.index(champion) * 4 + "QWER".index(slot)
+    noise = np.random.default_rng(seed).integers(0, 256, (8, 8, 3), np.uint8)
+    return cv2.resize(noise, (64, 64), interpolation=cv2.INTER_CUBIC)
+
+
+def spell_gallery() -> SpellGallery:
+    return SpellGallery({
+        name: {slot: spell_icon(name, slot) for slot in "QWER"}
+        for name in SPELL_CHAMPIONS
+    })
+
+
+def draw_spells(image: np.ndarray, champion: str, *,
+                brightness: float = 1.0) -> np.ndarray:
+    """Draw a champion's ability icons into the slots, in a gold frame."""
+    for slot, (x, y, w, h) in SLOT_BOXES.items():
+        icon = cv2.resize(spell_icon(champion, slot), (w, h))
+        image[y:y + h, x:x + w] = (icon * brightness).astype(np.uint8)
+        cv2.rectangle(image, (x, y), (x + w - 1, y + h - 1), (40, 170, 210), 2)
+    return image
+
+
+def with_spells(pipeline) -> SelfChampionReader:
+    """Give a pipeline the ability-slot reader, without the rest of the
+    ability HUD -- the synthetic frame has no cooldowns to read."""
+    reader = SelfChampionReader(spell_gallery())
+    pipeline.self_reader = reader
+    pipeline._ability_boxes = SLOT_BOXES
+    return reader
+
+
+def test_the_slots_name_the_champion_and_settle() -> None:
+    reader = SelfChampionReader(spell_gallery())
+    image = draw_spells(np.zeros((100, 300, 3), np.uint8), "Annie")
+    for _ in range(reader.config.settle_reads - 1):
+        assert reader.read(image, SLOT_BOXES) is None, "one frame is not proof"
+    assert reader.read(image, SLOT_BOXES) == "Annie"
+
+
+def test_slots_on_cooldown_still_name_the_champion() -> None:
+    """A slot on cooldown or out of mana is the same icon, darker."""
+    reader = SelfChampionReader(spell_gallery())
+    image = draw_spells(np.zeros((100, 300, 3), np.uint8), "Annie",
+                        brightness=0.35)
+    for _ in range(reader.config.settle_reads):
+        reader.read(image, SLOT_BOXES)
+    assert reader.champion == "Annie"
+
+
+def test_one_foreign_slot_does_not_change_the_answer() -> None:
+    """A form change or a stolen ultimate replaces one icon, not the kit."""
+    reader = SelfChampionReader(spell_gallery())
+    image = draw_spells(np.zeros((100, 300, 3), np.uint8), "Annie")
+    x, y, w, h = SLOT_BOXES["R"]
+    image[y:y + h, x:x + w] = cv2.resize(spell_icon("Ryze", "R"), (w, h))
+    for _ in range(reader.config.settle_reads):
+        reader.read(image, SLOT_BOXES)
+    assert reader.champion == "Annie"
+
+
+def test_empty_slots_are_not_evidence() -> None:
+    reader = SelfChampionReader(spell_gallery())
+    image = np.full((100, 300, 3), 30, np.uint8)
+    for _ in range(20):
+        reader.read(image, SLOT_BOXES)
+    assert reader.champion is None
+    assert reader.last is not None and not reader.last.counted
+
+
+def misnamed_player(pipeline) -> float:
+    """The live failure: the player's own track carries a misread name."""
+    t = 0.0
+    for _ in range(6):
+        pipeline.process(camera_on(PLAYER.x, PLAYER.y,
+                                   markers=(PLAYER, TEAMMATE)), t)
+        t += 0.1
+    name_tracks(pipeline, "Samira", "Ryze")
+    return t
+
+
+def test_a_misread_player_marker_is_named_by_the_ability_slots() -> None:
+    pipeline = build_pipeline()
+    with_spells(pipeline)
+    t = misnamed_player(pipeline)
+    result = None
+    for _ in range(20):
+        result = pipeline.process(draw_spells(
+            camera_on(PLAYER.x, PLAYER.y, markers=(PLAYER, TEAMMATE)),
+            "Zilean"), t)
+        t += 0.1
+
+    assert pipeline.self_champion == "Zilean"
+    selves = [row for row in result.observations if row.is_self]
+    assert [row.champion for row in selves] == ["Zilean"], (
+        "the player's track takes the proven name over the misread one"
+    )
+    assert abs(selves[0].x - PLAYER.x) < 3 and abs(selves[0].y - PLAYER.y) < 3
+    assert "Samira" not in {row.champion for row in result.observations}
+    assert result.player.source == "abilities" and result.player.reason is None
+
+
+def test_a_misread_that_made_the_roster_still_gives_way() -> None:
+    """Early in a game the blue roster knows few names, so the misread of the
+    player's clipped marker ranked among the "top five" teammates. Guarding
+    teammates by roster then kept the proven name off the player's track for
+    the whole live run: no track carried it, so there was no player row."""
+    pipeline = build_pipeline()
+    with_spells(pipeline)
+    t = misnamed_player(pipeline)
+    pipeline.roster.observe(Team.BLUE, "Samira", 5.0)
+    result = None
+    for _ in range(20):
+        result = pipeline.process(draw_spells(
+            camera_on(PLAYER.x, PLAYER.y, markers=(PLAYER, TEAMMATE)),
+            "Zilean"), t)
+        t += 0.1
+    selves = [row for row in result.observations if row.is_self]
+    assert [row.champion for row in selves] == ["Zilean"]
+
+
+def test_until_the_slots_settle_there_is_no_player_row_and_it_says_why() -> None:
+    """The camera sits on the player's track the whole time, and still nobody
+    is the player until the ability slots say who."""
+    pipeline = build_pipeline()
+    t = misnamed_player(pipeline)
+    result = pipeline.process(
+        camera_on(PLAYER.x, PLAYER.y, markers=(PLAYER, TEAMMATE)), t)
+    assert not any(row.is_self for row in result.observations)
+    assert result.player.reason == "unidentified"
+    assert result.player.champion is None
+
+
+def test_the_player_is_found_off_camera_once_proven() -> None:
+    """A proven name needs no camera box: the replay director, a free camera
+    or the fountain clamp can point anywhere and the player's track is still
+    theirs."""
+    pipeline = build_pipeline()
+    reader = with_spells(pipeline)
+    t = settle(pipeline)
+    reader.champion = "Zilean"
+    result = None
+    for _ in range(5):
+        result = pipeline.process(
+            camera_on(250, 60, markers=(PLAYER, TEAMMATE)), t)
+        t += 0.1
+    selves = [row for row in result.observations if row.is_self]
+    assert [row.champion for row in selves] == ["Zilean"]
+
+
+def test_a_teammate_on_the_camera_centre_keeps_their_name() -> None:
+    """Live, Fiddlesticks walked back into the fountain over the AFK Annie
+    and, nearest the camera centre, took the self row. The proven name must
+    not be pressed onto a teammate, and their track is not the player."""
+    pipeline = build_pipeline()
+    reader = with_spells(pipeline)
+    t = settle(pipeline)
+    reader.champion = "Zilean"
+    pipeline.roster.observe(Team.BLUE, "Ryze", 5.0)
+    result = None
+    for _ in range(30):
+        result = pipeline.process(
+            camera_on(TEAMMATE.x, TEAMMATE.y, markers=(TEAMMATE,)), t)
+        t += 0.1
+    ryze = by_name(result, "Ryze")
+    assert ryze.is_self is False
+    assert not any(row.is_self and row.champion != "Zilean"
+                   for row in result.observations)
+
+
+def test_the_champion_is_read_once_per_game() -> None:
+    """Settled, the slots are never read again -- the player cannot change
+    champion -- until a new game starts the question over."""
+    pipeline = build_pipeline()
+    reader = with_spells(pipeline)
+    t = 0.0
+    for _ in range(8):
+        pipeline.process(draw_spells(camera_on(PLAYER.x, PLAYER.y,
+                                               markers=(PLAYER,)), "Zilean"), t)
+        t += 0.1
+    assert reader.champion == "Zilean"
+    last = reader.last
+    for _ in range(8):
+        pipeline.process(draw_spells(camera_on(PLAYER.x, PLAYER.y,
+                                               markers=(PLAYER,)), "Ryze"), t)
+        t += 0.1
+    assert reader.last is last, "nothing read after settling"
+    assert pipeline.self_champion == "Zilean"
+
+    pipeline._new_game()
+    assert reader.champion is None and pipeline.self_champion is None
+
+
+def test_a_proven_player_with_no_track_says_so() -> None:
+    pipeline = build_pipeline()
+    reader = with_spells(pipeline)
+    reader.champion = "Zilean"
+    result = pipeline.process(camera_on(PLAYER.x, PLAYER.y, markers=()), 0.0)
+    assert result.player.reason == "not_on_map"
+    assert result.player.champion == "Zilean"
+    assert result.player.source == "abilities"

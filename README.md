@@ -12,7 +12,8 @@ expected, so it over-produces slightly by design.
 
 **Stage 2 — champion identification.** Working for both teams. Markers are
 matched against the stock champion icon set (173 icons, `tools/fetch_icons.py`);
-the local player is resolved geometrically instead (see below).
+the local player is identified from their own ability slot icons instead
+(see below).
 
 Run blind against all 173 icons on the sample clip, the full ten-champion roster
 falls out cleanly — four teammates and five enemies dominate, with a sharp cliff
@@ -37,9 +38,18 @@ the fact the design should rest on, and getting it backwards costs a lot:
 - It failed completely for the local player, who was using a skin — their HUD
   portrait and minimap marker share almost nothing.
 
-So the local player is not identified by appearance at all. The minimap's camera
-viewport rectangle is located instead, and since the camera is locked to the
-player they sit at its centre. The nearest marker lands 5–7px from that centre
+So the local player is not identified by portrait or marker art. They are
+identified by the icons in their own four ability slots, matched against Data
+Dragon's spell icons (`perception/hud/self_champion.py`): spell icons do not
+change with the skin, and the slots are on screen wherever the camera points.
+The slots are read until one champion settles and not again until a new game,
+and they are the only thing that names the player. The minimap only places the
+proven champion: their track is the one under that name, and the marker at the
+camera centre carries it.
+
+That centre marker was once the identity too, and the rest of this section is
+why it is still the position. The minimap's camera viewport rectangle is
+located, and since the camera is locked to the player they sit at its centre. The nearest marker lands 5–7px from that centre
 with the runner-up 38–88px away, so it is effectively exact — found in 98% of
 frames and resolving the player in 85%. That route is immune to skins, gallery
 coverage and fog alike.
@@ -511,11 +521,17 @@ On the sample clip that turned one twelve-second death into a dozen fragments
 spread across three champions who were never dead at all.
 
 So a death is only attributed to a champion that can be named outright, and
-there is exactly one such route: the local player, resolved from the camera
-viewport rather than by appearance. Their portrait is a known slot, so when it
+there is exactly one such route: the local player, named by their ability
+slots. Their portrait is a known slot, so when it
 greys out the champion at the centre of the camera is the one who died.
 
-That name has to be *accumulated*, not read fresh, for two reasons. The viewport
+*Superseded 2026-09-28:* the name used to come from the camera, as described
+next. On a live VOD the player stood AFK in the fountain, their marker clipped
+in the map corner read as Samira (not in the game) on a third of the frames,
+the votes split and the feed had no player row all game. The ability slots
+replaced the votes outright.
+
+That name had to be *accumulated*, not read fresh, for two reasons. The viewport
 finds the player by the marker at the camera centre, and a dead player has no
 marker — measured, it resolves in **none** of the frames where the self portrait
 reads dead. And its answer drifts: over the long clip it named the right
@@ -1156,6 +1172,13 @@ One-time setup — fetch the champion icons:
 ```bash
 .venv/Scripts/python tools/fetch_icons.py
 ```
+
+That also downloads every champion's four ability icons into the set's
+`spells/`, which is how the pipeline learns who the player is: it matches the
+player's ability slots against them until one champion settles, then stops
+until a new game. An icon set fetched before this has no `spells/`; rerun the
+command (existing icons are skipped) or the player is known only from the
+minimap marker at the camera centre.
 
 The minimap region also has to be calibrated per (resolution, minimap-scale
 slider), since the panel size is not derivable from resolution alone. There is

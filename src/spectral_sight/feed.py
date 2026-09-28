@@ -122,6 +122,12 @@ class FrameState:
     the roster -- describes a match that has ended; the `new_game` event says
     so once, and this says it on every frame for anyone who missed that."""
 
+    player: dict[str, object] | None = None
+    """Who the player is, how that is known, and -- when no row has
+    `is_self` -- why not: `{champion, source, reason, detail}`, see
+    `pipeline.PlayerStatus`. None from a source that does not say, such as a
+    replayed timeline."""
+
     @classmethod
     def of(
         cls,
@@ -159,6 +165,7 @@ class FrameState:
             lag=lag,
             roster=roster or {},
             game=result.game,
+            player=None if result.player is None else result.player.to_dict(),
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -188,6 +195,7 @@ class FrameState:
                 team.value: list(self.roster.get(team, ()))
                 for team in (Team.BLUE, Team.RED)
             },
+            "player": self.player,
             "champions": [row.to_dict() for row in self.champions],
         }
 

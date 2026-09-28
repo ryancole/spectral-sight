@@ -101,6 +101,10 @@ from spectral_sight.perception.hud.clock import (
     load_clock_reader,
 )
 from spectral_sight.perception.hud.naming import SELF_SLOT, SlotNaming
+from spectral_sight.perception.hud.self_champion import (
+    SelfChampionReader,
+    SpellGallery,
+)
 from spectral_sight.perception.hud.portraits import PortraitLayout
 from spectral_sight.perception.identity import Gallery, Match, load_icon_gallery
 from spectral_sight.perception.identity.roster import Roster
@@ -204,15 +208,45 @@ the carry radius of where its track was predicted, and no other marker or
 same-team track is within the clear radius -- anything closer is a tangle, and
 a tangle is where a name can jump markers, so it is read every sample."""
 
-SELF_MIN_SIGHTINGS = 10
-SELF_MIN_LEAD = 2.0
-"""How much the viewport must favour one champion before it is called the local
-player: this many resolutions, and this many times the runner-up.
+PROVEN_SELF_WEIGHT = 1.0
+"""Identity evidence the camera-centre marker's track gains per frame for the
+champion the ability slots proved -- a fully decisive gallery read's worth,
+so a track that the gallery had misnamed (the clipped fountain marker read as
+Samira) comes round within seconds."""
 
-Measured over a 5.3-minute clip the viewport named the player in 2,276 frames
-and got Zilean 84.6% of the time, with the next candidate on 5.8%. The lead is
-enormous, so these are loose thresholds that only exclude the opening frames and
-genuine confusion -- not a fit to that ratio."""
+
+@dataclass(frozen=True, slots=True)
+class PlayerStatus:
+    """Whether this frame has a player row, and if not, why not.
+
+    Published on the feed so a consumer that finds no `is_self` row does not
+    have to guess which of several things went wrong.
+    """
+
+    champion: str | None
+    """The player's champion as far as the pipeline knows it, row or not."""
+    source: str | None
+    """How the champion was learned: "abilities" (the HUD's spell icons, the
+    only thing that identifies the player), or None while unknown. A string
+    rather than a flag so a later source would not change the wire format."""
+    reason: str | None
+    """None when there is a player row. Otherwise one of:
+    "no_game" -- the frame does not show the in-game HUD;
+    "unidentified" -- the player's champion is not known yet;
+    "dead" -- the player is dead and their track was not held;
+    "not_on_map" -- the champion is known but their marker is not on the
+    minimap: no track is theirs, or theirs has not been seen for longer than
+    the tracker's `lost_after`, and the camera centre found no marker."""
+    detail: str | None = None
+    """Free text elaborating on `reason`, for a person reading the feed."""
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "champion": self.champion,
+            "source": self.source,
+            "reason": self.reason,
+            "detail": self.detail,
+        }
 
 
 @dataclass(slots=True)
@@ -261,6 +295,10 @@ class PipelineResult:
     because nothing looked, not because nothing was there. A caller
     publishing rows skips those frames."""
 
+    player: PlayerStatus | None = None
+    """Whether there is a player row this frame and why not -- see
+    `PlayerStatus`. None on frames between samples."""
+
     def named(self) -> dict[str, Track]:
         """Confirmed tracks that have settled on a champion."""
         return {t.identity: t for t in self.tracks if t.identity is not None}
@@ -284,6 +322,7 @@ class Pipeline:
         abilities: AbilityLayout | None = None,
         resolution: tuple[int, int] | None = None,
         place_self: bool = True,
+        spells: SpellGallery | None = None,
     ) -> None:
         self.region = region
         self.gallery = gallery
@@ -391,6 +430,15 @@ class Pipeline:
         whatever frame confirmed it, and the self track is occasionally
         unresolved on exactly that frame -- holding the cast until the next
         self row loses nothing, where dropping it loses the cast."""
+        self.self_reader = (
+            None if abilities is None or spells is None
+            else SelfChampionReader(spells)
+        )
+        """Names the player from the icons in their ability slots -- see
+        `perception.hud.self_champion`. Reads only until it has settled, and
+        is reset only by a new game: the player cannot change champion."""
+        self._ability_boxes = None if abilities is None else abilities.boxes()
+        """The ability slots at the current HUD scale, for `self_reader`."""
         self.skill_points = (
             None if abilities is None else load_skill_point_reader(abilities)
         )
@@ -456,47 +504,22 @@ class Pipeline:
         self._gallery_read: dict[int, float] = {}
         """Track id to when the gallery last read its marker as the track's own
         name -- see `_needs_reading`."""
-        self._self_evidence: dict[str, int] = {}
-        """How often the viewport has named each champion as the local player.
-
-        Accumulated rather than read fresh, for two reasons. The viewport finds
-        the player by the marker at the camera centre, and a dead player has no
-        marker -- so it is unavailable in exactly the frames where a death needs
-        attributing. And the latest answer is not reliable enough to build on:
-        over a 5.3-minute clip it named the right champion 85% of the time but
-        drifted for seconds at a stretch when the camera sat on a teammate, and
-        taking the most recent value attributed the player's second death to two
-        champions who were alive throughout.
-
-        The player is one champion for the whole game, so this is the same move
-        the tracker makes for a marker's identity: let the evidence pile up and
-        a handful of bad frames cannot outvote it.
-
-        Frames vote only while the self portrait reads alive -- see the gate in
-        `process`. The camera is assumed locked on the player, and death is the
-        one departure from that the pipeline can prove: the death-cam watches a
-        corpse or a teammate for the whole respawn timer, which is minutes of
-        wrong votes over a session, not a handful."""
 
     @property
     def self_champion(self) -> str | None:
-        """The champion the local player is on, or None while it is unsettled.
+        """The champion the local player is on, or None until the ability
+        slots have settled it -- the only thing that names the player.
 
-        Requires a clear lead rather than a bare majority, since the cost of
-        being wrong is naming the wrong casualty -- and a champion who is merely
-        standing where the camera is pointing can win a handful of frames.
+        The minimap used to vote for this: the marker at the camera centre
+        named whoever it matched, and the most-voted champion won. That broke
+        on an AFK player whose marker, clipped in the fountain corner, read as
+        a champion not in the game -- and a vote can only ever be as good as
+        the camera being on the player. The minimap now only says *where* the
+        proven champion is.
         """
-        if not self._self_evidence:
+        if self.self_reader is None:
             return None
-        ranked = sorted(self._self_evidence.items(), key=lambda kv: kv[1],
-                        reverse=True)
-        name, sightings = ranked[0]
-        runner_up = ranked[1][1] if len(ranked) > 1 else 0
-        if sightings < SELF_MIN_SIGHTINGS:
-            return None
-        if sightings < runner_up * SELF_MIN_LEAD:
-            return None
-        return name
+        return self.self_reader.champion
 
     def world_position(self, x: float, y: float) -> tuple[float, float] | None:
         """Minimap-crop coordinate to world units, if the world is calibrated.
@@ -613,6 +636,7 @@ class Pipeline:
             nameplates=nameplates,
             abilities=AbilityLayout.for_resolution(width, height),
             resolution=(width, height),
+            spells=SpellGallery.load(icons),
         )
 
     def process(self, frame: np.ndarray, timestamp: float) -> PipelineResult:
@@ -637,6 +661,11 @@ class Pipeline:
         if abilities is not None:
             scaled = scale_abilities(abilities, hud)
             self.ability_reader = AbilityReader(scaled, glyphs)
+            self._ability_boxes = scaled.boxes()
+            if self.self_reader is not None and self.self_reader.champion is None:
+                # Readings so far were of the wrong pixels; a settled answer
+                # was not, or it could not have settled.
+                self.self_reader.reset()
             self._pending_abilities.clear()
             self.skill_points = load_skill_point_reader(scaled)
             self._learnable = None
@@ -676,7 +705,8 @@ class Pipeline:
         )
         self._restricted.clear()
         self._gallery_read.clear()
-        self._self_evidence.clear()
+        if self.self_reader is not None:
+            self.self_reader.reset()
         self.levels = LevelBook(confirm=self.levels.confirm)
         self.casts = CastBook(config=self.casts.config)
         if self.liveness is not None:
@@ -802,6 +832,15 @@ class Pipeline:
                     self.aim.reset()
         self._lap("abilities")
 
+        if (self.self_reader is not None and self.self_reader.champion is None
+                and sampled and trusted and self._ability_boxes is not None):
+            # Only until it settles, and not on the death screen, which greys
+            # every slot into something no kit looks like.
+            portrait = None if liveness is None else liveness.slot(SELF_SLOT)
+            if not (portrait is not None and portrait.alive is False):
+                self.self_reader.read(frame, self._ability_boxes)
+        self._lap("self champion")
+
         if self.skill_points is not None:
             # The same two gates, for the same reasons: a screen that is not
             # the game has no chevrons to read, and the death screen is not
@@ -853,14 +892,21 @@ class Pipeline:
 
         matches: list[Match | None] = [None] * len(blips)
         reading = self._needs_reading(blips, timestamp)
+        proven = (None if self.self_reader is None
+                  else self.self_reader.champion)
         for team in (Team.BLUE, Team.RED):
             # A placed marker is kept away from the gallery: whatever is
             # drawn at the centre is the thing covering the player's icon,
             # most often an enemy's, and a confident match there would hand
-            # an enemy's name to the blue roster.
+            # an enemy's name to the blue roster. So is the player's own
+            # marker once the ability slots have proved who they are: it
+            # carries that name instead (below), and a read could only be
+            # worse -- the AFK Annie's marker, clipped in the fountain
+            # corner, read as Samira on a third of the frames.
             indices = [i for i, b in enumerate(blips)
                        if b.team is team and reading[i]
-                       and not (placed and b is self_blip)]
+                       and not ((placed or proven is not None)
+                                and b is self_blip)]
             if not indices:
                 continue
             gallery = self._gallery_for(team)
@@ -872,6 +918,28 @@ class Pipeline:
         self._lap("gallery match")
 
         self.tracker.update(blips, timestamp, matches)
+        if proven is not None and self_blip is not None and not placed:
+            # A detected marker only. One placed at the centre is the camera's
+            # guess at where the player is, and at the fountain -- camera
+            # clamped in the corner -- it feeds phantoms; giving them the
+            # name would win it off the player's real track.
+            index = next(i for i, b in enumerate(blips) if b is self_blip)
+            track = self.tracker.assignment.get(index)
+            holder = self.tracker.identified().get(proven)
+            if track is not None and holder is not None and holder is not track:
+                # The player already has a track, so the one at the centre is
+                # someone else's -- a teammate standing on them, Fiddlesticks
+                # back in the fountain beside the AFK Annie. Only when no
+                # track carries the name is the centre track given it: that
+                # is the clipped fountain marker the gallery misread (as
+                # Samira), which then has nothing else to name it.
+                track = None
+            if track is not None:
+                # The centre marker is where the camera says the player is;
+                # the slots have said who, so the marker's track takes the
+                # name rather than the gallery's read of a clipped icon.
+                track.observe_identity(proven, PROVEN_SELF_WEIGHT)
+                self.roster.observe(Team.BLUE, proven, PROVEN_SELF_WEIGHT)
         carried: set[str] = set()
         for index, track in self.tracker.assignment.items():
             match = matches[index]
@@ -902,38 +970,26 @@ class Pipeline:
             fed = self.tracker.assignment.get(index)
             if fed is not None and not any(t is fed for t in tracks):
                 fed = None
-        self_track = fed
-        if corpse is not None and any(t is corpse for t in tracks):
+        # Nobody is the player until the ability slots say who they are; the
+        # minimap only places them.
+        self_track = None
+        if proven is None:
+            pass
+        elif corpse is not None and any(t is corpse for t in tracks):
             # Dead, the self row is the corpse: where the player fell, under
             # their name, reading dead for the whole timer.
             self_track = corpse
         else:
-            # The camera centre is not always the player. At the fountain the
-            # camera is clamped to the map corner while the player walks out
-            # of it, and a marker placed at the centre there fed only
-            # phantoms; the player's own track, following their real marker,
-            # sat 25px away. Once the player is named, their track on screen
-            # -- inside the camera box -- answers when the centre found
-            # nobody, or found a track under someone else's name.
-            named = self._named_self_on_screen(tracks, viewport, timestamp)
-            if named is not None and (fed is None or fed.identity != named.identity):
-                self_track = named
-        # The champion at the camera centre is only a witness to who the
-        # player is while the camera is credibly locked on them, and the one
-        # violation this pipeline can prove is death: a dead player's camera
-        # sits on their corpse or roams teammates for the whole respawn timer,
-        # and on a real session those frames poured up to 72 seconds of votes
-        # at a stretch onto whoever was being watched. So the self portrait
-        # must read alive for a frame to vote. An unproven portrait withholds
-        # the vote too -- pre-game frames are not a game -- and a run with no
-        # portrait calibration keeps the old behaviour, having no gate to
-        # apply.
-        # Only the camera votes: the fallback onto the named track would
-        # otherwise be the name voting for itself.
-        witnessed = liveness is None or (me is not None and me.alive is True)
-        if witnessed and fed is not None and fed.identity is not None:
-            name = fed.identity
-            self._self_evidence[name] = self._self_evidence.get(name, 0) + 1
+            # The track under the proven name, wherever it is: the camera
+            # centre is not always the player -- clamped in the fountain
+            # corner, or a replay's free camera -- and a proven name needs no
+            # camera box to vouch for it. Failing that, the centre marker's
+            # track, which carries the proven name from this frame on, unless
+            # it is already someone else's: a teammate standing on the player,
+            # or a misread not yet overwritten. No row beats the wrong row.
+            self_track = self._named_self(tracks, timestamp)
+            if self_track is None and fed is not None and fed.identity in (None, proven):
+                self_track = fed
 
         if self.naming is not None and liveness is not None:
             # An ally is drawn on the minimap exactly while alive, so the
@@ -985,6 +1041,8 @@ class Pipeline:
             viewport=viewport,
             self_blip=self_blip,
             self_track=self_track,
+            player=self._player_status(self_track, trusted, self_dead, timestamp,
+                                       fed),
             clock=clock,
             liveness=liveness,
             plates=plates,
@@ -1305,20 +1363,70 @@ class Pipeline:
 
         return plates, pairing, casts
 
-    def _named_self_on_screen(
-        self, tracks: list[Track], viewport: Viewport | None, timestamp: float
-    ) -> Track | None:
-        """The track under the player's settled name, if it is visible and
-        inside the camera box -- on screen, which is where the player is."""
+    def _player_status(
+        self, self_track: Track | None, trusted: bool, dead: bool,
+        timestamp: float, centre: Track | None = None,
+    ) -> PlayerStatus:
+        """Who the player is, how that is known, and why there is no row if
+        there is none -- the answer to "coach: no player row" in one place."""
         name = self.self_champion
-        if name is None or viewport is None:
+        reader = self.self_reader
+        source = None if name is None else "abilities"
+        if self_track is not None:
+            return PlayerStatus(name, source, None)
+        if not trusted:
+            return PlayerStatus(name, source, "no_game",
+                                "the in-game HUD is not on screen")
+        if name is None:
+            if reader is None:
+                detail = ("no spell icons or no ability calibration, so the "
+                          "player cannot be identified: run "
+                          "tools/fetch_icons.py")
+            elif reader.last is None:
+                detail = "ability slots not read yet"
+            else:
+                last = reader.last
+                detail = (f"ability slots look most like {last.champion} "
+                          f"(score {last.score:.2f}, lead {last.margin:.2f}), "
+                          "not yet settled")
+            return PlayerStatus(None, None, "unidentified", detail)
+        if dead:
+            return PlayerStatus(name, source, "dead",
+                                f"{name} is dead and no track was held")
+        track = self.tracker.identified().get(name)
+        if track is not None:
+            detail = (f"{name}'s marker has not been seen for "
+                      f"{track.age(timestamp):.1f}s")
+            if centre is not None and centre.identity not in (None, name):
+                detail += f"; the camera centre is on {centre.identity}"
+        else:
+            detail = (f"no track on the minimap is {name}'s and the camera "
+                      "centre found no marker")
+        return PlayerStatus(name, source, "not_on_map", detail)
+
+    def _named_self(
+        self, tracks: list[Track], timestamp: float
+    ) -> Track | None:
+        """The recently seen track under the player's proven name."""
+        name = self.self_champion
+        if name is None:
             return None
         lost_after = self.tracker.config.lost_after
         for track in tracks:
-            if (track.identity == name
-                    and track.age(timestamp) < lost_after
-                    and viewport.x <= track.x <= viewport.x + viewport.width
-                    and viewport.y <= track.y <= viewport.y + viewport.height):
+            if track.identity == name and track.age(timestamp) < lost_after:
+                return track
+        return None
+        proven = self.self_reader is not None and self.self_reader.champion == name
+        if viewport is None and not proven:
+            return None
+        lost_after = self.tracker.config.lost_after
+        for track in tracks:
+            if track.identity != name or track.age(timestamp) >= lost_after:
+                continue
+            if proven or (
+                viewport.x <= track.x <= viewport.x + viewport.width
+                and viewport.y <= track.y <= viewport.y + viewport.height
+            ):
                 return track
         return None
 
@@ -1644,6 +1752,7 @@ class Pipeline:
             has_minion_dots=self.dot_detector is not None,
             has_turrets=self.turret_reader is not None,
             has_last_hits=self.creep_score is not None,
+            has_self_abilities=self.self_reader is not None,
             world_bounds=bounds,
             world_units_per_pixel=scale,
         )
@@ -1666,8 +1775,8 @@ class Pipeline:
         marker. When `place` is set and no blue marker is within
         `SELF_CLEARANCE`, one is put at the centre with no score, so the
         tracker keeps the player's track fed through the cover. It is the
-        viewport doing the detecting, which is what it was already trusted
-        to do for the identity; this extends that trust to the position.
+        viewport doing the detecting -- position only: who the player is
+        comes from the ability slots.
         """
         if viewport is None:
             return None, False

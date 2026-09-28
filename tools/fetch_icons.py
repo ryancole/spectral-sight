@@ -8,6 +8,10 @@ enemies alike. See `spectral_sight.perception.identity`.
     python tools/fetch_icons.py --version 16.16.1
     python tools/fetch_icons.py --force         # re-download existing
 
+Each champion's four ability icons come too, into `spells/<champion>/`: the
+player's own ability slots show them whatever the skin, which is how the HUD
+says who the player is -- see `perception.hud.self_champion`.
+
 Icons land in `etc/icons/<version>/`, alongside a manifest recording the patch
 they came from. They are not tracked in git; rerun this to restore them.
 """
@@ -23,6 +27,7 @@ from pathlib import Path
 
 CDN = "https://ddragon.leagueoflegends.com"
 ICON_DIR = Path(__file__).resolve().parents[1] / "etc" / "icons"
+SPELL_DIR = "spells"
 TIMEOUT = 30
 
 
@@ -48,6 +53,50 @@ def champion_index(version: str) -> tuple[dict[str, str], dict[str, str]]:
     icons = {key: entry["image"]["full"] for key, entry in data.items()}
     resources = {key: entry.get("partype", "") for key, entry in data.items()}
     return icons, resources
+
+
+def spell_index(version: str) -> dict[str, list[str]]:
+    """Map champion key -> the image filenames of its Q, W, E and R, in order.
+
+    These are what the player's own ability slots show, and unlike the
+    portrait and the minimap icon they do not change with the skin -- which is
+    what makes them the way to recognise the player's champion from the HUD.
+    """
+    data = _get_json(f"{CDN}/cdn/{version}/data/en_US/championFull.json")["data"]
+    return {
+        key: [spell["image"]["full"] for spell in entry["spells"]]
+        for key, entry in data.items()
+    }
+
+
+def download_spells(version: str, target: Path, *, force: bool = False) -> None:
+    """Every champion's ability icons, as `spells/<champion>/<Q|W|E|R>.png`.
+
+    Keyed by slot rather than by Data Dragon's own filenames, which are named
+    after the spell and so cannot be told apart by slot without the index.
+    """
+    spells = spell_index(version)
+    fetched = skipped = failed = 0
+    for index, (name, files) in enumerate(sorted(spells.items()), start=1):
+        folder = target / SPELL_DIR / name
+        folder.mkdir(parents=True, exist_ok=True)
+        for slot, filename in zip("QWER", files):
+            path = folder / f"{slot}.png"
+            if path.exists() and not force:
+                skipped += 1
+                continue
+            url = f"{CDN}/cdn/{version}/img/spell/{filename}"
+            try:
+                with urllib.request.urlopen(url, timeout=TIMEOUT) as response:
+                    path.write_bytes(response.read())
+                fetched += 1
+            except (urllib.error.URLError, OSError) as exc:
+                print(f"  failed {name} {slot}: {exc}", file=sys.stderr)
+                failed += 1
+        if index % 25 == 0:
+            print(f"  spells {index}/{len(spells)}...")
+    print(f"{version} spells: {fetched} downloaded, {skipped} already present, "
+          f"{failed} failed -> {target / SPELL_DIR}")
 
 
 def download(version: str, *, force: bool = False) -> Path:
@@ -89,6 +138,7 @@ def download(version: str, *, force: bool = False) -> Path:
         f"{version}: {fetched} downloaded, {skipped} already present, "
         f"{failed} failed -> {target}"
     )
+    download_spells(version, target, force=force)
     return target
 
 
