@@ -41,6 +41,12 @@ The guard against that is the clock: it is a known string in a known font, so
 the derived reader is tried on the frame it was derived from and kept only if it
 reads. A layout that has moved fails that test, and the run then says game time
 is unavailable instead of producing a plausible timeline of nothing.
+
+The one HUD setting that *is* handled is the scale of the player's own panel
+at the bottom centre, because the clock does not see it: the clock sits outside
+that panel and reads perfectly while every slot, chevron and bar inside it is
+missed. The files here stay at scale 1.0, and the pipeline measures the panel's
+scale at run time and moves its readers -- see `perception/hud/scale.py`.
 """
 
 from __future__ import annotations

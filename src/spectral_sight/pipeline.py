@@ -77,6 +77,13 @@ from spectral_sight.perception.hud.creep_score import (
 )
 from spectral_sight.perception.hud.skill_points import load_skill_point_reader
 from spectral_sight.perception.hud.resources import ResourceReader, load_resource_reader
+from spectral_sight.perception.hud.scale import (
+    HudScale,
+    HudScaleWatch,
+    scale_abilities,
+    scale_portraits,
+    scale_resources,
+)
 from spectral_sight.perception.nameplates.plates import Side
 from spectral_sight.perception.screen.last_hits import LastHitDetector
 from spectral_sight.perception.screen import (
@@ -410,6 +417,19 @@ class Pipeline:
                 self.resources = load_resource_reader(
                     resolution[0], resolution[1], clock.glyphs
                 )
+        self.hud_scale = None if abilities is None else HudScaleWatch(abilities)
+        """The player panel's size relative to the calibration -- the
+        client's HUD scale setting, which the per-resolution files cannot
+        know. Measured on a cadence, and on a change every reader of the
+        panel is rebuilt on the scaled geometry; see `_apply_hud_scale`."""
+        self._panel_sources = (
+            abilities,
+            portraits,
+            None if self.resources is None else self.resources.layout,
+        )
+        """The calibrated panel geometry, at scale 1.0. Every rescale starts
+        from these rather than from the last scaled copy, so rounding never
+        accumulates."""
         self._view = WorldView()
         self._anchor: tuple[float, float] | None = None
         self._enemies: list[tuple[float, float]] = []
@@ -600,6 +620,28 @@ class Pipeline:
         if self.timer is not None:
             self.timer.lap(stage)
 
+    def _apply_hud_scale(self, hud: HudScale) -> None:
+        """Rebuild every reader of the player panel on geometry scaled from
+        the calibration. Each starts clean: what they had accumulated was
+        read off the wrong pixels, which is why the scale was measured."""
+        abilities, portraits, resources = self._panel_sources
+        glyphs = None if self.clock is None else self.clock.glyphs
+        if abilities is not None:
+            scaled = scale_abilities(abilities, hud)
+            self.ability_reader = AbilityReader(scaled, glyphs)
+            self._pending_abilities.clear()
+            self.skill_points = load_skill_point_reader(scaled)
+            self._learnable = None
+            if self.aim is not None:
+                self.aim.reset()
+        if portraits is not None and self.liveness is not None:
+            self.portraits = scale_portraits(portraits, hud)
+            self.liveness.relayout(self.portraits)
+        if resources is not None and self.resources is not None:
+            self.resources = ResourceReader(
+                scale_resources(resources, hud), self.resources.glyphs
+            )
+
     def _process(self, frame: np.ndarray, timestamp: float) -> PipelineResult:
         sampled = (
             self._last_sample is None
@@ -639,6 +681,18 @@ class Pipeline:
             if self.turret_reader is not None:
                 self.turret_reader.reset()
                 self._turrets = None
+            if self.hud_scale is not None:
+                # A different game may be at a different HUD setting.
+                self.hud_scale.unsettle()
+
+        if self.hud_scale is not None and trusted:
+            # Before every panel reader, so the frame that settles a new
+            # scale is also the first one read at it.
+            scale = self.hud_scale.update(frame, timestamp)
+            if scale is not None:
+                height, width = frame.shape[:2]
+                self._apply_hud_scale(HudScale.for_frame(scale, width, height))
+        self._lap("hud scale")
 
         liveness = None
         if self.liveness is not None:
