@@ -171,6 +171,20 @@ class AliveReader:
         direction: reading living champions as dead."""
         self._baselines.clear()
 
+    def relayout(self, layout: PortraitLayout) -> None:
+        """Read from new boxes. Only a slot whose box moved forgets its
+        baseline: a running maximum learned from other pixels says nothing
+        about these, while a slot left where it was keeps what it knows."""
+        old = self.layout
+        if ((layout.self_center_x, layout.self_center_y, layout.self_radius)
+                != (old.self_center_x, old.self_center_y, old.self_radius)):
+            self._baselines.pop("self", None)
+        for index in range(min(layout.ally_count, old.ally_count)):
+            if (layout.ally_center(index) != old.ally_center(index)
+                    or layout.ally_radius != old.ally_radius):
+                self._baselines.pop(f"ally{index + 1}", None)
+        self.layout = layout
+
     @property
     def baselines(self) -> dict[str, float]:
         """What each slot has learned it looks like alive. For inspection."""

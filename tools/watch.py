@@ -380,10 +380,17 @@ def main() -> int:
         deriver = EventDeriver()
         known = KnownRoster()
         started = time.perf_counter()
+        hud_scale = 1.0
 
         with Session(source) as session:
             for frame in session:
                 result = pipeline.process(frame.image, frame.timestamp)
+                if (pipeline.hud_scale is not None
+                        and pipeline.hud_scale.scale != hud_scale):
+                    hud_scale = pipeline.hud_scale.scale
+                    print(f"HUD scale {hud_scale:.3f} of the calibration; "
+                          "player panel readers moved to match",
+                          file=console)
                 if not result.sampled:
                     # A frame between samples: the world-view stages saw it, the
                     # minimap stages did not, and there is nothing to publish.
