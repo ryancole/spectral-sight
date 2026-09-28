@@ -381,6 +381,7 @@ def main() -> int:
         known = KnownRoster()
         started = time.perf_counter()
         hud_scale = 1.0
+        game = 0
 
         with Session(source) as session:
             for frame in session:
@@ -391,6 +392,11 @@ def main() -> int:
                     print(f"HUD scale {hud_scale:.3f} of the calibration; "
                           "player panel readers moved to match",
                           file=console)
+                if result.game != game:
+                    game = result.game
+                    print(f"new game (game {game + 1} this run): the clock went "
+                          "back to the start of a match; tracks, roster and "
+                          "identities start over", file=console)
                 if not result.sampled:
                     # A frame between samples: the world-view stages saw it, the
                     # minimap stages did not, and there is nothing to publish.
@@ -403,7 +409,7 @@ def main() -> int:
                         seq=processed - 1,
                         fps=meter.tick(),
                         dropped=getattr(source, "dropped", 0),
-                        roster=known.update(result.observations),
+                        roster=known.update(result.observations, result.game),
                     )
                     feed.publish(state)
                     # After the frame, so a consumer holds the state an event

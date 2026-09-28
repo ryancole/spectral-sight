@@ -228,6 +228,11 @@ class PipelineResult:
     clock: GameClock | None = None
     """Match time, when the clock is calibrated and readable."""
 
+    game: int = 0
+    """Which game in this run the frame belongs to, from zero. Advances when
+    the clock goes back to the start of a match -- see `ClockFilter.new_game`
+    -- and every piece of per-game state is dropped at that moment."""
+
     liveness: Liveness | None = None
     """What the HUD portraits say about which teammates are alive, when they
     are calibrated. Slot-indexed, so on its own it says how many are dead but
@@ -444,6 +449,9 @@ class Pipeline:
         self.levels = LevelBook()
         self.casts = CastBook()
         self._clock_filter = ClockFilter()
+        self.game = 0
+        """Games seen this run before the current one -- see
+        `PipelineResult.game`."""
         self._restricted: dict[Team, Gallery] = {}
         self._gallery_read: dict[int, float] = {}
         """Track id to when the gallery last read its marker as the track's own
@@ -642,6 +650,62 @@ class Pipeline:
                 scale_resources(resources, hud), self.resources.glyphs
             )
 
+    def _new_game(self) -> None:
+        """Forget everything that was about the last game.
+
+        Broader than the resync reset, which keeps the roster, the tracks and
+        the player's identity because a seek within one match leaves them
+        true. A new match makes all of it evidence about other champions: a
+        locked roster would make this game's names unrepresentable, and a
+        track carried over would hand its old name to whoever turns up near
+        it. What stays is calibration -- geometry, glyphs, the gallery -- and
+        the clock filter, which has just adopted the new game's time.
+
+        Track ids keep counting rather than restart, so an id names one track
+        across the whole run and a consumer keyed on it cannot mistake a new
+        game's champion for an old one's.
+        """
+        self.game += 1
+        ids = self.tracker._ids
+        self.tracker = Tracker(self.tracker.config)
+        self.tracker._ids = ids
+        self.roster = Roster(
+            team_size=self.roster.team_size,
+            min_evidence=self.roster.min_evidence,
+            lock_margin=self.roster.lock_margin,
+        )
+        self._restricted.clear()
+        self._gallery_read.clear()
+        self._self_evidence.clear()
+        self.levels = LevelBook(confirm=self.levels.confirm)
+        self.casts = CastBook(config=self.casts.config)
+        if self.liveness is not None:
+            self.liveness.reset()
+            self.naming.reset()
+        if self.ability_reader is not None:
+            self.ability_reader.reset()
+        self._pending_abilities.clear()
+        if self.skill_points is not None:
+            self.skill_points.reset()
+        self._learnable = None
+        if self.turret_reader is not None:
+            self.turret_reader.reset()
+        self._turrets = None
+        if self.hud_scale is not None:
+            self.hud_scale.unsettle()
+        self._cs_filter.reset()
+        self._cs = None
+        if self.last_hits is not None:
+            self.last_hits.reset()
+        self._pending_last_hits.clear()
+        for stage in (self.projectiles, self.threats, self.aim):
+            if stage is not None:
+                stage.reset()
+        self._anchor = None
+        self._enemies = []
+        self._pending_threats.clear()
+        self._pending_skillshots.clear()
+
     def _process(self, frame: np.ndarray, timestamp: float) -> PipelineResult:
         sampled = (
             self._last_sample is None
@@ -662,7 +726,9 @@ class Pipeline:
         # predates the clock.
         trusted = self.clock is None or (clock is not None and clock.observed)
 
-        if self._clock_filter.resynced:
+        if self._clock_filter.new_game:
+            self._new_game()
+        elif self._clock_filter.resynced:
             # The clock just contradicted its own prediction: a seek, or a
             # different game spliced into the same capture. What every HUD
             # reader has accumulated is evidence about footage that ended --
@@ -757,7 +823,9 @@ class Pipeline:
         self._lap("world view")
 
         if not sampled:
-            return PipelineResult(clock=clock, liveness=liveness, sampled=False)
+            return PipelineResult(
+                clock=clock, game=self.game, liveness=liveness, sampled=False
+            )
 
         minimap = self.region.crop(frame)
         blips = self.detector.detect(minimap)
@@ -910,6 +978,7 @@ class Pipeline:
         self._lap("turrets")
 
         result = PipelineResult(
+            game=self.game,
             blips=blips,
             matches=matches,
             tracks=tracks,
@@ -1446,6 +1515,7 @@ class Pipeline:
                     seconds_since_seen=age,
                     game_time=None if clock is None else clock.total_seconds,
                     game_time_observed=clock is not None and clock.observed,
+                    game=self.game,
                     champion=track.identity,
                     world_x=None if world is None else world[0],
                     world_y=None if world is None else world[1],

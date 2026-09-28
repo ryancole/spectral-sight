@@ -316,7 +316,7 @@ cast, a champion slipping into fog — without diffing ten rows against their
 predecessors itself, badly, in every downstream tool at once. So the feed
 interleaves `{"t": "event", "kind": ...}` messages with the frames: `cast`,
 `death`/`respawn`, `vanished`/`reappeared`, `level_up`,
-`skill_point`/`skill_spent`, `identified` and `roster`, each carrying the
+`skill_point`/`skill_spent`, `identified`, `roster` and `new_game`, each carrying the
 same `video_time`/`game_time` keys as everything else.
 
 These are *perceptual* events, deliberately: things the vision concluded, not
@@ -1060,7 +1060,12 @@ Two consequences follow, and both are load-bearing:
 
 Time only moves forward. There is no seeking, so the tracker, the roster lock
 and the accumulated self-champion evidence all keep the monotonic input they
-assume.
+assume -- within one game. A VOD in the window can hold several, and a run can
+stay up across a queue, so the clock marks the boundary: when it lands back at
+the start of a match (at or under 1:30, at least two minutes behind its last
+reading) the run moves to the next `game` and all of that starts over. Between
+games there is no timer, and past 20 seconds without one `game_time` goes null
+rather than counting a match that has ended.
 
 One quirk worth knowing, because it looks like a hang: Graphics Capture delivers
 a frame when the window **redraws**, so a picture that is not moving produces
