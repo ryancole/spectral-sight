@@ -592,6 +592,14 @@ class Observation:
     only. Filtered: it never falls and a rise is adopted only once readings
     agree, so it can lag the HUD by a reading or two. None when unread."""
 
+    gold: int | None = None
+    """The local player's gold, from the box under the inventory -- the self
+    row only. Filtered: a rise is adopted once two readings in a row agree
+    and a fall on one, so it can trail a rise by a reading but never shows a
+    figure from before a purchase. None when
+    the box was not read on this frame -- which says nothing about the
+    figure, not that it is unchanged or zero."""
+
     last_hits: tuple[LastHit, ...] | None = None
     """Enemy minions that died on the world view and resolved on this frame --
     the self row only, like `skillshots`, and a second or so after the death,
@@ -662,6 +670,8 @@ class Observation:
             row["learnable"] = list(self.learnable)
         if self.cs is not None:
             row["cs"] = int(self.cs)
+        if self.gold is not None:
+            row["gold"] = int(self.gold)
         if self.last_hits:
             row["last_hits"] = [hit.to_dict() for hit in self.last_hits]
         # Empty is written for the same reason: "looked, saw none".
@@ -729,6 +739,7 @@ class Observation:
                 else tuple(str(slot) for slot in data["learnable"])
             ),
             cs=None if data.get("cs") is None else int(data["cs"]),
+            gold=None if data.get("gold") is None else int(data["gold"]),
             last_hits=(
                 tuple(LastHit.from_dict(h) for h in data["last_hits"])
                 if data.get("last_hits") else None
@@ -810,6 +821,11 @@ class TimelineMeta:
     """Whether the creep score was read and enemy minion deaths judged against
     it. When False no row carries `cs` or `last_hits` because nothing looked."""
 
+    has_gold: bool = False
+    """Whether the player's gold was read. Needs the ability calibration (the
+    box is placed from it) and the clock (its digits read the number). When
+    False no row carries `gold` because nothing looked."""
+
     has_minion_dots: bool = False
     """Whether minion dots were read off the minimap. Needs a minimap large
     enough to draw them legibly, so it is off for the small default panel."""
@@ -850,6 +866,7 @@ class TimelineMeta:
             "has_minions": self.has_minions,
             "has_minion_dots": self.has_minion_dots,
             "has_last_hits": self.has_last_hits,
+            "has_gold": self.has_gold,
             "has_turrets": self.has_turrets,
             "has_self_abilities": self.has_self_abilities,
             "world_bounds": self.world_bounds,
@@ -872,6 +889,7 @@ class TimelineMeta:
             has_minions=bool(data.get("has_minions", False)),
             has_minion_dots=bool(data.get("has_minion_dots", False)),
             has_last_hits=bool(data.get("has_last_hits", False)),
+            has_gold=bool(data.get("has_gold", False)),
             has_turrets=bool(data.get("has_turrets", False)),
             has_self_abilities=bool(data.get("has_self_abilities", False)),
             world_bounds=data.get("world_bounds"),
@@ -898,6 +916,7 @@ class TimelineMeta:
             has_minions=self.has_minions,
             has_minion_dots=self.has_minion_dots,
             has_last_hits=self.has_last_hits,
+            has_gold=self.has_gold,
             has_turrets=self.has_turrets,
             has_self_abilities=self.has_self_abilities,
             world_bounds=self.world_bounds,
