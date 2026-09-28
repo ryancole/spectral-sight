@@ -444,6 +444,12 @@ class Observation:
     resolve rather than read off the screen. Always False when there is no
     game time at all, so a consumer can filter on it without a None check."""
 
+    game: int = 0
+    """Which game in the run this row belongs to, counting from zero. One
+    recording can hold several matches, and a track id or a champion name
+    means nothing across the boundary -- see `Pipeline._new_game`. Written on
+    every row, like `game_time`, so a reader can split a file without state."""
+
     champion: str | None = None
     """None while a track has not accumulated enough identity evidence."""
 
@@ -610,6 +616,7 @@ class Observation:
             "video_time": round(float(self.video_time), 3),
             "game_time": self.game_time,
             "game_time_observed": self.game_time_observed,
+            "game": int(self.game),
             "track_id": int(self.track_id),
             "team": self.team.value,
             "champion": self.champion,
@@ -680,6 +687,7 @@ class Observation:
             seconds_since_seen=float(data["seconds_since_seen"]),
             game_time=None if data.get("game_time") is None else int(data["game_time"]),
             game_time_observed=bool(data.get("game_time_observed", False)),
+            game=int(data.get("game", 0)),
             champion=data.get("champion"),
             world_x=None if data.get("world_x") is None else float(data["world_x"]),
             world_y=None if data.get("world_y") is None else float(data["world_y"]),

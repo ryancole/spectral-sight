@@ -87,6 +87,7 @@ One champion at one instant. Always present:
 | `video_time` | float (3 dp) | Seconds since the start of the source. Always present, meaningless outside this recording. |
 | `game_time` | int \| null | Match time in seconds. The only time that joins to anything outside the clip. |
 | `game_time_observed` | bool | False when `game_time` was carried through an unreadable frame rather than read off the screen (and always false when null). |
+| `game` | int | Which game in the run the row belongs to, from 0. Advances when the clock goes back to the start of a match (a resync landing at or under 1:30 and at least two minutes behind the last reading) -- a VOD holding several games, or a run left up across a queue. Track ids, names and the roster mean nothing across it: the pipeline starts all of them over. Absent in files written before it existed, and read as 0. |
 | `track_id` | int | Tracker identity. Stable while a track lives; a champion lost and re-found may get a fresh one. Dead champions' tracks are often dropped before the respawn. |
 | `team` | `"blue"` \| `"red"` | Blue is the local player's team. **Relative, everywhere in the feed** (rows, minions, turrets, events): blue means ours on either side of the map, because the client draws the player's team in blue wherever they start. Which corner that is comes in `map_side`. |
 | `champion` | string \| null | Riot champion id (e.g. `"Xerath"`), null until identity evidence accumulates. Can change before the roster locks — see the `identified` event. |
@@ -140,12 +141,13 @@ envelope, not stripped from the rows.
 | `seq` | int | Monotonic from zero within a run. The resume/dedup/gap-detect key — an integer, deliberately, because float equality on a timestamp across a process boundary is a bug waiting to happen. Transport-scoped: a replay of a recorded file renumbers it (see below). |
 | `video_time` | float (3 dp) | As on the rows. |
 | `captured_at` | float (3 dp) \| null | Wall-clock (epoch seconds) arrival of the frame at the capture layer, stamped before any queueing. Null for a recorded clip. The only time in the envelope another process can compare against its own clock. |
-| `game_time`, `game_time_observed` | as on rows | Lifted so a consumer need not read a champion to learn the clock. |
+| `game_time`, `game_time_observed` | as on rows | Lifted so a consumer need not read a champion to learn the clock. `game_time` is null between games: the carried clock gives up after 20 seconds with no timer on screen. |
+| `game` | int | As on rows, and present on frames with none. |
 | `allies_dead` | int \| null | Lifted for the same reason. |
 | `fps` | float (1 dp) \| null | Processed frames per second over a sliding window. Null until measurable. |
 | `dropped` | int | Cumulative frames the source produced that the pipeline never saw. Zero for a file source, which waits. Rising means the feed is describing moments the game has moved past. |
 | `lag` | float (3 dp) \| null | Seconds from frame arrival to this envelope being built — the feed's own staleness, before transport. |
-| `roster` | object: `blue`, `red` → sorted arrays of strings | Every champion named on a row of that team so far this run, whether or not they are on the map now. A player can open the scoreboard at any time, so a champion seen once stays on the roster after their track is forgotten in fog. At most five per team: a sixth name means one was a misread, and the five named on the most frames stay. Rebuilt from the rows alone, so a replayed timeline carries the same roster as the live run. |
+| `roster` | object: `blue`, `red` → sorted arrays of strings | Every champion named on a row of that team so far this game (it empties when `game` advances), whether or not they are on the map now. A player can open the scoreboard at any time, so a champion seen once stays on the roster after their track is forgotten in fog. At most five per team: a sixth name means one was a misread, and the five named on the most frames stay. Rebuilt from the rows alone, so a replayed timeline carries the same roster as the live run. |
 | `champions` | array of rows | One per confirmed track, including champions in fog. |
 
 `fps`, `dropped` and `lag` are how a reactor tells "no enemies visible" from
@@ -169,13 +171,14 @@ Common fields on every event:
 | `video_time` | float (3 dp) | |
 | `game_time` | int \| null | |
 | `team` | `"blue"` \| `"red"` \| null | |
-| `champion` | string \| null | Null when the track is not yet identified, and on the team-level kinds (`roster`, `turret_*`). |
-| `track_id` | int \| null | Null on `roster`, `turret_destroyed` and `turret_rebuilt`. |
+| `champion` | string \| null | Null when the track is not yet identified, and on the run- and team-level kinds (`new_game`, `roster`, `turret_*`). |
+| `track_id` | int \| null | Null on `new_game`, `roster`, `turret_destroyed` and `turret_rebuilt`. |
 
 Kind-specific fields are flattened onto the same object:
 
 | `kind` | Extra fields | Grounding |
 |---|---|---|
+| `new_game` | `game` (int) | The envelope's `game` advancing: a different match has started. First on its frame. Everything the deriver remembered is dropped with it, so no death, level or turret from the last game becomes a baseline for this one -- a consumer should drop its own state the same way. Placed on the new game's first frame with rows, which is where a replay can find it too. Not emitted for game 0. |
 | `identified` | `is_self`; `replaces` (string, only when a previous name is superseded) | A track's champion becoming known, or changing. A re-announce with `replaces` means the pipeline no longer believes the old name. |
 | `level_up` | `level` (int) | The filtered level rising. First knowledge of a level is state, not an event. |
 | `skill_point` | `slots` (array of strings) | The self row's `learnable` becoming non-empty, or changing while non-empty: a skill point is waiting, and these are the abilities it could go into. Unlike `level_up`, first sight *is* an event — joining while a point is unspent is late knowledge of something the player can still act on, the same rule as joining mid-corpse. Re-announced with the new set if the choice changes while the point is held (R lighting at 6). Always `is_self`. |

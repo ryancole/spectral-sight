@@ -70,6 +70,14 @@ The kinds, and what each is grounded in:
   rebuild). Like `level_up`, first knowledge is state: a turret already down
   when the feed starts makes no event. The event's `team` is the turret's
   owner and it names no champion.
+- `new_game` -- the envelope's `game` advancing: the clock went back to the
+  start of a match, so this is a different game from the one before. Emitted
+  before anything else on its frame, and everything the deriver remembered is
+  dropped with it -- a death, a level or a turret from the last game is not a
+  baseline for this one. Taken from the first frame of the new game that has
+  rows, because a frame with none is not written to the timeline and a replay
+  could not place the event anywhere else. Not emitted for game 0: the start
+  of a run is not a change.
 - `roster` -- the envelope's `roster` reaching five champions for a team:
   every one of them has been named at some point, not necessarily at once,
   since a champion seen once is known for the game. Re-emitted if the set
@@ -90,6 +98,7 @@ from spectral_sight.feed import FrameState
 from spectral_sight.types import Team
 
 KINDS = (
+    "new_game",
     "cast",
     "ability",
     "threat",
@@ -159,6 +168,11 @@ class EventDeriver:
     """
 
     def __init__(self) -> None:
+        self._game = 0
+        self._forget()
+
+    def _forget(self) -> None:
+        """Drop everything remembered -- the state of a fresh deriver."""
         self._alive: dict[str, bool] = {}
         """Last *definite* verdict per champion. None rows leave no mark."""
         self._died_at: dict[str, float] = {}
@@ -181,6 +195,19 @@ class EventDeriver:
         sorted by track id, each row's events in a fixed kind order, roster
         checks last -- so a live run and a replay agree to the byte."""
         events: list[Event] = []
+        if state.champions and state.game != self._game:
+            self._game = state.game
+            self._forget()
+            events.append(Event(
+                kind="new_game",
+                seq=state.seq,
+                video_time=state.video_time,
+                game_time=state.game_time,
+                team=None,
+                champion=None,
+                track_id=None,
+                detail={"game": state.game},
+            ))
         for row in state.champions:
             events.extend(self._from_row(state, row))
         events.extend(self._turrets_from(state))

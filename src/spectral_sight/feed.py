@@ -83,7 +83,8 @@ class FrameState:
     game_time: int | None
     game_time_observed: bool
     """Match time, as on the rows, lifted so a consumer need not read a
-    champion to learn the clock."""
+    champion to learn the clock. None between games: the timer is gone, and
+    the clock stops being carried once it has been gone for long enough."""
 
     allies_dead: int | None
     """The HUD's death count, lifted for the same reason -- and because it is
@@ -114,6 +115,12 @@ class FrameState:
     -- a consumer should not watch the enemy team shrink every time someone
     sits in fog long enough for their track to be forgotten. See
     `KnownRoster`."""
+
+    game: int = 0
+    """Which game in the run this frame belongs to, as on the rows. When it
+    changes, everything a consumer holds about the last one -- tracks, names,
+    the roster -- describes a match that has ended; the `new_game` event says
+    so once, and this says it on every frame for anyone who missed that."""
 
     @classmethod
     def of(
@@ -151,6 +158,7 @@ class FrameState:
             dropped=dropped,
             lag=lag,
             roster=roster or {},
+            game=result.game,
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -171,6 +179,7 @@ class FrameState:
             ),
             "game_time": self.game_time,
             "game_time_observed": self.game_time_observed,
+            "game": int(self.game),
             "allies_dead": self.allies_dead,
             "fps": None if self.fps is None else round(float(self.fps), 1),
             "dropped": int(self.dropped),
@@ -198,6 +207,10 @@ class KnownRoster:
     the game, so this corrects itself without needing to know about the
     pipeline's roster lock. A name on both teams is likewise kept only on the
     team that showed it more.
+
+    "For good" means for the game. Rows from a new game (a higher `game`)
+    start the roster over, since the champions it has shown are the other
+    match's.
     """
 
     team_size: int = 5
@@ -206,9 +219,24 @@ class KnownRoster:
     )
     _first: dict[str, int] = field(default_factory=dict)
     """Order of first sighting, the tie-break among equally seen names."""
+    _game: int = 0
 
-    def update(self, rows: Iterable[Observation]) -> dict[Team, tuple[str, ...]]:
-        """Fold in one frame's rows and return the roster as it now stands."""
+    def update(
+        self, rows: Iterable[Observation], game: int | None = None
+    ) -> dict[Team, tuple[str, ...]]:
+        """Fold in one frame's rows and return the roster as it now stands.
+
+        `game` is the frame's, for a frame that may have no rows to carry it
+        -- the first moments of a new game, before any track has confirmed,
+        should publish an empty roster rather than the last game's.
+        """
+        rows = list(rows)
+        if game is None and rows:
+            game = rows[0].game
+        if game is not None and game != self._game:
+            self._game = game
+            self._frames = {Team.BLUE: Counter(), Team.RED: Counter()}
+            self._first.clear()
         # A dict, not a set: row order sets the first-sighting tie-break, and
         # set order changes with the hash seed, which a replay does not share.
         for team, name in dict.fromkeys(
@@ -442,7 +470,8 @@ def read_frames(path: str | Path) -> Iterator[FrameState]:
             fps=None,
             dropped=0,
             lag=None,
-            roster=known.update(batch),
+            roster=known.update(batch, first.game),
+            game=first.game,
         )
         seq += 1
         batch.clear()

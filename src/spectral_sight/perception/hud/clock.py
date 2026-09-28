@@ -377,6 +377,18 @@ class ClockFilter:
     disagreement is treated as the world having changed rather than as noise:
     once a reading has contradicted the prediction for `resync_after` seconds it
     is adopted.
+
+    One kind of resync is singled out: the clock landing back at the start of a
+    match from well into one. That is a different game -- a VOD holding
+    several, or a live run left up across a queue -- and everything accumulated
+    about the old one has to go, not only what the HUD readers hold. See
+    `new_game`.
+
+    The prediction is not carried forever, either. Past `max_hold` seconds with
+    no agreeing reading the timer is not occluded, it is gone -- the loading
+    screen, the post-game lobby, champ select -- and the filter answers None
+    rather than counting a match that has ended. Its state is kept, so a clock
+    that comes back must still agree or hold for `resync_after`, as before.
     """
 
     max_drift: float = 2.0
@@ -384,6 +396,25 @@ class ClockFilter:
 
     resync_after: float = 3.0
     """Seconds of sustained disagreement before the prediction gives way."""
+
+    max_hold: float = 20.0
+    """Seconds the prediction is carried with no agreeing reading before the
+    filter stops answering. Far longer than an in-game occlusion of the timer
+    -- a ping or a damage flash is gone in a second -- and shorter than the
+    loading screen, so the time between two games reads as no game time."""
+
+    game_start: int = 90
+    """Match seconds a resync must land at or under to count as a new game.
+    Loading in puts the timer at 0:00 and the first clean read can be a few
+    seconds later; this is well inside the first wave, where no finished game
+    could be."""
+
+    rewind: int = 120
+    """How far behind the last reading that resync must land. A pause resumes
+    where it stopped and a forward seek lands later, so only a clock that went
+    back past this reads as a new game. Seeking a VOD back to the start of the
+    same match still does -- nothing on the timer tells the two apart -- and it
+    costs a roster that re-locks within seconds."""
 
     resynced: bool = False
     """True just after an update adopted a reading that contradicted the
@@ -393,6 +424,11 @@ class ClockFilter:
     baselines are evidence about the footage before the tear, and this flag is
     the one moment that says the footage changed."""
 
+    new_game: bool = False
+    """True just after a resync that took the clock back to the start of a
+    match -- see `game_start` and `rewind`. Only ever set with `resynced`, and
+    cleared the same way."""
+
     _seconds: float | None = None
     _at: float = 0.0
     _disagreeing_since: float | None = None
@@ -400,6 +436,7 @@ class ClockFilter:
     def update(self, reading: GameClock | None, timestamp: float) -> GameClock | None:
         """Fold one frame's reading in and return the clock to trust."""
         self.resynced = False
+        self.new_game = False
         if self._seconds is None:
             if reading is not None:
                 self._seconds, self._at = float(reading.total_seconds), timestamp
@@ -408,7 +445,7 @@ class ClockFilter:
         predicted = self._seconds + (timestamp - self._at)
 
         if reading is None:
-            return GameClock(int(predicted), confidence=0.0, observed=False)
+            return self._carried(predicted, timestamp)
 
         if abs(reading.total_seconds - predicted) <= self.max_drift:
             self._seconds, self._at = float(reading.total_seconds), timestamp
@@ -418,11 +455,25 @@ class ClockFilter:
         if self._disagreeing_since is None:
             self._disagreeing_since = timestamp
         elif timestamp - self._disagreeing_since >= self.resync_after:
+            # Against the last *reading*, not the prediction: a match paused
+            # with the timer hidden resumes where it stopped, which is behind
+            # a prediction that kept counting but level with the last read.
+            self.new_game = (
+                reading.total_seconds <= self.game_start
+                and reading.total_seconds + self.rewind <= self._seconds
+            )
             self._seconds, self._at = float(reading.total_seconds), timestamp
             self._disagreeing_since = None
             self.resynced = True
             return reading
 
+        return self._carried(predicted, timestamp)
+
+    def _carried(self, predicted: float, timestamp: float) -> GameClock | None:
+        """The prediction, marked unobserved -- or None once it has been
+        carried past `max_hold` and there is no longer a match to count."""
+        if timestamp - self._at > self.max_hold:
+            return None
         return GameClock(int(predicted), confidence=0.0, observed=False)
 
     def reset(self) -> None:
@@ -430,6 +481,7 @@ class ClockFilter:
         self._at = 0.0
         self._disagreeing_since = None
         self.resynced = False
+        self.new_game = False
 
 
 # -- persistence ----------------------------------------------------------

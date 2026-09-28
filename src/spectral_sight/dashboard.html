@@ -65,6 +65,7 @@
   #log .kind-cast { color: var(--gold); }
   #log .kind-skill_point { color: var(--gold); font-weight: bold; }
   #log .kind-gap { color: var(--dim); font-style: italic; }
+  #log .kind-new_game { color: var(--gold); font-weight: bold; }
 </style>
 </head>
 <body>
@@ -195,6 +196,8 @@ function roster(team) {
 }
 
 function onFrame(message) {
+  // A new game's champions are not the last one's, even under the same name.
+  if (frame && frame.game !== message.game) lastLevel.clear();
   frame = message;
   $("clock").textContent = clockText(message.game_time, message.game_time_observed);
   $("fps").textContent = message.fps != null ? message.fps.toFixed(1) : "-";
@@ -222,7 +225,8 @@ function logLine(message) {
       (message.kind === "level_up" ? `  → ${message.level}` : "") +
       (message.kind === "skill_point" ? `  ${message.slots.join("/")}` : "") +
       (message.kind === "skill_spent" && message.held_for != null ? `  after ${message.held_for}s` : "") +
-      (message.kind === "roster" ? `  ${message.champions.join(", ")}` : "");
+      (message.kind === "roster" ? `  ${message.champions.join(", ")}` : "") +
+      (message.kind === "new_game" ? `  game ${message.game + 1}` : "");
   line.append(when, what);
   const log = $("log");
   log.prepend(line);
