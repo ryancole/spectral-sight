@@ -65,8 +65,9 @@ from spectral_sight.perception.hud.alive import Liveness
 SELF_SLOT = "self"
 """The slot holding the local player, as named by `PortraitLayout.all_crops`.
 Debounced like every other slot -- the post-game screen flaps it exactly as
-hard -- but never a naming candidate: the viewport names the local player, and
-their raw reading keeps gating the self-identity vote in the pipeline."""
+hard -- but never a naming candidate: the ability slots name the local player
+(`perception.hud.self_champion`), and their raw reading gates when the slots
+are read."""
 
 CONFIRM_SECONDS = 1.0
 """How long a slot's reading must hold before the change is believed.

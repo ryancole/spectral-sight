@@ -338,6 +338,13 @@ def main() -> int:
                   file=console)
             for _, tool in absent:
                 print(f"  python tools/{tool}{target}", file=console)
+        if pipeline.self_reader is None:
+            # Not optional like the others: the ability slots are the only
+            # thing that says who the player is, so without them no row is
+            # ever the player and every self-only reading goes unpublished.
+            print("warning: the player cannot be identified -- no spell "
+                  "icons in the icon set or no ability calibration. Run:\n"
+                  "  python tools/fetch_icons.py", file=sys.stderr)
 
         origin = args.window
 

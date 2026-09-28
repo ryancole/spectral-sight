@@ -31,6 +31,10 @@ from spectral_sight.perception.hud.alive import (
 )
 from spectral_sight.perception.hud.clock import GameClock
 from spectral_sight.perception.hud.portraits import PortraitLayout
+from spectral_sight.perception.hud.self_champion import (
+    SelfChampionReader,
+    SpellGallery,
+)
 from spectral_sight.perception.identity import Gallery
 from spectral_sight.perception.minimap import MinimapRegion
 from spectral_sight.pipeline import SELF_SLOT, Pipeline
@@ -310,14 +314,28 @@ def name_tracks(pipeline: Pipeline, *names: str) -> None:
         track.evidence[name] = 5.0
 
 
+def prove_player(pipeline: Pipeline, name: str) -> None:
+    """Settle the player's champion as the ability slots would.
+
+    The slots are the only thing that names the player; the synthetic frames
+    here carry no ability icons, and what is under test is what the pipeline
+    does with the name, not how the slots are read (see test_self_identity).
+    """
+    if pipeline.self_reader is None:
+        icon = np.arange(64 * 64 * 3, dtype=np.uint8).reshape(64, 64, 3)
+        pipeline.self_reader = SelfChampionReader(
+            SpellGallery({name: dict.fromkeys("QWER", icon)}))
+    pipeline.self_reader.champion = name
+
+
 def test_the_local_players_death_is_attributed_by_name() -> None:
-    """The one route that does not need counting. The viewport names the local
-    player while they are alive; that name is what identifies the casualty when
-    their own portrait greys out."""
+    """The one route that does not need counting. The ability slots name the
+    local player; that name is what identifies the casualty when their own
+    portrait greys out."""
     pipeline = build_pipeline()
     run(pipeline, frames=5)
     name_tracks(pipeline, "Zilean", "Ryze")
-    pipeline._self_evidence = {"Zilean": 50}
+    prove_player(pipeline, "Zilean")
 
     result = run(pipeline, dead=(SELF_SLOT,), markers=(), frames=12,
                  start=2.0)
@@ -329,28 +347,6 @@ def test_the_local_players_death_is_attributed_by_name() -> None:
     )
 
 
-def test_a_few_stray_frames_cannot_change_who_the_player_is() -> None:
-    """The camera sometimes sits on a teammate, and the viewport names them.
-    Taking the most recent answer attributed a real death to two champions who
-    were alive throughout; the player is one champion for the whole game, so the
-    evidence decides it."""
-    pipeline = build_pipeline()
-    pipeline._self_evidence = {"Zilean": 200, "Lux": 12, "Galio": 9}
-    assert pipeline.self_champion == "Zilean"
-
-
-def test_a_contested_player_identity_is_not_claimed() -> None:
-    pipeline = build_pipeline()
-    pipeline._self_evidence = {"Zilean": 30, "Lux": 28}
-    assert pipeline.self_champion is None
-
-
-def test_too_few_sightings_is_not_enough_to_name_the_player() -> None:
-    pipeline = build_pipeline()
-    pipeline._self_evidence = {"Zilean": 3}
-    assert pipeline.self_champion is None
-
-
 def test_a_death_alongside_the_local_player_names_only_the_player() -> None:
     """Two down and only one nameable. The player's own slot answers for them
     whatever the rest of the frame looks like, but the companion could be any
@@ -358,7 +354,7 @@ def test_a_death_alongside_the_local_player_names_only_the_player() -> None:
     pipeline = build_pipeline()
     run(pipeline, frames=5)
     name_tracks(pipeline, "Zilean", "Ryze")
-    pipeline._self_evidence = {"Zilean": 50}
+    prove_player(pipeline, "Zilean")
 
     result = run(pipeline, dead=(SELF_SLOT, "ally1"), markers=(), frames=12,
                  start=2.0)
@@ -376,7 +372,6 @@ def test_an_unnamed_local_player_cannot_attribute_their_own_death() -> None:
     pipeline = build_pipeline()
     run(pipeline, frames=5)
     name_tracks(pipeline, "Zilean", "Ryze")
-    pipeline._self_evidence = {}
 
     result = run(pipeline, dead=(SELF_SLOT,), markers=(), frames=12,
                  start=2.0)
@@ -387,7 +382,7 @@ def test_a_named_casualty_missing_from_the_tracks_clears_nobody() -> None:
     pipeline = build_pipeline()
     run(pipeline, frames=5)
     name_tracks(pipeline, "Zilean", "Ryze")
-    pipeline._self_evidence = {"Sejuani": 50}
+    prove_player(pipeline, "Sejuani")
 
     result = run(pipeline, dead=(SELF_SLOT,), markers=(), frames=12,
                  start=2.0)
@@ -461,12 +456,12 @@ def test_a_torn_clock_starts_the_baselines_over() -> None:
     assert all(s.alive for s in result.liveness.slots)
 
 
-# -- the death-cam does not get a vote ------------------------------------
+# -- the minimap does not name the player ----------------------------------
 
 
 def viewport_frame(*, dead: tuple[str, ...] = ()) -> np.ndarray:
-    """A frame whose camera rectangle is centred on the first ally marker,
-    which is how the pipeline decides who the local player is."""
+    """A frame whose camera rectangle is centred on the first ally marker --
+    where the player's marker would be with the camera locked on them."""
     image = frame(dead=dead, markers=ALLIES)
     cx, cy = REGION.x + ALLIES[0].x, REGION.y + ALLIES[0].y
     cv2.rectangle(image, (cx - 40, cy - 25), (cx + 40, cy + 25),
@@ -474,46 +469,22 @@ def viewport_frame(*, dead: tuple[str, ...] = ()) -> np.ndarray:
     return image
 
 
-def test_a_dead_players_camera_does_not_vote() -> None:
-    """The camera names the player only while it is credibly locked on them,
-    and death is the departure the pipeline can prove: the death-cam watches a
-    corpse or a teammate for the whole respawn timer, which on a real session
-    poured 72 seconds of votes at a stretch onto the wrong champion."""
+def test_the_camera_centre_never_names_the_player() -> None:
+    """The marker at the camera centre used to vote for who the player is.
+    On a live VOD the player stood AFK in the fountain, their clipped marker
+    read as a champion not in the game, the votes split and the feed had no
+    player row all game. Only the ability slots name the player now: a camera
+    locked on a named track for as long as you like names nobody."""
     pipeline = build_pipeline()
     run(pipeline, frames=5)
     name_tracks(pipeline, "Zilean", "Ryze")
-
-    result = pipeline.process(viewport_frame(), 2.0)
-    assert result.self_track is not None, "the viewport must resolve to bite"
-    voted = sum(pipeline._self_evidence.values())
-    assert voted == 1, "a living frame votes"
-
-    pipeline.process(viewport_frame(dead=(SELF_SLOT,)), 2.1)
-    assert sum(pipeline._self_evidence.values()) == voted, (
-        "a death-cam frame does not"
-    )
-
-
-def test_an_unproven_hud_does_not_vote_either() -> None:
-    """Pre-game frames are not a game: whatever sits at the camera centre
-    before the portraits have proven themselves is not the player."""
-    pipeline = build_pipeline()
-    everyone = ("ally1", "ally2", "ally3", "ally4", SELF_SLOT)
-    for i in range(5):
-        pipeline.process(viewport_frame(dead=everyone), i * 0.1)
-    name_tracks(pipeline, "Zilean", "Ryze")
-    pipeline.process(viewport_frame(dead=everyone), 1.0)
-    assert pipeline._self_evidence == {}
-
-
-def test_without_portraits_the_camera_still_votes() -> None:
-    """No portrait calibration means no gate to apply; naming the player from
-    the viewport predates liveness and keeps working without it."""
-    pipeline = Pipeline(region=REGION, gallery=Gallery(), resolution=FRAME_SIZE)
-    run(pipeline, frames=5)
-    name_tracks(pipeline, "Zilean", "Ryze")
-    pipeline.process(viewport_frame(), 2.0)
-    assert sum(pipeline._self_evidence.values()) == 1
+    result = None
+    for i in range(40):
+        result = pipeline.process(viewport_frame(), 2.0 + i * 0.1)
+    assert pipeline.self_champion is None
+    assert result.self_track is None
+    assert not any(row.is_self for row in result.observations)
+    assert result.player.reason == "unidentified"
 
 
 def test_enemies_never_carry_a_verdict() -> None:

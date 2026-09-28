@@ -819,6 +819,13 @@ class TimelineMeta:
     calibration and the enlarged panel. When False no row carries
     `turrets`."""
 
+    has_self_abilities: bool = False
+    """Whether the player's champion is identified from their ability slot
+    icons. Needs the ability calibration and an icon set with spell icons
+    (`tools/fetch_icons.py`). When False the player is known only through the
+    marker at the camera centre, which a clipped or misread marker defeats --
+    see the frame envelope's `player` field for why a frame has no row."""
+
     world_bounds: dict[str, float] | None = None
     world_units_per_pixel: list[float] | None = None
     """The world calibration in force, or None if positions are crop pixels
@@ -844,6 +851,7 @@ class TimelineMeta:
             "has_minion_dots": self.has_minion_dots,
             "has_last_hits": self.has_last_hits,
             "has_turrets": self.has_turrets,
+            "has_self_abilities": self.has_self_abilities,
             "world_bounds": self.world_bounds,
             "world_units_per_pixel": self.world_units_per_pixel,
         }
@@ -865,6 +873,7 @@ class TimelineMeta:
             has_minion_dots=bool(data.get("has_minion_dots", False)),
             has_last_hits=bool(data.get("has_last_hits", False)),
             has_turrets=bool(data.get("has_turrets", False)),
+            has_self_abilities=bool(data.get("has_self_abilities", False)),
             world_bounds=data.get("world_bounds"),
             world_units_per_pixel=data.get("world_units_per_pixel"),
             schema=int(data.get("schema", SCHEMA)),
@@ -890,6 +899,7 @@ class TimelineMeta:
             has_minion_dots=self.has_minion_dots,
             has_last_hits=self.has_last_hits,
             has_turrets=self.has_turrets,
+            has_self_abilities=self.has_self_abilities,
             world_bounds=self.world_bounds,
             world_units_per_pixel=self.world_units_per_pixel,
             schema=self.schema,
