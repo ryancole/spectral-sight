@@ -70,8 +70,10 @@ The kinds, and what each is grounded in:
   rebuild). Like `level_up`, first knowledge is state: a turret already down
   when the feed starts makes no event. The event's `team` is the turret's
   owner and it names no champion.
-- `roster` -- a team showing five distinct named champions at once. Re-emitted
-  if the set later changes, for the same reason `identified` is.
+- `roster` -- the envelope's `roster` reaching five champions for a team:
+  every one of them has been named at some point, not necessarily at once,
+  since a champion seen once is known for the game. Re-emitted if the set
+  later changes (a misread displaced), for the same reason `identified` is.
 
 `seq` on an event is the envelope it was derived from, which makes it a
 transport key, not a durable one: a live frame that produced no rows writes
@@ -389,10 +391,7 @@ class EventDeriver:
     def _rosters_from(self, state: FrameState) -> list[Event]:
         events: list[Event] = []
         for team in (Team.BLUE, Team.RED):
-            named = frozenset(
-                row.champion for row in state.champions
-                if row.team is team and row.champion is not None
-            )
+            named = frozenset(state.roster.get(team, ()))
             if len(named) == 5 and self._rosters.get(team) != named:
                 self._rosters[team] = named
                 events.append(Event(

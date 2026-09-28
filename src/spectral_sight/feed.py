@@ -40,12 +40,13 @@ from __future__ import annotations
 import json
 import sys
 import time
-from collections import deque
-from collections.abc import Iterator
-from dataclasses import dataclass
+from collections import Counter, deque
+from collections.abc import Iterable, Iterator
+from dataclasses import dataclass, field
 from typing import IO, TYPE_CHECKING, Protocol
 
 from spectral_sight.export import Observation, TimelineMeta, TimelineWriter, iter_timeline
+from spectral_sight.types import Team
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -106,6 +107,14 @@ class FrameState:
     None when there is no `captured_at` to measure from. This is the feed's
     own contribution to staleness; a consumer adds its transport on top."""
 
+    roster: dict[Team, tuple[str, ...]] = field(default_factory=dict)
+    """Every champion named on a row of each team so far this run, sorted,
+    whether or not they are on the map now. A player can open the scoreboard
+    at any moment, so a champion seen once is known for the rest of the game
+    -- a consumer should not watch the enemy team shrink every time someone
+    sits in fog long enough for their track to be forgotten. See
+    `KnownRoster`."""
+
     @classmethod
     def of(
         cls,
@@ -116,6 +125,7 @@ class FrameState:
         fps: float | None = None,
         dropped: int = 0,
         now: float | None = None,
+        roster: dict[Team, tuple[str, ...]] | None = None,
     ) -> FrameState:
         """Build the envelope for one processed frame.
 
@@ -140,6 +150,7 @@ class FrameState:
             fps=fps,
             dropped=dropped,
             lag=lag,
+            roster=roster or {},
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -164,8 +175,62 @@ class FrameState:
             "fps": None if self.fps is None else round(float(self.fps), 1),
             "dropped": int(self.dropped),
             "lag": None if self.lag is None else round(float(self.lag), 3),
+            "roster": {
+                team.value: list(self.roster.get(team, ()))
+                for team in (Team.BLUE, Team.RED)
+            },
             "champions": [row.to_dict() for row in self.champions],
         }
+
+
+@dataclass
+class KnownRoster:
+    """The champions each team has shown this run, remembered for good.
+
+    Built from the rows alone, so a replay of a written timeline reproduces
+    exactly what the live run published, as the events do.
+
+    A name enters on its first row and never leaves on its own: the tracker
+    forgets a champion who sits in fog past `forget_after`, but the game has
+    not. What can push a name out is a sixth one. A team has five champions,
+    so six names means at least one was a misread, and the five named on the
+    most frames stay. A misread lasts a few frames and a real champion lasts
+    the game, so this corrects itself without needing to know about the
+    pipeline's roster lock. A name on both teams is likewise kept only on the
+    team that showed it more.
+    """
+
+    team_size: int = 5
+    _frames: dict[Team, Counter[str]] = field(
+        default_factory=lambda: {Team.BLUE: Counter(), Team.RED: Counter()}
+    )
+    _first: dict[str, int] = field(default_factory=dict)
+    """Order of first sighting, the tie-break among equally seen names."""
+
+    def update(self, rows: Iterable[Observation]) -> dict[Team, tuple[str, ...]]:
+        """Fold in one frame's rows and return the roster as it now stands."""
+        # A dict, not a set: row order sets the first-sighting tie-break, and
+        # set order changes with the hash seed, which a replay does not share.
+        for team, name in dict.fromkeys(
+            (row.team, row.champion) for row in rows
+            if row.champion is not None and row.team in self._frames
+        ):
+            self._frames[team][name] += 1
+            self._first.setdefault(name, len(self._first))
+        return self.names()
+
+    def names(self) -> dict[Team, tuple[str, ...]]:
+        rosters: dict[Team, tuple[str, ...]] = {}
+        for team, counts in self._frames.items():
+            other = self._frames[Team.RED if team is Team.BLUE else Team.BLUE]
+            mine = [
+                name for name, n in counts.items()
+                if n > other.get(name, 0)
+                or (n == other.get(name, 0) and team is Team.BLUE)
+            ]
+            mine.sort(key=lambda name: (-counts[name], self._first[name]))
+            rosters[team] = tuple(sorted(mine[: self.team_size]))
+        return rosters
 
 
 class RateMeter:
@@ -361,6 +426,7 @@ def read_frames(path: str | Path) -> Iterator[FrameState]:
     """
     batch: list[Observation] = []
     seq = 0
+    known = KnownRoster()
 
     def flush() -> FrameState:
         nonlocal seq
@@ -376,6 +442,7 @@ def read_frames(path: str | Path) -> Iterator[FrameState]:
             fps=None,
             dropped=0,
             lag=None,
+            roster=known.update(batch),
         )
         seq += 1
         batch.clear()

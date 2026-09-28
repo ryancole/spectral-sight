@@ -159,20 +159,35 @@ function draw() {
   }
 }
 
+// Last level read per champion, so a name kept on the roster after its
+// track is forgotten still shows where it was.
+const lastLevel = new Map();
+
+// The roster is every champion the team has shown this run, not just the
+// tracks alive now: a player can press Tab at any moment, so a champion seen
+// once stays listed. Unnamed tracks fill the list until five are known.
 function roster(team) {
   const list = $(team);
   list.replaceChildren();
-  const rows = frame.champions.filter(c => c.team === team)
-    .sort((a, b) => (a.champion || "~").localeCompare(b.champion || "~"));
+  const live = frame.champions.filter(c => c.team === team);
+  const byName = new Map(live.filter(c => c.champion).map(c => [c.champion, c]));
+  for (const c of byName.values()) {
+    if (c.level != null) lastLevel.set(`${team}:${c.champion}`, c.level);
+  }
+  const known = (frame.roster && frame.roster[team]) || [];
+  const rows = known.map(name => byName.get(name) || { champion: name, gone: true });
+  const unnamed = live.filter(c => !c.champion);
+  rows.push(...unnamed.slice(0, Math.max(0, 5 - rows.length)));
   for (const c of rows) {
     const item = document.createElement("li");
     const level = document.createElement("span");
     level.className = "lvl";
-    level.textContent = c.level != null ? String(c.level) : "·";
+    const lvl = c.gone ? lastLevel.get(`${team}:${c.champion}`) : c.level;
+    level.textContent = lvl != null ? String(lvl) : "·";
     const name = document.createElement("span");
     name.textContent = c.champion || `track ${c.track_id}`;
     if (c.alive === false) name.className = "dead";
-    else if (!c.visible) name.className = "fog";
+    else if (c.gone || !c.visible) name.className = "fog";
     if (c.is_self) name.classList.add("self");
     item.append(level, name);
     list.append(item);

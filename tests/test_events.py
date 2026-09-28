@@ -23,7 +23,7 @@ from spectral_sight.export import (
     TimelineMeta,
     TurretStatus,
 )
-from spectral_sight.feed import FrameState, JsonlSink, read_frames
+from spectral_sight.feed import FrameState, JsonlSink, KnownRoster, read_frames
 from spectral_sight.types import Team
 
 
@@ -410,38 +410,54 @@ class TestIdentity:
 
 
 class TestRoster:
-    def five(self, video_time: float, names: list[str]) -> FrameState:
-        return state(0, [
-            row(track_id=i, video_time=video_time, champion=name)
-            for i, name in enumerate(names)
-        ])
+    """The event follows the envelope's known roster, which remembers every
+    champion a team has shown -- the scoreboard is a Tab press away, so a
+    champion seen once is known for the game."""
+
+    def frames(self, *teams: list[str]) -> list[FrameState]:
+        known = KnownRoster()
+        frames = []
+        for seq, names in enumerate(teams):
+            rows = [row(track_id=i, video_time=10.0 + seq / 10, champion=name)
+                    for i, name in enumerate(names)]
+            frames.append(state(seq, rows, roster=known.update(rows)))
+        return frames
+
+    def rosters(self, *teams: list[str]) -> list[list[str]]:
+        events = derive(*self.frames(*teams))
+        return [e.detail["champions"] for e in events if e.kind == "roster"]
 
     def test_five_named_at_once_is_a_roster(self) -> None:
         names = ["A", "B", "C", "D", "E"]
-        events = derive(self.five(10.0, names))
+        events = derive(*self.frames(names))
         rosters = [e for e in events if e.kind == "roster"]
         assert len(rosters) == 1
         assert rosters[0].team is Team.BLUE
         assert rosters[0].detail == {"champions": names}
 
-    def test_four_named_is_not_a_roster_and_neither_is_a_repeat(self) -> None:
-        events = derive(
-            self.five(10.0, ["A", "B", "C", "D", "E"]),
-            self.five(10.1, ["A", "B", "C", "D", "E"]),
-            state(2, [row(track_id=i, video_time=10.2, champion=n)
-                      for i, n in enumerate(["A", "B", "C", "D"])]),
-        )
-        assert kinds(events).count("roster") == 1
-
-    def test_a_changed_set_is_re_announced(self) -> None:
-        events = derive(
-            self.five(10.0, ["A", "B", "C", "D", "E"]),
-            self.five(10.1, ["A", "B", "C", "D", "F"]),
-        )
-        rosters = [e for e in events if e.kind == "roster"]
-        assert [r.detail["champions"] for r in rosters] == [
+    def test_five_named_one_at_a_time_is_a_roster(self) -> None:
+        """Nobody has to be on the map together: four in fog and one seen is
+        still a known team."""
+        assert self.rosters(["A", "B"], ["C"], ["D"], ["E"]) == [
             ["A", "B", "C", "D", "E"],
+        ]
+
+    def test_four_known_is_not_a_roster_and_neither_is_a_repeat(self) -> None:
+        assert self.rosters(
+            ["A", "B", "C", "D"],
+            ["A", "B", "C", "D", "E"],
+            ["A", "B", "C", "D", "E"],
+            ["A"],
+        ) == [["A", "B", "C", "D", "E"]]
+
+    def test_a_displaced_misread_is_re_announced(self) -> None:
+        assert self.rosters(
             ["A", "B", "C", "D", "F"],
+            ["E"],
+            ["E"],
+        ) == [
+            ["A", "B", "C", "D", "F"],
+            ["A", "B", "C", "D", "E"],
         ]
 
 
