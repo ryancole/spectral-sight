@@ -58,7 +58,9 @@ disagree with the body.
 |---|---|---|
 | `schema` | int | Format version. Reject if greater than you understand. |
 | `source` | string | Basename of the source clip or window. |
-| `width`, `height` | int | Frame size the calibrations were valid for. |
+| `width`, `height` | int | Frame size the calibrations were valid for. For a window capture this is the whole window, title bar and border included -- see `game_area` for where the game is inside it. |
+| `game_area` | object \| null | Where the game is drawn inside the frame: `{"x", "y", "width", "height"}` in frame pixels. For a window capture it is the window's client area measured against the captured bounds (on the kilrogg receiver at 96 DPI, `{"x": 1, "y": 31, "width": 2115, "height": 1322}` inside a 2117x1354 frame); `watch.py --game-area X,Y,W,H` overrides it. The whole frame when Windows could not say. Null in a header written before it existed, which a reader should take as the whole frame -- though such recordings do have the title bar in them. Anything that clicks or draws on the game belongs inside this box. |
+| `world_view` | object \| null | The world view's box in frame pixels, `{"x", "y", "width", "height"}`: the 3D view with the HUD cut away, and the origin of every **world-view pixel** in the rows. A world-view point (x, y) is frame pixel (`world_view.x` + x, `world_view.y` + y). It is placed as fractions of `game_area`, so it follows the game whatever the chrome. Null in a header written before it existed. |
 | `created` | string | UTC ISO 8601, stamped at write time. |
 | `has_game_time` | bool | Clock calibrated. When false, every `game_time` is null. |
 | `has_liveness` | bool | HUD portraits calibrated. When false, every `alive` is null because nothing was read — distinct from the null meaning "read and inconclusive". |
@@ -74,6 +76,27 @@ disagree with the body.
 | `has_gold` | bool | The player's gold was read. Needs the ability calibration (the box is placed from the panel) and the clock (its digits read the number). When false, no row carries `gold`. |
 | `world_bounds` | object \| null | World calibration in force, or null if positions are crop pixels only. |
 | `world_units_per_pixel` | [float, float] \| null | X and Y scale of that calibration. |
+
+**Pixel spaces.** Three appear in the feed, and only one is relative to the
+others' boxes:
+
+- **Frame pixels** -- the captured image, `width` x `height`, origin at its
+  top-left, chrome included. `game_area` and `world_view` are in these.
+- **World-view pixels** -- `threats`, `skillshots`, `minions` (`x`, `y`) and
+  `last_hits` (`x`, `y`), plus every distance and speed in them (px, px/s).
+  Origin at `world_view`'s top-left; add `world_view.x` / `world_view.y` to get
+  frame pixels, then subtract `game_area.x` / `game_area.y` for pixels within the
+  game. Distances need no conversion: the three spaces share a scale.
+- **Minimap-crop pixels** -- a row's `x`, `y`, and `minion_dots`. Origin at
+  the minimap panel's top-left. Use `world_x` / `world_y` to place anything on
+  the map; the panel's frame position is not published.
+
+Before `world_view` was published, the world view was a fraction of the whole
+frame (its top at 0.035 of the frame height) rather than of the game. It was
+converted so that its rows and right edge are unchanged on the kilrogg
+receiver; its left edge moved one pixel right, from the window border onto the
+game. World-view pixels therefore mean what they meant before -- distances in
+the 3D view, measured from the box's corner -- and the schema stays at 2.
 
 The `has_*` flags are the difference between "a quiet game" and "not
 measured". A consumer computing rates (how often an enemy is observable, how

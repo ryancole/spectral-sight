@@ -40,12 +40,15 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
-from spectral_sight.perception.nameplates.playfield import Playfield
+from spectral_sight.perception.nameplates.playfield import (
+    Playfield,
+    excluded_regions,
+)
 from spectral_sight.perception.nameplates.plates import (
     NameplateLayout,
     playfield_for,
 )
-from spectral_sight.types import Team
+from spectral_sight.types import GameArea, Team
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,6 +153,7 @@ class MinionReader:
         config: MinionConfig | None = None,
         *,
         crop: bool = True,
+        area: GameArea | None = None,
     ) -> None:
         if layout.minion_width is None or layout.minion_height is None:
             raise ValueError(
@@ -157,6 +161,9 @@ class MinionReader:
                 "(minion_width / minion_height)"
             )
         self.layout = layout
+        self.area = area
+        """Where the game is in the frame, which `layout.exclude` is a
+        fraction of; the whole frame when None."""
         self.config = config or MinionConfig()
         self.width = layout.minion_width
         self.height = layout.minion_height
@@ -168,7 +175,9 @@ class MinionReader:
         """The field the champion plate reader uses: see `playfield_for`."""
         field = self._playfield
         if field is None or (field.width, field.height) != (width, height):
-            field = self._playfield = playfield_for(self.layout, width, height)
+            field = self._playfield = playfield_for(
+                self.layout, width, height, area=self.area
+            )
         return field
 
     def _masks(
@@ -197,10 +206,8 @@ class MinionReader:
         return red, blue, hsv[..., 2]
 
     def _excluded(self, x: int, y: int, width: int, height: int) -> bool:
-        for x0, y0, x1, y1 in self.layout.exclude:
-            if x0 * width <= x <= x1 * width and y0 * height <= y <= y1 * height:
-                return True
-        return False
+        regions = excluded_regions(self.layout.exclude, width, height, self.area)
+        return any(x0 <= x <= x1 and y0 <= y <= y1 for x0, y0, x1, y1 in regions)
 
     def read(
         self, frame: np.ndarray, hsv: np.ndarray | None = None

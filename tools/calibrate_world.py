@@ -313,7 +313,8 @@ def main() -> int:
         return 1
 
     with WindowSource(args.window, target_fps=SAMPLE_FPS) as source:
-        pipeline = Pipeline.for_resolution(width, height, icons)
+        pipeline = Pipeline.for_resolution(
+            width, height, icons, source.game_area)
         ok = _validate(source, pipeline, transform, args.limit)
     return 0 if ok else 1
 

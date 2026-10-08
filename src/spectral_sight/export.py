@@ -848,6 +848,18 @@ class TimelineMeta:
     only. Recorded because a scale is not recoverable from the rows, and two
     timelines extracted under different calibrations are not comparable."""
 
+    game_area: dict[str, int] | None = None
+    """Where the game is drawn in the frame, as {x, y, width, height} in frame
+    pixels: the captured window's client area, title bar and border cut away.
+    None in a header written before it was recorded, which a reader takes as
+    the whole frame -- see `GameArea`."""
+
+    world_view: dict[str, int] | None = None
+    """The world view's box in frame pixels, {x, y, width, height}: the
+    origin of every world-view pixel (minions, threats, skillshots, last
+    hits). Published so a consumer maps them back to the frame without
+    copying `WorldView`'s fractions."""
+
     schema: int = SCHEMA
 
     def to_dict(self) -> dict[str, object]:
@@ -871,6 +883,8 @@ class TimelineMeta:
             "has_self_abilities": self.has_self_abilities,
             "world_bounds": self.world_bounds,
             "world_units_per_pixel": self.world_units_per_pixel,
+            "game_area": self.game_area,
+            "world_view": self.world_view,
         }
 
     @classmethod
@@ -894,6 +908,8 @@ class TimelineMeta:
             has_self_abilities=bool(data.get("has_self_abilities", False)),
             world_bounds=data.get("world_bounds"),
             world_units_per_pixel=data.get("world_units_per_pixel"),
+            game_area=_box(data.get("game_area")),
+            world_view=_box(data.get("world_view")),
             schema=int(data.get("schema", SCHEMA)),
         )
 
@@ -921,8 +937,16 @@ class TimelineMeta:
             has_self_abilities=self.has_self_abilities,
             world_bounds=self.world_bounds,
             world_units_per_pixel=self.world_units_per_pixel,
+            game_area=self.game_area,
+            world_view=self.world_view,
             schema=self.schema,
         )
+
+
+def _box(data: dict | None) -> dict[str, int] | None:
+    if data is None:
+        return None
+    return {key: int(data[key]) for key in ("x", "y", "width", "height")}
 
 
 class TimelineWriter:

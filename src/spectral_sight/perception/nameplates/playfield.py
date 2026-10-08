@@ -28,6 +28,40 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
+from spectral_sight.types import GameArea
+
+
+def excluded_regions(
+    exclude: Sequence[tuple[float, float, float, float]],
+    width: int,
+    height: int,
+    area: GameArea | None = None,
+) -> list[tuple[float, float, float, float]]:
+    """`exclude` -- fractions of the game area, as the layout stores them --
+    as (x0, y0, x1, y1) in frame pixels, for a frame of `width` x `height`
+    with the game at `area` (the whole frame when None). Unrounded: the
+    readers test against them inclusively at both ends.
+
+    Everything outside the game area is excluded too: the window's title bar
+    and border are not the game, and a fraction of the game cannot reach
+    them."""
+    game = area or GameArea.whole(width, height)
+    regions = [
+        (game.x + x0 * game.width, game.y + y0 * game.height,
+         game.x + x1 * game.width, game.y + y1 * game.height)
+        for x0, y0, x1, y1 in exclude
+    ]
+    right, bottom = game.x + game.width, game.y + game.height
+    if game.y > 0:
+        regions.append((0, 0, width, game.y - 1))
+    if game.x > 0:
+        regions.append((0, 0, game.x - 1, height))
+    if right < width:
+        regions.append((right, 0, width, height))
+    if bottom < height:
+        regions.append((0, bottom, width, height))
+    return regions
+
 
 @dataclass(frozen=True, slots=True)
 class Playfield:
@@ -51,18 +85,18 @@ class Playfield:
         right: int,
         above: int,
         below: int,
+        area: GameArea | None = None,
     ) -> Playfield:
         """Everything outside `exclude`, grown by how far a reader looks.
 
-        `exclude` is in fractions of the frame, as the layout stores it, and a
-        region is matched inclusively at both ends, as the readers' own test
-        does -- so a pixel counts as excluded only when that test would
-        reject a bar starting on it.
+        `exclude` is in fractions of the game area `area`, as the layout
+        stores it, and a region is matched inclusively at both ends, as the
+        readers' own test does -- so a pixel counts as excluded only when that
+        test would reject a bar starting on it.
         """
         boxes = [
-            (math.ceil(x0 * width), math.ceil(y0 * height),
-             math.floor(x1 * width) + 1, math.floor(y1 * height) + 1)
-            for x0, y0, x1, y1 in exclude
+            (math.ceil(x0), math.ceil(y0), math.floor(x1) + 1, math.floor(y1) + 1)
+            for x0, y0, x1, y1 in excluded_regions(exclude, width, height, area)
         ]
         xs = sorted({0, width, *(min(max(v, 0), width)
                                  for b in boxes for v in (b[0], b[2]))})

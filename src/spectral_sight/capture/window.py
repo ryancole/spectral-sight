@@ -28,7 +28,8 @@ from dataclasses import dataclass
 import numpy as np
 
 from spectral_sight.capture.base import FrameSource
-from spectral_sight.types import Frame
+from spectral_sight.capture.client import find_window, window_game_area
+from spectral_sight.types import Frame, GameArea
 
 DEFAULT_WINDOW = "kilrogg"
 """The receiver every tool captures unless told otherwise. Matched as a
@@ -169,7 +170,9 @@ class WindowSource(FrameSource):
 
     `title` is matched as a substring, so "kilrogg" finds the receiver whatever
     else it has put in its title bar. Pass `hwnd` instead when two windows would
-    both match.
+    both match. The title is resolved to a window here rather than by the
+    capture library, so the window whose client area is measured for
+    `game_area` is the window being captured.
     """
 
     def __init__(
@@ -191,6 +194,12 @@ class WindowSource(FrameSource):
             ) from exc
 
         self.title = title
+        if hwnd is None:
+            hwnd = find_window(title)
+        self.hwnd = hwnd
+        """The captured window, or None when the title matched nothing here
+        and the capture library was left to find it -- in which case there is
+        no window to measure and `game_area` is the whole frame."""
 
         self.startup_timeout = startup_timeout
         """How long to give the window to draw its first frame.
@@ -206,6 +215,7 @@ class WindowSource(FrameSource):
 
         self._mailbox = Mailbox()
         self._size: tuple[int, int] | None = None
+        self._game_area: GameArea | None = None
         self._control = None
         self._first: Arrival | None = None
         """Held by `size`, which has to pull a frame to learn one. Handed to
@@ -219,7 +229,7 @@ class WindowSource(FrameSource):
         self._capture = WindowsCapture(
             cursor_capture=cursor,
             draw_border=False,
-            window_name=title,
+            window_name=None if hwnd is not None else title,
             window_hwnd=hwnd,
             minimum_update_interval=(
                 None if target_fps is None else max(1, int(1000 / target_fps))
@@ -256,6 +266,18 @@ class WindowSource(FrameSource):
         assert self._size is not None
         return self._size
 
+    @property
+    def game_area(self) -> GameArea:
+        """Where the game is in each frame: the window's client area,
+        measured against the captured bounds when the frame size was learned.
+
+        Measured once because the frame size is fixed for the run -- a resize
+        is `FrameSizeChanged` -- and the offset is chrome, which moves only
+        when the window does something a resize would also show. The whole
+        frame when Windows would not say."""
+        width, height = self.size
+        return self._game_area or GameArea.whole(width, height)
+
     def _await_frame(self, timeout: float | None = None) -> Arrival:
         arrival = self._mailbox.take(timeout)
         if arrival is None:
@@ -263,6 +285,8 @@ class WindowSource(FrameSource):
         height, width = arrival.image.shape[:2]
         if self._size is None:
             self._size = (width, height)
+            if self.hwnd is not None:
+                self._game_area = window_game_area(self.hwnd, self._size)
         elif (width, height) != self._size:
             raise FrameSizeChanged(
                 f"window resized from {self._size[0]}x{self._size[1]} to "

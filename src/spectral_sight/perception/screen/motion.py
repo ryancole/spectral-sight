@@ -64,32 +64,44 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
+from spectral_sight.types import GameArea
+
 
 @dataclass(frozen=True, slots=True)
 class WorldView:
-    """The part of the frame that is the game world, as fractions of it.
+    """The part of the frame that is the game world, as fractions of the game.
 
     The HUD occupies the bottom strip, the minimap and portrait column on the
     right, and the top bar; the same exclusions the nameplate reader carries,
     reduced to the one rectangle that avoids them all. Fractions rather than
     pixels, like the nameplate exclusions, because the receiver stretches one
     layout to any window and a fraction survives that where a pixel does not.
+
+    Fractions of the *game area* (`GameArea`), not of the frame: a window
+    capture carries a title bar that does not stretch with the game, so a
+    fraction of the frame is right for one chrome height only. These were
+    converted from the frame fractions they replaced (0, 0.035, 0.76, 0.78),
+    as the nameplate exclusions were, so the box on the kilrogg receiver --
+    2117x1354 around a 2115x1322 game at (1, 31) -- lands on the same rows
+    and right edge it always did, starting one column in, past the border.
     """
 
     left: float = 0.0
-    top: float = 0.035
-    right: float = 0.76
-    bottom: float = 0.78
+    top: float = 0.0124
+    right: float = 0.76025
+    bottom: float = 0.77543
 
-    def box(self, width: int, height: int) -> tuple[int, int, int, int]:
-        """(x, y, w, h) in pixels for a frame of this size."""
-        x0, y0 = int(self.left * width), int(self.top * height)
-        x1, y1 = int(self.right * width), int(self.bottom * height)
-        return x0, y0, x1 - x0, y1 - y0
+    def box(
+        self, width: int, height: int, area: GameArea | None = None
+    ) -> tuple[int, int, int, int]:
+        """(x, y, w, h) in frame pixels for a frame of this size, with the
+        game at `area` -- the whole frame when None."""
+        game = area or GameArea.whole(width, height)
+        return game.box(self.left, self.top, self.right, self.bottom)
 
-    def crop(self, frame: np.ndarray) -> np.ndarray:
+    def crop(self, frame: np.ndarray, area: GameArea | None = None) -> np.ndarray:
         height, width = frame.shape[:2]
-        x, y, w, h = self.box(width, height)
+        x, y, w, h = self.box(width, height, area)
         return frame[y : y + h, x : x + w]
 
 
@@ -168,9 +180,16 @@ class CameraTracker:
     """Frames in, camera motion out. Stateful; feed it frames in order."""
 
     def __init__(
-        self, view: WorldView | None = None, config: MotionConfig | None = None
+        self,
+        view: WorldView | None = None,
+        config: MotionConfig | None = None,
+        *,
+        area: GameArea | None = None,
     ) -> None:
         self.view = view or WorldView()
+        self.area = area
+        """Where the game is in the frame, which `view` is a fraction of;
+        the whole frame when None."""
         self.config = config or MotionConfig()
         self._prev: np.ndarray | None = None
         self._prev_small: np.ndarray | None = None
@@ -201,7 +220,7 @@ class CameraTracker:
 
     def update(self, frame: np.ndarray, timestamp: float) -> CameraMotion | None:
         """Fold one frame in. None for the first frame, which has no pair."""
-        gray = cv2.cvtColor(self.view.crop(frame), cv2.COLOR_BGR2GRAY)
+        gray = cv2.cvtColor(self.view.crop(frame, self.area), cv2.COLOR_BGR2GRAY)
         if self._prev is None:
             self._remember(gray, timestamp)
             return None

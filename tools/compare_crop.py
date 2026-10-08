@@ -46,7 +46,8 @@ def main() -> int:
 
     with WindowSource(args.window, target_fps=args.fps) as source:
         width, height = source.size
-        pipeline = Pipeline.for_resolution(width, height, newest_icon_set())
+        pipeline = Pipeline.for_resolution(
+            width, height, newest_icon_set(), source.game_area)
         cropped_plates = pipeline.plate_reader
         cropped_minions = pipeline.minion_reader
         if cropped_plates is None and cropped_minions is None:
@@ -57,7 +58,7 @@ def main() -> int:
         if cropped_plates is not None:
             whole_plates = NameplateReader(
                 cropped_plates.layout, cropped_plates.glyphs,
-                cropped_plates.config, crop=False,
+                cropped_plates.config, crop=False, area=source.game_area,
             )
             field = cropped_plates.playfield(width, height)
             print(f"{width}x{height}: playfield covers {field.coverage:.0%} of "
@@ -65,7 +66,8 @@ def main() -> int:
                   f"over rows {field.rows[0]}-{field.rows[1]}")
         if cropped_minions is not None:
             whole_minions = MinionReader(
-                cropped_minions.layout, cropped_minions.config, crop=False
+                cropped_minions.layout, cropped_minions.config, crop=False,
+                area=source.game_area,
             )
 
         frames = differing = 0

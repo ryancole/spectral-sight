@@ -242,9 +242,9 @@ def _derive_abilities(fit: LayoutFit, source: AbilityLayout) -> AbilityLayout:
 
 
 def _derive_nameplates(fit: LayoutFit, source: NameplateLayout) -> NameplateLayout:
-    # `exclude` is fractions of the frame and the projection coefficients act on
-    # normalised positions, so both are already scale-free and carry over as
-    # they are. Only the pixel measurements move.
+    # `exclude` is fractions of the game area and the projection coefficients
+    # act on normalised positions, so both are already scale-free and carry
+    # over as they are. Only the pixel measurements move.
     def down(pair: tuple[int, int]) -> tuple[int, int]:
         return round(fit.down(pair[0])), round(fit.down(pair[1]))
 

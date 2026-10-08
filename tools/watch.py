@@ -21,6 +21,9 @@ Always live, against the kilrogg receiver as it plays:
     # more frames for the world view; the minimap stays at 10 Hz regardless
     python tools/watch.py --fps 30
 
+    # say where the game is in the frame, when Windows cannot (x,y,w,h)
+    python tools/watch.py --game-area 1,31,2115,1322
+
 
 Frames arrive from the window whether or not the pipeline is ready for them, so
 the ones it cannot keep up with are dropped on arrival rather than queued -- see
@@ -62,7 +65,7 @@ from spectral_sight.perception.minimap.locate import locate_panel
 from spectral_sight.perception.minimap.region import REGION_DIR, MinimapRegion
 from spectral_sight.pipeline import Pipeline
 from spectral_sight.profiling import StageTimer
-from spectral_sight.types import Frame, Team
+from spectral_sight.types import Frame, GameArea, Team
 
 DEFAULT_ICONS = Path(__file__).resolve().parents[1] / "etc" / "icons"
 
@@ -264,6 +267,10 @@ def main() -> int:
                         help="time each pipeline stage and print the table at "
                              "the end -- see tools/profile_frames.py for the "
                              "pipeline alone")
+    parser.add_argument("--game-area", type=GameArea.parse, metavar="X,Y,W,H",
+                        help="where the game is drawn in the captured frame, "
+                             "in frame pixels; defaults to the window's "
+                             "client area as Windows reports it")
     parser.add_argument("--no-calibrate", action="store_true",
                         help="run with whatever calibration already exists instead "
                              "of deriving what is missing")
@@ -301,7 +308,8 @@ def main() -> int:
             if not calibrate(source, width, height):
                 return 1
         try:
-            pipeline = Pipeline.for_resolution(width, height, icons)
+            area = (args.game_area or source.game_area).clipped(width, height)
+            pipeline = Pipeline.for_resolution(width, height, icons, area)
         except FileNotFoundError as exc:
             print(exc, file=sys.stderr)
             return 1
@@ -315,7 +323,9 @@ def main() -> int:
         if pipeline.world is not None:
             ux, _ = pipeline.world.units_per_pixel
             extras.append(f"world {ux:.0f}u/px")
-        print(f"{width}x{height} | minimap {pipeline.region.width}px | "
+        game = ("" if area == GameArea.whole(width, height)
+                else f" (game {area.width}x{area.height} at {area.x},{area.y})")
+        print(f"{width}x{height}{game} | minimap {pipeline.region.width}px | "
               f"{len(pipeline.gallery)} champion icons | live {args.fps:g} fps"
               + (f" | {', '.join(extras)}" if extras else ""), file=console)
 

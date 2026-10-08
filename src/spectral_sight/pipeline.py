@@ -89,6 +89,7 @@ from spectral_sight.perception.nameplates.plates import Side
 from spectral_sight.perception.screen.last_hits import LastHitDetector
 from spectral_sight.perception.screen import (
     AimDetector,
+    CameraTracker,
     EnemyPlate,
     ProjectileTracker,
     ThreatDetector,
@@ -141,7 +142,7 @@ from spectral_sight.perception.nameplates import (
 )
 from spectral_sight.profiling import StageTimer
 from spectral_sight.tracking import Track, Tracker, TrackerConfig, TrackState
-from spectral_sight.types import Blip, Team
+from spectral_sight.types import Blip, GameArea, Team
 
 SELF_RADIUS = 12.0
 """How close to the viewport centre a marker must sit to be the local player.
@@ -324,9 +325,16 @@ class Pipeline:
         resolution: tuple[int, int] | None = None,
         place_self: bool = True,
         spells: SpellGallery | None = None,
+        game_area: GameArea | None = None,
     ) -> None:
         self.region = region
         self.gallery = gallery
+        self.game_area = game_area
+        """Where the game is in each frame -- the window's client area, see
+        `GameArea`. The fractional layouts (the world view, the nameplate
+        exclusions) are fractions of it; the calibrated rectangles are frame
+        pixels already and absorb the chrome on their own. None is the whole
+        frame."""
         self._last_sample: float | None = None
         """When the minimap stages last ran -- see `MINIMAP_INTERVAL`. The HUD
         stages and the world view run on every call; rows are produced on
@@ -370,14 +378,15 @@ class Pipeline:
         self.plate_reader = (
             None if nameplates is None
             else NameplateReader(
-                nameplates, None if clock is None else clock.glyphs
+                nameplates, None if clock is None else clock.glyphs,
+                area=game_area,
             )
         )
         """Levels ride on the clock's glyph set, so a run with no clock
         calibration reads plates without them rather than not at all."""
 
         self.minion_reader = (
-            MinionReader(nameplates)
+            MinionReader(nameplates, area=game_area)
             if nameplates is not None
             and nameplates.minion_width is not None
             and nameplates.minion_height is not None
@@ -472,7 +481,9 @@ class Pipeline:
         self.aim: AimDetector | None = None
         self.resources: ResourceReader | None = None
         if nameplates is not None:
-            self.projectiles = ProjectileTracker()
+            self.projectiles = ProjectileTracker(
+                camera=CameraTracker(area=game_area)
+            )
             self.threats = ThreatDetector()
             # The other end of the same bolts: what the player threw. Needs
             # the ability HUD as well, since a skillshot begins with a cast
@@ -614,7 +625,11 @@ class Pipeline:
 
     @classmethod
     def for_resolution(
-        cls, width: int, height: int, icons: str | Path
+        cls,
+        width: int,
+        height: int,
+        icons: str | Path,
+        game_area: GameArea | None = None,
     ) -> Pipeline:
         """Build from the calibrated region for a resolution plus an icon set.
 
@@ -649,6 +664,7 @@ class Pipeline:
             abilities=AbilityLayout.for_resolution(width, height),
             resolution=(width, height),
             spells=SpellGallery.load(icons),
+            game_area=game_area,
         )
 
     def process(self, frame: np.ndarray, timestamp: float) -> PipelineResult:
@@ -1102,7 +1118,7 @@ class Pipeline:
         self._cs = self._cs_filter.update(self.creep_score.read(frame))
         if self.last_hits is None:
             height, width = frame.shape[:2]
-            _, _, view_w, view_h = self._view.box(width, height)
+            _, _, view_w, view_h = self._view.box(width, height, self.game_area)
             # Minion positions are world-view pixels, so the view is the box
             # at the origin.
             self.last_hits = LastHitDetector((0, 0, view_w, view_h))
@@ -1152,7 +1168,7 @@ class Pipeline:
         if self.minion_reader is None or not trusted:
             return None
         height, width = frame.shape[:2]
-        vx, vy, _, _ = self._view.box(width, height)
+        vx, vy, _, _ = self._view.box(width, height, self.game_area)
         placed = (
             self.projection is not None
             and viewport is not None
@@ -1268,7 +1284,7 @@ class Pipeline:
     ) -> None:
         """Remember where the player and the enemies stand on the world view,
         from this sampled frame's plates, for the frames until the next."""
-        vx, vy, _, _ = self._view.box(*frame_size)
+        vx, vy, _, _ = self._view.box(*frame_size, self.game_area)
 
         def model(plate: Nameplate) -> tuple[float, float]:
             cx, cy = plate.center
@@ -1802,6 +1818,13 @@ class Pipeline:
             has_self_abilities=self.self_reader is not None,
             world_bounds=bounds,
             world_units_per_pixel=scale,
+            game_area=(
+                self.game_area or GameArea.whole(*resolution)
+            ).to_dict(),
+            world_view=dict(zip(
+                ("x", "y", "width", "height"),
+                self._view.box(*resolution, self.game_area),
+            )),
         )
 
     @staticmethod

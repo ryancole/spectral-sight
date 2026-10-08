@@ -108,7 +108,9 @@ class TestWindowSource:
         source.title = "test"
         source.startup_timeout = 1.0
         source._mailbox = Mailbox()
+        source.hwnd = None
         source._size = None
+        source._game_area = None
         source._control = None
         source._first = None
         return source

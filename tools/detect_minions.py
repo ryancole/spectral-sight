@@ -43,14 +43,13 @@ def draw(image, minions, reader):
     return out
 
 
-def sampled(args):
+def sampled(args, source: WindowSource):
     """One frame per `--every` seconds, for `--seconds` or until Ctrl+C."""
     next_at = 0.0
-    with WindowSource(args.window) as source:
-        for frame in lasting(source.frames(), args.seconds):
-            if frame.timestamp + 1e-6 >= next_at:
-                next_at = frame.timestamp + args.every
-                yield frame
+    for frame in lasting(source.frames(), args.seconds):
+        if frame.timestamp + 1e-6 >= next_at:
+            next_at = frame.timestamp + args.every
+            yield frame
 
 
 def main() -> None:
@@ -74,12 +73,16 @@ def main() -> None:
     totals = {Team.BLUE: 0, Team.RED: 0}
     readable = low = frames = 0
     # Ctrl+C ends the watching, not the summary.
-    with contextlib.suppress(KeyboardInterrupt):
-        for frame in sampled(args):
+    with (WindowSource(args.window) as source,
+          contextlib.suppress(KeyboardInterrupt)):
+        for frame in sampled(args, source):
             t = frame.timestamp
             if reader is None:
                 width, height = frame.size
-                reader = MinionReader(NameplateLayout.for_resolution(width, height))
+                reader = MinionReader(
+                    NameplateLayout.for_resolution(width, height),
+                    area=source.game_area,
+                )
             minions = reader.read(frame.image)
             frames += 1
             counts = {team: sum(m.team is team for m in minions) for team in totals}

@@ -72,7 +72,8 @@ def main() -> int:
     glyphs = None if clock is None else clock.glyphs
     abilities = load_ability_reader(width, height, glyphs)
     layout = NameplateLayout.for_resolution(width, height)
-    plates = NameplateReader(layout, glyphs)
+    area = source.game_area
+    plates = NameplateReader(layout, glyphs, area=area)
 
     overrides = {}
     if args.min_speed is not None:
@@ -81,9 +82,10 @@ def main() -> int:
         overrides["suppress_ghosts"] = False
     config = ProjectileConfig(**overrides)
     motion = MotionConfig() if args.repeat_pixels is None else MotionConfig(repeat_pixels=args.repeat_pixels)
-    tracker = ProjectileTracker(config=config, camera=CameraTracker(config=motion))
+    tracker = ProjectileTracker(
+        config=config, camera=CameraTracker(config=motion, area=area))
     view = WorldView()
-    vx, vy, _, _ = view.box(width, height)
+    vx, vy, _, _ = view.box(width, height, area)
 
     tracks, casts, anchors = [], [], {}
     repeats = distinct = 0
