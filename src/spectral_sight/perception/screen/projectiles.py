@@ -54,7 +54,7 @@ frame and which each launch a bolt from the player's nameplate.
    module's contract is recall: a real bolt becomes a candidate.
 
 Coordinates are world-view pixels -- the crop `WorldView` makes -- not frame
-pixels. `WorldView.box` gives the offset.
+pixels. `WorldView.box`, given the frame's `GameArea`, gives the offset.
 """
 
 from __future__ import annotations

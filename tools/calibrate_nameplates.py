@@ -71,14 +71,15 @@ SAMPLE_FPS = 10.0
 the pipeline reads plates at (`MINIMAP_INTERVAL`)."""
 
 DEFAULT_EXCLUDE = (
-    (0.00, 0.00, 1.00, 0.035),
-    (0.00, 0.00, 0.28, 0.36),
-    (0.00, 0.78, 1.00, 1.00),
-    (0.76, 0.60, 1.00, 1.00),
+    (0.0, 0.0, 1.0, 0.0124),
+    (0.0, 0.0, 0.27979, 0.34526),
+    (0.0, 0.77543, 1.0, 1.0),
+    (0.76025, 0.59107, 1.0, 1.0),
 )
 """Top status bar, target frame and death recap, bottom HUD, minimap. Fractions
-of the frame, and the same for every 16:9-ish layout, so they are a default
-rather than something to drag."""
+of the game area (the window's client area, not the captured frame), and the
+same for every 16:9-ish layout, so they are a default rather than something to
+drag."""
 
 
 def measure(box: np.ndarray, config: NameplateConfig) -> NameplateLayout | None:
@@ -169,6 +170,7 @@ def fit_projection(
 
     with (WindowSource(window, target_fps=SAMPLE_FPS) as source,
           contextlib.suppress(KeyboardInterrupt)):
+        reader.area = source.game_area
         for sampled, frame in enumerate(source.frames()):
             if limit and sampled >= limit:
                 break
@@ -258,6 +260,7 @@ def validate(
 
     with (WindowSource(window, target_fps=SAMPLE_FPS) as source,
           contextlib.suppress(KeyboardInterrupt)):
+        reader.area = source.game_area
         for frame in source.frames():
             if limit and frames >= limit:
                 break

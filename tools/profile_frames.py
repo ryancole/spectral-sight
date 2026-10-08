@@ -127,7 +127,8 @@ def main() -> int:
                   f"{width}x{height}; those stages will not be timed. Run "
                   "watch.py once to derive them.", file=sys.stderr)
         try:
-            pipeline = Pipeline.for_resolution(width, height, icons)
+            pipeline = Pipeline.for_resolution(
+                width, height, icons, source.game_area)
         except FileNotFoundError as exc:
             print(exc, file=sys.stderr)
             return 1

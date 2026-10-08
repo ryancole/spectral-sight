@@ -37,6 +37,7 @@ from spectral_sight.perception.nameplates import NameplateLayout, NameplateReade
 from spectral_sight.perception.screen import (
     AimConfig,
     AimDetector,
+    CameraTracker,
     EnemyPlate,
     ProjectileConfig,
     ProjectileTracker,
@@ -61,12 +62,14 @@ def run(args) -> tuple[list, float]:
     abilities = load_ability_reader(width, height, glyphs)
     if abilities is None:
         raise SystemExit("no ability calibration for this resolution")
-    plates = NameplateReader(NameplateLayout.for_resolution(width, height), glyphs)
-    tracker = ProjectileTracker()
+    area = source.game_area
+    plates = NameplateReader(
+        NameplateLayout.for_resolution(width, height), glyphs, area=area)
+    tracker = ProjectileTracker(camera=CameraTracker(area=area))
     config = AimConfig(hit_radius=args.radius) if args.radius else AimConfig()
     aim = AimDetector(config=config)
     view = WorldView()
-    vx, vy, _, _ = view.box(width, height)
+    vx, vy, _, _ = view.box(width, height, area)
 
     shots, anchor = [], None
     last_read: float | None = None

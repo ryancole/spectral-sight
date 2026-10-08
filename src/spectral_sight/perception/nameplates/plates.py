@@ -74,7 +74,11 @@ from spectral_sight.perception.hud.clock import (
     glyph_boxes,
     lit_mask,
 )
-from spectral_sight.perception.nameplates.playfield import Playfield
+from spectral_sight.perception.nameplates.playfield import (
+    Playfield,
+    excluded_regions,
+)
+from spectral_sight.types import GameArea
 
 LAYOUT_DIR = Path(__file__).resolve().parents[4] / "etc" / "nameplates"
 
@@ -199,8 +203,10 @@ class NameplateLayout:
 
     exclude: tuple[tuple[float, float, float, float], ...] = ()
     """Screen regions that draw bar-like art of their own: the HUD strips, the
-    minimap, the death recap. Fractions of the frame, since they track the HUD
-    layout rather than the pixel grid."""
+    minimap, the death recap. Fractions of the game area (`GameArea`) rather
+    than of the frame, since they track the HUD layout -- which the receiver
+    stretches over its client area -- rather than the pixel grid or the
+    window's title bar."""
 
     projection_x: tuple[float, float, float] | None = None
     projection_y: tuple[float, float, float] | None = None
@@ -368,8 +374,12 @@ class NameplateReader:
         config: NameplateConfig | None = None,
         *,
         crop: bool = True,
+        area: GameArea | None = None,
     ) -> None:
         self.layout = layout
+        self.area = area
+        """Where the game is in the frame, which `layout.exclude` is a
+        fraction of; the whole frame when None."""
         self.glyphs = glyphs
         """The clock's glyph set. Levels are read only when it is supplied."""
         self.config = config or NameplateConfig()
@@ -425,15 +435,13 @@ class NameplateReader:
         field = self._playfield
         if field is None or (field.width, field.height) != (width, height):
             field = self._playfield = playfield_for(
-                self.layout, width, height, self.config
+                self.layout, width, height, self.config, self.area
             )
         return field
 
     def _excluded(self, x: int, y: int, width: int, height: int) -> bool:
-        for x0, y0, x1, y1 in self.layout.exclude:
-            if x0 * width <= x <= x1 * width and y0 * height <= y <= y1 * height:
-                return True
-        return False
+        regions = excluded_regions(self.layout.exclude, width, height, self.area)
+        return any(x0 <= x <= x1 and y0 <= y <= y1 for x0, y0, x1, y1 in regions)
 
     def _clipped(self, x: int, y: int, width: int, height: int) -> bool:
         """Does the bar run off the frame, or into a region the HUD owns?
@@ -741,8 +749,10 @@ def playfield_for(
     width: int,
     height: int,
     config: NameplateConfig | None = None,
+    area: GameArea | None = None,
 ) -> Playfield:
-    """The playfield both bar readers mask over, for one frame size.
+    """The playfield both bar readers mask over, for one frame size with the
+    game at `area`.
 
     One field serves both readers, so the reach is the larger of the two in
     each direction, plus a few pixels of slack:
@@ -767,4 +777,5 @@ def playfield_for(
                   -layout.level_dy[0], cfg.fragment_dy) + slack,
         below=max(cfg.max_bar_height, layout.level_dy[1], minion_h + 3,
                   cfg.fragment_dy) + slack,
+        area=area,
     )

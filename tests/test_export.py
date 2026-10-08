@@ -30,7 +30,8 @@ from spectral_sight.export import (
 from spectral_sight.perception.identity import Gallery
 from spectral_sight.perception.minimap import MinimapRegion, WorldTransform
 from spectral_sight.pipeline import Pipeline
-from spectral_sight.types import Team
+from spectral_sight.perception.screen import WorldView
+from spectral_sight.types import GameArea, Team
 from tests.synthetic import Marker, synthetic_minimap
 
 MINIMAP_SIZE = 280
@@ -233,6 +234,27 @@ def test_meta_round_trips() -> None:
     assert meta.stamped().has_gold is True
 
 
+def test_meta_round_trips_the_game_area_and_world_view() -> None:
+    meta = TimelineMeta(
+        source="kilrogg", width=2117, height=1354,
+        game_area={"x": 1, "y": 31, "width": 2115, "height": 1322},
+        world_view={"x": 1, "y": 47, "width": 1607, "height": 1009},
+    )
+    data = json.loads(json.dumps(meta.to_dict()))
+    assert data["game_area"] == {"x": 1, "y": 31, "width": 2115, "height": 1322}
+    assert (data["width"], data["height"]) == (2117, 1354)
+    assert TimelineMeta.from_dict(data) == meta
+    assert meta.stamped().game_area == meta.game_area
+    assert meta.stamped().world_view == meta.world_view
+
+
+def test_a_header_from_before_the_game_area_reads_as_none() -> None:
+    data = TimelineMeta(source="c", width=100, height=100).to_dict()
+    del data["game_area"], data["world_view"]
+    meta = TimelineMeta.from_dict(data)
+    assert meta.game_area is None and meta.world_view is None
+
+
 def test_the_writer_stamps_a_creation_time(tmp_path: Path) -> None:
     meta = TimelineMeta(source="clip.mp4", width=100, height=100)
     with TimelineWriter(tmp_path / "out.jsonl", meta) as writer:
@@ -399,6 +421,27 @@ def test_meta_records_a_missing_calibration_honestly() -> None:
     assert meta.has_gold is False
     assert meta.world_bounds is None and meta.world_units_per_pixel is None
     assert meta.schema == SCHEMA
+
+
+def test_meta_publishes_the_game_area_and_the_world_view_in_it() -> None:
+    area = GameArea(1, 31, FRAME_SIZE[0] - 2, FRAME_SIZE[1] - 32)
+    pipeline = Pipeline(
+        region=REGION, gallery=Gallery(), resolution=FRAME_SIZE,
+        game_area=area,
+    )
+    meta = pipeline.timeline_meta("kilrogg")
+    assert meta.game_area == area.to_dict()
+    x, y, w, h = WorldView().box(*FRAME_SIZE, area)
+    assert meta.world_view == {"x": x, "y": y, "width": w, "height": h}
+    assert meta.world_view["y"] >= area.y
+    assert (meta.width, meta.height) == FRAME_SIZE
+
+
+def test_with_no_window_the_game_area_is_the_whole_frame() -> None:
+    meta = build_pipeline().timeline_meta("kilrogg")
+    assert meta.game_area == {
+        "x": 0, "y": 0, "width": FRAME_SIZE[0], "height": FRAME_SIZE[1]
+    }
 
 
 def test_meta_records_the_world_scale_in_force() -> None:

@@ -13,6 +13,7 @@ import cv2
 import numpy as np
 
 from spectral_sight.perception.screen import CameraTracker, MotionConfig, WorldView
+from spectral_sight.types import GameArea
 
 VIEW = WorldView(left=0.0, top=0.0, right=1.0, bottom=1.0)
 SMALL = MotionConfig(repeat_pixels=400)
@@ -107,6 +108,24 @@ def test_stabilise_aligns_the_previous_view() -> None:
 
 
 def test_world_view_box_is_the_interior_rectangle() -> None:
-    x, y, w, h = WorldView().box(2116, 1354)
-    assert (x, y) == (0, 47)
-    assert x + w == int(0.76 * 2116) and y + h == int(0.78 * 1354)
+    # The kilrogg receiver: 2117x1354 captured around a 2115x1322 game at
+    # (1, 31). The rows and the right edge are the ones the frame fractions
+    # (0.035, 0.76, 0.78 of 2117x1354) gave before the box moved onto the game.
+    receiver = GameArea(1, 31, 2115, 1322)
+    x, y, w, h = WorldView().box(2117, 1354, receiver)
+    assert (x, y) == (1, 47)
+    assert x + w == int(0.76 * 2117) and y + h == int(0.78 * 1354)
+
+
+def test_world_view_is_a_fraction_of_the_game_not_the_window() -> None:
+    """A taller title bar moves the box down by exactly its height."""
+    view = WorldView()
+    x, y, w, h = view.box(2117, 1354, GameArea(1, 31, 2115, 1322))
+    taller = view.box(2117, 1368, GameArea(1, 45, 2115, 1322))
+    assert taller == (x, y + 14, w, h)
+
+
+def test_without_a_game_area_the_whole_frame_is_the_game() -> None:
+    assert WorldView().box(800, 600) == WorldView().box(
+        800, 600, GameArea.whole(800, 600)
+    )
